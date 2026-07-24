@@ -434,7 +434,7 @@
     if (partnersState.page > totalPages) partnersState.page = totalPages;
     var pageItems = visible.slice((partnersState.page - 1) * PAGE_SIZE, partnersState.page * PAGE_SIZE);
     if (!visible.length) {
-      body.innerHTML = '<tr><td colspan="4" style="padding:44px 24px;text-align:center;color:#A2A7B5;font-size:13px">' +
+      body.innerHTML = '<tr><td colspan="3" style="padding:44px 24px;text-align:center;color:#A2A7B5;font-size:13px">' +
         "Партнёрки не найдены</td></tr>";
     } else {
       body.innerHTML = pageItems.map(function (partner, index) {
@@ -447,8 +447,7 @@
           '<div style="font-size:10.5px;color:#A2A7B5;margin-top:3px">ID ' + escapeHtml(partner.external_id) + "</div></div></div></td>" +
           '<td style="padding:15px 24px"><span style="font-family:Space Grotesk;font-weight:700;font-size:14px">' +
           number(partner.offers_count) + '</span><span style="font-size:12.5px;color:#A2A7B5;margin-left:6px">офферов</span></td>' +
-          '<td style="padding:15px 24px">' + statusControl("partner", partner, partnersState.canManage) + "</td>" +
-          '<td style="padding:15px 24px;color:#C7CAD6">•••</td></tr>';
+          '<td style="padding:15px 24px">' + statusControl("partner", partner, partnersState.canManage) + "</td></tr>";
       }).join("");
     }
     setText("partnersResultCount", "Показано " + pageItems.length + " из " + visible.length +
