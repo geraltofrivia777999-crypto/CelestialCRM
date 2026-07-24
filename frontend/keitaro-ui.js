@@ -1531,7 +1531,7 @@
         else await loadFinance();
       }
       else if (path.indexOf("partner") >= 0) {
-        if (window.CelestialCatalog) await window.CelestialCatalog.initPartners();
+        if (window.CelestialCatalog) await window.CelestialCatalog.initPartners(currentSessionUser);
         else await loadPartners();
       }
       else if (path.indexOf("offer") >= 0) {

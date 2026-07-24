@@ -296,6 +296,9 @@ class Partner(UUIDMixin, TimestampMixin, Base):
     external_id: Mapped[str] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active)
+    status_overridden: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
 
 class Offer(UUIDMixin, TimestampMixin, Base):
@@ -316,6 +319,9 @@ class Offer(UUIDMixin, TimestampMixin, Base):
     geo: Mapped[str | None] = mapped_column(String(12), index=True)
     group_name: Mapped[str | None] = mapped_column(String(160))
     status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active, index=True)
+    status_overridden: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     partner: Mapped[Partner | None] = relationship(lazy="selectin")
 
 

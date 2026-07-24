@@ -373,9 +373,10 @@ async def _upsert_partners(
             db.add(item)
             by_external[external_id] = item
         item.name = str(row.get("name") or f"Partner {external_id}")
-        item.status = _status(row.get("state"))
+        if not item.status_overridden:
+            item.status = _status(row.get("state"))
     for external_id, item in by_external.items():
-        if external_id not in seen:
+        if external_id not in seen and not item.status_overridden:
             item.status = Status.inactive
     await db.flush()
     return by_external
@@ -415,9 +416,10 @@ async def _upsert_offers(
         item.partner_id = partners[partner_id].id if partner_id in partners else None
         item.group_name = groups.get(group_id)
         item.geo = _offer_geo(row)
-        item.status = _status(row.get("state"))
+        if not item.status_overridden:
+            item.status = _status(row.get("state"))
     for external_id, item in by_external.items():
-        if external_id not in seen:
+        if external_id not in seen and not item.status_overridden:
             item.status = Status.inactive
 
 

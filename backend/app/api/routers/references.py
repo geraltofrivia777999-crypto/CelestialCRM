@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import require_permission
 from app.models import KeitaroCampaign, Offer, OfferBuyer, Partner, Status, User
-from app.schemas import AssignBuyers, OfferOut, Page
+from app.schemas import AssignBuyers, CatalogStatusUpdate, OfferOut, Page
 from app.services.audit import audit
 
 router = APIRouter(tags=["references"])
@@ -55,6 +55,7 @@ async def list_partners(
                 "external_id": row.external_id,
                 "name": row.name,
                 "status": row.status.value,
+                "status_overridden": row.status_overridden,
                 "offers_count": offer_counts.get(row.id, 0),
             }
             for row in rows
@@ -63,6 +64,38 @@ async def list_partners(
         limit=min(limit, 100),
         offset=offset,
     )
+
+
+@router.patch("/partners/{partner_id}/status")
+async def set_partner_status(
+    partner_id: uuid.UUID,
+    payload: CatalogStatusUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("offers.manage")),
+) -> dict:
+    partner = await db.get(Partner, partner_id)
+    if not partner or partner.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Partner not found")
+    if payload.status not in {Status.active, Status.inactive}:
+        raise HTTPException(status_code=422, detail="Unsupported partner status")
+    partner.status = payload.status
+    partner.status_overridden = True
+    await audit(
+        db,
+        current,
+        "partner.status_changed",
+        f"Changed {partner.name} status to {payload.status.value}",
+        request=request,
+        entity_type="partner",
+        entity_id=str(partner.id),
+    )
+    await db.commit()
+    return {
+        "id": str(partner.id),
+        "status": partner.status.value,
+        "status_overridden": partner.status_overridden,
+    }
 
 
 @router.get("/campaigns", response_model=Page)
@@ -170,6 +203,38 @@ async def list_offers(
         limit=min(limit, 100),
         offset=offset,
     )
+
+
+@router.patch("/offers/{offer_id}/status")
+async def set_offer_status(
+    offer_id: uuid.UUID,
+    payload: CatalogStatusUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("offers.manage")),
+) -> dict:
+    offer = await db.get(Offer, offer_id)
+    if not offer or offer.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    if payload.status not in {Status.active, Status.inactive}:
+        raise HTTPException(status_code=422, detail="Unsupported offer status")
+    offer.status = payload.status
+    offer.status_overridden = True
+    await audit(
+        db,
+        current,
+        "offer.status_changed",
+        f"Changed {offer.name} status to {payload.status.value}",
+        request=request,
+        entity_type="offer",
+        entity_id=str(offer.id),
+    )
+    await db.commit()
+    return {
+        "id": str(offer.id),
+        "status": offer.status.value,
+        "status_overridden": offer.status_overridden,
+    }
 
 
 @router.put("/offers/{offer_id}/buyers")

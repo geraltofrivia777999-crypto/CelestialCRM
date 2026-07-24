@@ -4,10 +4,12 @@ from datetime import date
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.core.database import SessionLocal
 from app.core.security import encrypt_secret
+from app.main import app
 from app.models import (
     IntegrationConnection,
     KeitaroCampaign,
@@ -15,6 +17,7 @@ from app.models import (
     MediaRecord,
     Offer,
     Partner,
+    Status,
     SyncRun,
     SyncStatus,
     User,
@@ -197,3 +200,53 @@ async def test_sync_engine_upserts_references_stats_and_media(database) -> None:
         completed = await db.get(SyncRun, uuid.UUID(run_id))
         assert completed.status == SyncStatus.success
         assert completed.progress_pct == 100
+
+
+async def test_manual_catalog_status_survives_sync(database) -> None:
+    async with SessionLocal() as db:
+        offer = await db.scalar(select(Offer).limit(1))
+        partner = await db.scalar(select(Partner).limit(1))
+        assert offer is not None
+        assert partner is not None
+        offer_id = str(offer.id)
+        partner_id = str(partner.id)
+        connection_id = str(offer.connection_id)
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"login": "admin", "password": "test-password"},
+        )
+        assert login.status_code == 200
+        offer_update = client.patch(
+            f"/api/v1/offers/{offer_id}/status",
+            json={"status": "inactive"},
+        )
+        partner_update = client.patch(
+            f"/api/v1/partners/{partner_id}/status",
+            json={"status": "inactive"},
+        )
+        assert offer_update.status_code == 200
+        assert partner_update.status_code == 200
+        assert offer_update.json()["status_overridden"] is True
+        assert partner_update.json()["status_overridden"] is True
+
+    async with SessionLocal() as db:
+        run = SyncRun(connection_id=uuid.UUID(connection_id), mode="incremental")
+        db.add(run)
+        await db.commit()
+        run_id = str(run.id)
+
+    engine = KeitaroSyncEngine(SessionLocal, client_factory=FakeKeitaroClient)
+    result = await engine.run(connection_id, run_id, "incremental")
+    assert result["status"] == "success"
+
+    async with SessionLocal() as db:
+        offer = await db.get(Offer, uuid.UUID(offer_id))
+        partner = await db.get(Partner, uuid.UUID(partner_id))
+        assert offer is not None
+        assert partner is not None
+        assert offer.status == Status.inactive
+        assert partner.status == Status.inactive
+        assert offer.status_overridden is True
+        assert partner.status_overridden is True

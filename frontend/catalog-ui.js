@@ -69,6 +69,52 @@
       (active ? "Активно" : "Неактивно") + "</span>";
   }
 
+  function statusControl(entity, item, canManage) {
+    if (!canManage) return statusPill(item.status);
+    var nextLabel = item.status === "active" ? "Неактивно" : "Активно";
+    return '<button type="button" data-status-toggle data-status-entity="' + entity +
+      '" data-status-id="' + escapeHtml(item.id) + '" data-status-current="' + escapeHtml(item.status) +
+      '" title="Изменить на «' + nextLabel + '»" aria-label="Изменить статус на ' + nextLabel +
+      '" style="border:0;background:transparent;padding:0;cursor:pointer;font-family:inherit">' +
+      statusPill(item.status) + "</button>";
+  }
+
+  function bindStatusControls() {
+    if (document.documentElement.dataset.catalogStatusControlsBound) return;
+    document.documentElement.dataset.catalogStatusControlsBound = "true";
+    document.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-status-toggle]");
+      if (!button || button.disabled) return;
+      var entity = button.getAttribute("data-status-entity");
+      var id = button.getAttribute("data-status-id");
+      var current = button.getAttribute("data-status-current");
+      var next = current === "active" ? "inactive" : "active";
+      var collection = entity === "offer" ? offersState.offers : partnersState.partners;
+      var item = collection.find(function (entry) { return String(entry.id) === String(id); });
+      if (!item) return;
+      button.disabled = true;
+      button.style.opacity = ".55";
+      api.patch("/" + entity + "s/" + id + "/status", { status: next })
+        .then(function (updated) {
+          item.status = updated.status;
+          item.status_overridden = updated.status_overridden;
+          toast((entity === "offer" ? "Статус оффера" : "Статус партнёрки") + " сохранён");
+          if (entity === "offer") {
+            renderOfferStats();
+            renderOfferRows();
+          } else {
+            renderPartnerStats();
+            renderPartnerRows();
+          }
+        })
+        .catch(function (error) {
+          button.disabled = false;
+          button.style.opacity = "";
+          fail(error);
+        });
+    });
+  }
+
   var AVATAR_COLORS = ["#5A5FE0", "#16B57F", "#E8912B", "#F1556C", "#6D5FF5", "#3D8DE8"];
 
   function avatarColor(index) { return AVATAR_COLORS[index % AVATAR_COLORS.length]; }
@@ -199,7 +245,7 @@
           '<td style="padding:15px 18px;font-weight:700">' + escapeHtml(offer.geo || "—") + "</td>" +
           '<td style="padding:15px 18px">' + escapeHtml(offer.partner || "—") + "</td>" +
           '<td style="padding:15px 18px"><div style="display:flex;align-items:center">' + avatars + buyerLabel + "</div></td>" +
-          '<td style="padding:15px 18px">' + statusPill(offer.status) + "</td>" +
+          '<td style="padding:15px 18px">' + statusControl("offer", offer, offersState.canManage) + "</td>" +
           '<td style="padding:15px 18px;text-align:right">' + action + "</td></tr>";
       }).join("");
     }
@@ -257,6 +303,7 @@
   function bindOfferControls() {
     if (document.documentElement.dataset.offerControlsBound) return;
     document.documentElement.dataset.offerControlsBound = "true";
+    bindStatusControls();
     var search = byId("offerSearch");
     if (search) search.addEventListener("input", applyOfferFilters);
     ["filterGeo", "filterPartner", "filterBuyer", "filterStatus"].forEach(function (id) {
@@ -369,7 +416,7 @@
      PARTNERS
      ========================================================== */
 
-  var partnersState = { partners: [], page: 1 };
+  var partnersState = { user: null, partners: [], canManage: false, page: 1 };
 
   function partnerMatchesFilters(partner) {
     var search = (byId("partnerSearch") ? byId("partnerSearch").value : "").trim().toLowerCase();
@@ -400,7 +447,7 @@
           '<div style="font-size:10.5px;color:#A2A7B5;margin-top:3px">ID ' + escapeHtml(partner.external_id) + "</div></div></div></td>" +
           '<td style="padding:15px 24px"><span style="font-family:Space Grotesk;font-weight:700;font-size:14px">' +
           number(partner.offers_count) + '</span><span style="font-size:12.5px;color:#A2A7B5;margin-left:6px">офферов</span></td>' +
-          '<td style="padding:15px 24px">' + statusPill(partner.status) + "</td>" +
+          '<td style="padding:15px 24px">' + statusControl("partner", partner, partnersState.canManage) + "</td>" +
           '<td style="padding:15px 24px;color:#C7CAD6">•••</td></tr>';
       }).join("");
     }
@@ -425,6 +472,7 @@
   function bindPartnerControls() {
     if (document.documentElement.dataset.partnerControlsBound) return;
     document.documentElement.dataset.partnerControlsBound = "true";
+    bindStatusControls();
     var search = byId("partnerSearch");
     if (search) search.addEventListener("input", function () {
       partnersState.page = 1;
@@ -444,7 +492,9 @@
     renderPartnerRows();
   }
 
-  async function initPartners() {
+  async function initPartners(user) {
+    partnersState.user = user;
+    partnersState.canManage = hasPermission(user, "offers.manage");
     bindPartnerControls();
     await loadPartners();
   }

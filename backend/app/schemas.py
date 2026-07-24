@@ -171,10 +171,15 @@ class OfferOut(ORMModel):
     geo: str | None
     group_name: str | None
     status: Status
+    status_overridden: bool
 
 
 class AssignBuyers(BaseModel):
     buyer_ids: list[uuid.UUID]
+
+
+class CatalogStatusUpdate(BaseModel):
+    status: Status
 
 
 class MediaRecordIn(BaseModel):
