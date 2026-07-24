@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import require_permission
+from app.core.deps import get_current_user, require_permission
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models import (
     IdempotencyRecord,
@@ -14,6 +14,7 @@ from app.models import (
     KeitaroStatDaily,
     Offer,
     Partner,
+    Status,
     SyncRun,
     SyncStatus,
     User,
@@ -221,6 +222,96 @@ async def keitaro_overview(
             }
             for connection in connections
         ],
+    }
+
+
+@router.get("/keitaro/sidebar-status")
+async def keitaro_sidebar_status(
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict:
+    connections = list(
+        (
+            await db.execute(
+                select(IntegrationConnection)
+                .where(
+                    IntegrationConnection.workspace_id == current.workspace_id,
+                    IntegrationConnection.kind == "keitaro",
+                )
+                .order_by(IntegrationConnection.name)
+            )
+        ).scalars()
+    )
+    if not connections:
+        return {
+            "configured": False,
+            "state": "not_configured",
+            "connection_id": None,
+            "progress_pct": 0,
+            "last_sync_at": None,
+            "error": None,
+        }
+
+    connection_ids = [connection.id for connection in connections]
+    runs = list(
+        (
+            await db.execute(
+                select(SyncRun)
+                .where(SyncRun.connection_id.in_(connection_ids))
+                .order_by(SyncRun.started_at.desc())
+            )
+        ).scalars()
+    )
+    latest_by_connection: dict[uuid.UUID, SyncRun] = {}
+    for run in runs:
+        latest_by_connection.setdefault(run.connection_id, run)
+
+    running = next(
+        (
+            run
+            for run in runs
+            if run.status in {SyncStatus.queued, SyncStatus.running}
+        ),
+        None,
+    )
+    failed = next(
+        (
+            run
+            for run in latest_by_connection.values()
+            if run.status == SyncStatus.failed
+        ),
+        None,
+    )
+    active_connection = next(
+        (connection for connection in connections if connection.status == Status.active),
+        connections[0],
+    )
+    last_sync_at = max(
+        (
+            value
+            for value in [
+                *(connection.last_sync_at for connection in connections),
+                *(run.finished_at for run in latest_by_connection.values()),
+            ]
+            if value is not None
+        ),
+        default=None,
+    )
+    if running:
+        state = "syncing"
+    elif failed:
+        state = "error"
+    elif any(connection.status == Status.active for connection in connections):
+        state = "active"
+    else:
+        state = "inactive"
+    return {
+        "configured": True,
+        "state": state,
+        "connection_id": str(active_connection.id),
+        "progress_pct": running.progress_pct if running else 0,
+        "last_sync_at": last_sync_at,
+        "error": failed.error if failed else None,
     }
 
 

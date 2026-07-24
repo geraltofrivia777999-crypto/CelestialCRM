@@ -250,3 +250,21 @@ async def test_manual_catalog_status_survives_sync(database) -> None:
         assert partner.status == Status.inactive
         assert offer.status_overridden is True
         assert partner.status_overridden is True
+
+
+def test_sidebar_status_uses_real_keitaro_state(database) -> None:
+    with TestClient(app) as client:
+        anonymous = client.get("/api/v1/integrations/keitaro/sidebar-status")
+        assert anonymous.status_code == 401
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"login": "admin", "password": "test-password"},
+        )
+        assert login.status_code == 200
+        response = client.get("/api/v1/integrations/keitaro/sidebar-status")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["configured"] is True
+        assert payload["state"] == "active"
+        assert payload["connection_id"]
+        assert payload["last_sync_at"]

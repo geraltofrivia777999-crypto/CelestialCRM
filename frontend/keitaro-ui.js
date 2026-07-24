@@ -1516,6 +1516,7 @@
   async function start() {
     try {
       currentSessionUser = await api.get("/auth/me");
+      if (window.CelestialShell) await window.CelestialShell.init(currentSessionUser);
     } catch (error) {
       fail(error);
       return;
