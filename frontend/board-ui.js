@@ -161,7 +161,8 @@
     'color:#8A8FA3;font-family:Space Grotesk;white-space:nowrap{extra}"';
 
   function subTh(label, extra) {
-    return "<th " + TH_SUB.replace("{extra}", extra || "") + ">" + escapeHtml(label) + "</th>";
+    return '<th title="' + escapeHtml(label) + '" ' +
+      TH_SUB.replace("{extra}", extra || "") + ">" + escapeHtml(label) + "</th>";
   }
 
   function groupTh(label, colspan, background, color, borderColor) {
@@ -752,6 +753,18 @@
     async function init(user) {
       state.user = user;
       state.canManage = hasPermission(user, config.managePermission);
+      document.body.classList.add(
+        "celestial-board-page",
+        "celestial-board-page--" + p
+      );
+      var tableHead = el("TableHead");
+      var table = tableHead && tableHead.closest("table");
+      if (table) {
+        table.classList.add("celestial-board-table");
+        if (table.parentElement) {
+          table.parentElement.classList.add("celestial-board-scroll");
+        }
+      }
       var editButton = el("EditBtn");
       if (editButton) {
         if (state.canManage) {

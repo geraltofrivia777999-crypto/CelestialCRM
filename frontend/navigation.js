@@ -82,7 +82,7 @@
       match: "settings",
       permission: "settings.view",
       title: "Настройки",
-      containers: ["servicesTableBody", "providersTableBody", "integrationsPanel"],
+      containers: ["servicesTableBody", "providersTableBody", "integrationsGrid"],
       values: ["settingsServicesTotal", "settingsProvidersTotal", "settingsConnectionsTotal",
         "settingsServicesTabCount", "settingsProvidersTabCount", "settingsConnectionsTabCount",
         "settingsServicesResultCount", "settingsProvidersResultCount", "settingsSyncSummary"]
@@ -271,6 +271,59 @@
           window.location.href = target;
         }
       });
+    });
+  }
+
+  function setupResponsiveShell() {
+    var aside = document.querySelector("aside");
+    var main = document.querySelector("main");
+    if (!aside || !main || document.getElementById("celestialMobileMenu")) return;
+
+    aside.classList.add("celestial-sidebar");
+    main.classList.add("celestial-main");
+
+    var menuButton = document.createElement("button");
+    menuButton.id = "celestialMobileMenu";
+    menuButton.className = "celestial-mobile-menu";
+    menuButton.type = "button";
+    menuButton.setAttribute("aria-label", "Открыть навигацию");
+    menuButton.setAttribute("aria-controls", "celestialSidebar");
+    menuButton.setAttribute("aria-expanded", "false");
+    menuButton.innerHTML =
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round"/></svg>';
+
+    var scrim = document.createElement("button");
+    scrim.className = "celestial-sidebar-scrim";
+    scrim.type = "button";
+    scrim.setAttribute("aria-label", "Закрыть навигацию");
+
+    aside.id = "celestialSidebar";
+    document.body.appendChild(menuButton);
+    document.body.appendChild(scrim);
+
+    function setSidebarOpen(open) {
+      document.body.classList.toggle("celestial-sidebar-open", open);
+      menuButton.setAttribute("aria-expanded", String(open));
+      menuButton.setAttribute(
+        "aria-label",
+        open ? "Закрыть навигацию" : "Открыть навигацию"
+      );
+    }
+
+    menuButton.addEventListener("click", function () {
+      setSidebarOpen(!document.body.classList.contains("celestial-sidebar-open"));
+    });
+    scrim.addEventListener("click", function () { setSidebarOpen(false); });
+    aside.addEventListener("click", function (event) {
+      if (event.target.closest("a")) setSidebarOpen(false);
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") setSidebarOpen(false);
+    });
+    window.addEventListener("resize", function () {
+      if (window.innerWidth > 1024) setSidebarOpen(false);
     });
   }
 
@@ -581,6 +634,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    setupResponsiveShell();
     setupNavigation();
     // Runs before authentication so the demo rows never flash on screen.
     clearMockData(currentRule());
