@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Manrope',-apple-system,'Helvetica Neue',sans-serif;background:#EEF0F6;color:#171A26;-webkit-font-smoothing:antialiased}
+  a{color:#5A5FE0;text-decoration:none}
+  button,input,select{font:inherit}
+  button{cursor:pointer}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:#D6D9E4;border-radius:8px}
+  .team-heading{font-family:'Space Grotesk','Manrope',sans-serif}
+  .team-control{height:42px;border:1px solid #E7E9F1;background:#fff;border-radius:11px;color:#383D4D;font-size:12.5px;font-weight:600;outline:none;transition:border-color .2s,box-shadow .2s}
+  .team-control:focus{border-color:#8C90ED;box-shadow:0 0 0 3px rgba(90,95,224,.10)}
+  .team-select{appearance:none;padding:0 38px 0 13px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+  .team-tab{height:42px;border:0;background:transparent;color:#8A8FA3;padding:0 16px;font-size:13px;font-weight:700;border-radius:10px;white-space:nowrap}
+  .team-tab.active{background:#EEF0FF;color:#5A5FE0}
+  .team-tab:focus{outline:0}
+  .team-tab:focus-visible{box-shadow:0 0 0 3px rgba(90,95,224,.12)}
+  .team-panel{display:none}
+  .team-panel.active{display:block}
+  .user-row{transition:background .18s}
+  .user-row:hover{background:#FAFAFD}
+  .avatar{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:800;flex-shrink:0}
+  .mini-avatar{width:27px;height:27px;border:2px solid #fff;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:8.5px;font-weight:800;margin-left:-6px}
+  .mini-avatar:first-child{margin-left:0}
+  .row-actions summary{list-style:none}
+  .row-actions summary::-webkit-details-marker{display:none}
+  .row-menu{position:absolute;right:0;top:39px;z-index:8;width:180px;padding:6px;background:#fff;border:1px solid #E9EBF2;border-radius:12px;box-shadow:0 14px 34px rgba(40,44,74,.16)}
+  .row-menu button{width:100%;border:0;background:transparent;padding:9px 10px;border-radius:8px;text-align:left;color:#454A5A;font-size:12.5px;font-weight:600}
+  .row-menu button:hover{background:#F4F5FA}
+  .role-card{background:#fff;border:1px solid #ECEEF3;border-radius:17px;padding:20px;transition:transform .2s,box-shadow .2s}
+  .role-card:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(60,64,96,.08)}
+  .permission-pill{display:inline-flex;align-items:center;gap:5px;padding:5px 8px;background:#F4F5F9;border-radius:7px;color:#6B7180;font-size:10.5px;font-weight:700}
+  .parent-picker{position:relative}
+  .parent-picker-trigger{display:flex;align-items:center;gap:9px;text-align:left;padding-right:38px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+  .parent-picker.open .parent-picker-trigger{border-color:#8589E9;box-shadow:0 0 0 3px rgba(90,95,224,.09)}
+  .parent-picker-summary{min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden}
+  .parent-picker-summary-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .parent-picker-summary.is-empty .parent-picker-summary-text{color:#8A8FA3;font-weight:500}
+  .parent-picker-avatars{display:flex;flex-shrink:0;padding-left:5px}
+  .parent-picker-avatar{width:25px;height:25px;margin-left:-5px;border:2px solid #fff;border-radius:8px;background:linear-gradient(135deg,#5A5FE0,#8A78EF);color:#fff;display:flex;align-items:center;justify-content:center;font-size:7.5px;font-weight:800}
+  .parent-picker-menu{position:absolute;z-index:45;top:calc(100% + 7px);left:0;width:100%;min-width:280px;padding:8px;background:#fff;border:1px solid #E3E5EE;border-radius:13px;box-shadow:0 18px 42px rgba(42,46,74,.18)}
+  .parent-picker-menu.open-up{top:auto;bottom:calc(100% + 7px)}
+  .parent-picker-menu[hidden]{display:none}
+  .parent-picker-search{height:38px;padding-left:12px;background:#F7F8FB}
+  .parent-picker-options{max-height:196px;overflow:auto;margin-top:6px}
+  .parent-picker-option{min-height:48px;padding:7px 8px;border-radius:9px;display:flex;align-items:center;gap:9px;cursor:pointer;transition:background .16s}
+  .parent-picker-option:hover{background:#F5F6FB}
+  .parent-picker-option input{width:16px;height:16px;accent-color:#5A5FE0;flex-shrink:0}
+  .parent-picker-option-avatar{width:31px;height:31px;border-radius:9px;background:#EEF0FF;color:#5A5FE0;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0}
+  .parent-picker-option-copy{min-width:0;flex:1}
+  .parent-picker-option-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#353A4B;font-size:12px;font-weight:700}
+  .parent-picker-option-login{display:block;margin-top:2px;color:#A2A7B5;font-size:10.5px}
+  .parent-picker-empty{padding:20px 12px;text-align:center;color:#A2A7B5;font-size:11.5px;line-height:1.5}
+  .parent-picker-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;padding:8px 7px 1px;border-top:1px solid #F0F1F5;color:#8A8FA3;font-size:10.5px;font-weight:600}
+  .parent-picker-clear{border:0;background:transparent;color:#5A5FE0;font-size:10.5px;font-weight:700}
+  .hierarchy-overview{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:18px}
+  .hierarchy-overview-item{display:inline-flex;align-items:center;gap:7px;min-height:32px;padding:0 10px;border:1px solid #E8EAF2;background:#FAFAFD;border-radius:9px;color:#767C8E;font-size:10.5px;font-weight:700}
+  .hierarchy-overview-item strong{color:#292D3B;font-family:'Space Grotesk';font-size:12px}
+  .hierarchy-canvas{margin-top:18px;padding:22px;border:1px solid #ECEEF5;background:linear-gradient(180deg,#FAFBFF 0%,#F7F8FC 100%);border-radius:16px;overflow:auto}
+  .hierarchy-map{min-width:620px;max-width:1120px;margin:0 auto}
+  .hierarchy-level-block{position:relative}
+  .hierarchy-level-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .hierarchy-level-name{display:flex;align-items:center;gap:8px;color:#767C8E;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.55px}
+  .hierarchy-level-number{width:24px;height:24px;border-radius:8px;background:#E9EBFF;color:#5A5FE0;display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk';font-size:11px}
+  .hierarchy-level-count{color:#A2A7B5;font-size:10.5px;font-weight:600}
+  .hierarchy-level-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,300px));justify-content:center;gap:14px}
+  .hierarchy-connector{height:32px;display:flex;justify-content:center}
+  .hierarchy-connector::before{content:"";width:2px;height:100%;background:#DDE0EC;border-radius:2px}
+  .hierarchy-card{width:100%;min-width:0;border:1px solid #E0E3ED;background:#fff;border-radius:14px;padding:14px;text-align:left;color:inherit;box-shadow:0 7px 18px rgba(54,58,88,.055);transition:transform .18s,box-shadow .18s,border-color .18s}
+  button.hierarchy-card:hover{transform:translateY(-2px);border-color:#C9CDED;box-shadow:0 12px 25px rgba(54,58,88,.10)}
+  button.hierarchy-card:focus-visible{outline:0;border-color:#8589E9;box-shadow:0 0 0 3px rgba(90,95,224,.10)}
+  .hierarchy-card-main{display:flex;align-items:center;gap:11px}
+  .hierarchy-card-avatar{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,#5A5FE0,#8576EB);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0}
+  .hierarchy-card-copy{min-width:0;flex:1}
+  .hierarchy-card-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#292D3B;font-size:12.5px;font-weight:800}
+  .hierarchy-card-login{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#A2A7B5;font-size:10.5px;margin-top:2px}
+  .hierarchy-status{width:8px;height:8px;border-radius:50%;background:#16B57F;box-shadow:0 0 0 4px #E4F7F0;flex-shrink:0}
+  .hierarchy-status.blocked{background:#EF6472;box-shadow:0 0 0 4px #FDECEF}
+  .hierarchy-card-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:11px}
+  .hierarchy-tag{display:inline-flex;align-items:center;max-width:100%;min-height:25px;padding:0 8px;border-radius:7px;background:#F2F3F8;color:#656B7D;font-size:9.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hierarchy-tag.role{background:#EEF0FF;color:#5A5FE0}
+  .hierarchy-card-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding-top:11px;border-top:1px solid #F0F1F5}
+  .hierarchy-parent-list{min-width:0;display:flex;align-items:center;gap:7px;color:#858A9B;font-size:9.5px;font-weight:600}
+  .hierarchy-parent-names{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hierarchy-report-count{flex-shrink:0;color:#8A8FA3;font-size:9.5px;font-weight:700}
+  .hierarchy-warning{padding:14px;border:1px solid #F4D9A9;background:#FFF8EA;border-radius:11px;color:#A87520;font-size:11px;line-height:1.5}
+  .org-tree{display:flex;justify-content:center;min-width:max-content;padding:8px 14px}
+  .org-tree ul{display:flex;justify-content:center;list-style:none;margin:0;padding:26px 0 0;position:relative}
+  .org-tree ul.org-root{padding-top:0;gap:44px}
+  .org-tree li{display:flex;flex-direction:column;align-items:center;position:relative;padding:26px 9px 0}
+  .org-tree li::before,.org-tree li::after{content:"";position:absolute;top:0;right:50%;width:50%;height:26px;border-top:2px solid #D6DAEA}
+  .org-tree li::after{right:auto;left:50%;border-left:2px solid #D6DAEA}
+  .org-tree li:only-child::before,.org-tree li:only-child::after{display:none}
+  .org-tree li:only-child{padding-top:0}
+  .org-tree li:first-child::before,.org-tree li:last-child::after{border:0 none}
+  .org-tree li:last-child::before{border-right:2px solid #D6DAEA;border-radius:0 10px 0 0}
+  .org-tree li:first-child::after{border-radius:10px 0 0 0}
+  .org-tree ul:not(.org-root)::before{content:"";position:absolute;top:0;left:50%;transform:translateX(-1px);width:2px;height:26px;background:#D6DAEA}
+  .org-tree ul.org-root>li{padding-top:0}
+  .org-tree ul.org-root>li::before,.org-tree ul.org-root>li::after{display:none}
+  .org-node{width:216px;border:1px solid #E0E3ED;background:#fff;border-radius:14px;padding:13px;text-align:left;color:inherit;font-family:inherit;box-shadow:0 7px 18px rgba(54,58,88,.06);transition:transform .18s,box-shadow .18s,border-color .18s;display:block;position:relative}
+  .org-node.is-lead{border-color:#C9CDED;box-shadow:0 10px 26px rgba(90,95,224,.13)}
+  button.org-node{cursor:pointer}
+  button.org-node:hover{transform:translateY(-2px);border-color:#B9BEE9;box-shadow:0 13px 28px rgba(54,58,88,.12)}
+  button.org-node:focus-visible{outline:0;border-color:#8589E9;box-shadow:0 0 0 3px rgba(90,95,224,.12)}
+  .org-node-top{display:flex;align-items:center;gap:10px}
+  .org-avatar{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#5A5FE0,#8576EB);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0;font-family:'Space Grotesk'}
+  .org-node.is-lead .org-avatar{background:linear-gradient(135deg,#3A3FBF,#6D5FF5)}
+  .org-copy{min-width:0;flex:1}
+  .org-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#292D3B;font-size:12.5px;font-weight:800}
+  .org-login{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#A2A7B5;font-size:10.5px;margin-top:2px}
+  .org-tags{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:10px}
+  .org-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #F0F1F5;color:#8A8FA3;font-size:9.5px;font-weight:700}
+  .org-extra{color:#5A5FE0;background:#EEF0FF;border-radius:6px;padding:2px 7px;white-space:nowrap}
+  .org-toggle{margin-top:9px;min-width:26px;height:26px;padding:0 9px;border:1px solid #D6DAEA;background:#fff;border-radius:20px;color:#5A5FE0;font:800 11px 'Space Grotesk','Manrope',sans-serif;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:4px;box-shadow:0 3px 8px rgba(54,58,88,.07);transition:border-color .15s,box-shadow .15s;position:relative;z-index:1}
+  .org-toggle:hover{border-color:#8589E9;box-shadow:0 5px 12px rgba(90,95,224,.16)}
+  .org-collapsed>ul{display:none}
+  .modal-backdrop{position:fixed;inset:0;z-index:30;background:rgba(26,29,43,.42);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:24px}
+  .modal-backdrop.open{display:flex}
+  .modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:20px;box-shadow:0 28px 70px rgba(21,23,38,.24)}
+  .field-label{display:block;color:#6B7180;font-size:11.5px;font-weight:700;margin-bottom:7px}
+  .form-input{width:100%;height:44px;border:1px solid #E1E4ED;border-radius:11px;padding:0 13px;outline:none;color:#2D3140;background:#fff;font-size:13px}
+  .form-input:focus{border-color:#8589E9;box-shadow:0 0 0 3px rgba(90,95,224,.09)}
+  .toast{position:fixed;right:26px;bottom:26px;z-index:50;display:none;align-items:center;gap:10px;background:#171A26;color:#fff;border-radius:12px;padding:13px 16px;box-shadow:0 14px 34px rgba(20,22,35,.24);font-size:12.5px;font-weight:700}
+  .toast.show{display:flex}
+  @media(max-width:1100px){
+    .team-sidebar{width:224px!important}
+    .team-main{padding:24px!important}
+    .role-grid{grid-template-columns:repeat(2,1fr)!important}
+  }
+  @media(max-width:800px){
+    .team-sidebar{display:none!important}
+    .team-header{flex-direction:column;align-items:stretch!important}
+    .team-header-actions{width:100%}
+    .team-search{flex:1;width:auto!important}
+    .stat-grid{grid-template-columns:1fr!important}
+    .role-grid,.hierarchy-grid{grid-template-columns:1fr!important}
+    .form-grid{grid-template-columns:1fr!important}
+    .parent-picker-menu{min-width:100%}
+    .hierarchy-canvas{padding:16px}
+  }
+  @media(max-width:540px){
+    .team-main{padding:18px!important}
+    .team-header-actions{flex-direction:column;align-items:stretch!important}
+    .team-search{width:100%!important}
+    .team-header-actions button{justify-content:center}
+    .modal-backdrop{padding:12px}
+  }
+</style>
+</head>
+<body>
+<div style="display:flex;min-height:100vh;background:#EEF0F6">
+
+  <!-- SIDEBAR -->
+  <aside class="team-sidebar" style="width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #ECEEF3;display:flex;flex-direction:column;position:sticky;top:0;height:100vh">
+    <div style="padding:26px 24px 22px;display:flex;align-items:center;gap:11px">
+      <div style="width:36px;height:36px;border-radius:10px;background:#5A5FE0;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(90,95,224,.35)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M12 12v10M12 12 3 7M12 12l9-5" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div style="font-family:'Space Grotesk';font-weight:700;font-size:16px;letter-spacing:-.3px">Celestial</div>
+        <div style="font-size:10px;color:#A2A7B5;font-weight:600;letter-spacing:1px;text-transform:uppercase">Traffic CRM</div>
+      </div>
+    </div>
+
+    <nav style="flex:1;padding:6px 14px;overflow-y:auto">
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#B4B8C6;padding:10px 12px 8px">Основное</div>
+      <a href="Dashboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="#A2A7B5" stroke-width="2"/></svg>Dashboard</a>
+      <a href="Mediaboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#A2A7B5" stroke-width="2"/><path d="M3 9h18M8 4v16" stroke="#A2A7B5" stroke-width="2"/></svg>Медиаборд</a>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3 2 8l10 5 10-5-10-5Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M2 16l10 5 10-5M2 12l10 5 10-5" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/></svg>Meta Ads</div>
+      <a href="Finance.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2.5" stroke="#A2A7B5" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#A2A7B5" stroke-width="2"/><path d="M6 9v6M18 9v6" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>Финансы</a>
+      <a href="Partners.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h10" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>Партнёрки</a>
+      <a href="Offers.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20.6 8.5 12 4 3.4 8.5 12 13l8.6-4.5Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M3.4 15.5 12 20l8.6-4.5" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/></svg>Оффера</a>
+
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#B4B8C6;padding:16px 12px 8px">Рабочее</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;background:#5A5FE0;color:#fff;font-weight:600;font-size:14px;box-shadow:0 8px 18px rgba(90,95,224,.28)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#fff" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>Команда</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#A2A7B5" stroke-width="2"/></svg>Workspace</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" stroke="#A2A7B5" stroke-width="2"/></svg>Утилиты</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#A2A7B5" stroke-width="2"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 3h-4l-.4 2.2a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 21h4l.4-2.2a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" stroke="#A2A7B5" stroke-width="1.6" stroke-linejoin="round"/></svg>Настройки</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M5 4h11l3 3v13H5V4Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M8 10h8M8 14h8M8 18h5" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>Логи</div>
+    </nav>
+
+    <div style="margin:14px;padding:16px;border-radius:16px;background:linear-gradient(150deg,#6D5FF5,#5A5FE0 55%,#4B7BF0)">
+      <div style="color:#fff;font-weight:700;font-size:13px">Доступы команды</div>
+      <div style="color:rgba(255,255,255,.8);font-size:11.5px;margin-top:4px;line-height:1.5">Все изменения ролей фиксируются в логах</div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:7px"><span style="width:7px;height:7px;border-radius:50%;background:#7BEBB8;box-shadow:0 0 0 3px rgba(123,235,184,.3)"></span><span id="teamSidebarTotal" style="color:#fff;font-size:12px;font-weight:600">24 пользователя</span></div>
+    </div>
+    <div style="padding:12px 16px 18px;border-top:1px solid #ECEEF3;display:flex;align-items:center;gap:11px">
+      <div id="teamCurrentAvatar" style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#5A5FE0,#8E8BF0);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">ЕВ</div>
+      <div style="flex:1"><div id="teamCurrentName" style="font-weight:700;font-size:13.5px">Evano</div><div id="teamCurrentRole" style="font-size:11.5px;color:#A2A7B5">Team Lead</div></div>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="team-main" style="flex:1;min-width:0;padding:26px 34px 40px">
+    <div class="team-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:24px">
+      <div>
+        <div style="font-size:13px;color:#A2A7B5;font-weight:600">Управление доступом</div>
+        <h1 class="team-heading" style="font-size:27px;font-weight:700;letter-spacing:-.6px;margin-top:5px">Команда</h1>
+      </div>
+      <div class="team-header-actions" style="display:flex;align-items:center;gap:10px">
+        <label class="team-search" style="display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #ECEEF3;border-radius:12px;padding:0 14px;height:44px;width:250px">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="#A2A7B5" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
+          <input id="teamSearch" type="search" placeholder="Поиск пользователя..." style="border:0;outline:0;background:transparent;width:100%;min-width:0;color:#383D4D;font-size:13px">
+        </label>
+        <button id="openUserModal" type="button" style="height:44px;border:0;border-radius:12px;background:#5A5FE0;color:#fff;padding:0 17px;display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;box-shadow:0 8px 18px rgba(90,95,224,.28)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
+          Создать пользователя
+        </button>
+      </div>
+    </div>
+
+    <div class="stat-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:22px">
+      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:20px;display:flex;align-items:center;gap:15px">
+        <div style="width:46px;height:46px;border-radius:13px;background:#EEF0FF;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#5A5FE0" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#5A5FE0" stroke-width="2" stroke-linecap="round"/></svg></div>
+        <div><div id="teamTotal" class="team-heading" style="font-size:26px;font-weight:700">24</div><div style="font-size:12.5px;color:#6B7180;font-weight:600">Всего пользователей</div></div>
+      </div>
+      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:20px;display:flex;align-items:center;gap:15px">
+        <div style="width:46px;height:46px;border-radius:13px;background:#E4F7F0;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M20 6 9 17l-5-5" stroke="#16B57F" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div><div id="teamActive" class="team-heading" style="font-size:26px;font-weight:700">21</div><div style="font-size:12.5px;color:#6B7180;font-weight:600">Активны</div></div>
+      </div>
+      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:20px;display:flex;align-items:center;gap:15px">
+        <div style="width:46px;height:46px;border-radius:13px;background:#FFF2E0;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 3 4 7v5c0 4.8 3.3 7.7 8 9 4.7-1.3 8-4.2 8-9V7l-8-4Z" stroke="#E8912B" stroke-width="2" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" stroke="#E8912B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div><div id="teamRoles" class="team-heading" style="font-size:26px;font-weight:700">6</div><div style="font-size:12.5px;color:#6B7180;font-weight:600">Ролей доступа</div></div>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:6px;display:flex;align-items:center;gap:4px;margin-bottom:16px;overflow-x:auto">
+      <button class="team-tab active" type="button" data-team-tab="users">Пользователи <span id="teamUsersTabCount" style="margin-left:5px;color:#A2A7B5">24</span></button>
+      <button class="team-tab" type="button" data-team-tab="roles">Роли и права <span id="teamRolesTabCount" style="margin-left:5px;color:#A2A7B5">6</span></button>
+      <button class="team-tab" type="button" data-team-tab="hierarchy">Иерархия команды</button>
+    </div>
+
+    <!-- USERS -->
+    <section class="team-panel active" data-team-panel="users">
+      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:14px 18px;margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <select id="teamRoleFilter" class="team-control team-select" aria-label="Фильтр по роли" style="min-width:170px"><option value="">Все роли</option><option>Administrator</option><option>Team Lead</option><option>Buyer</option><option>Finance</option><option>Support</option></select>
+        <select id="teamStatusFilter" class="team-control team-select" aria-label="Фильтр по статусу" style="min-width:170px"><option value="">Все статусы</option><option value="active">Активен</option><option value="blocked">Заблокирован</option></select>
+        <button id="resetTeamFilters" type="button" style="height:42px;border:0;background:transparent;padding:0 10px;color:#8A8FA3;font-size:12.5px;font-weight:700">Сбросить</button>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:7px;color:#8A8FA3;font-size:11.5px;font-weight:600"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 3 4 7v5c0 4.8 3.3 7.7 8 9 4.7-1.3 8-4.2 8-9V7l-8-4Z" stroke="#A2A7B5" stroke-width="2"/></svg>Доступ учитывает структуру подчинённости</span>
+      </div>
+
+      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:18px;overflow:hidden">
+        <div style="padding:20px 24px 16px"><h3 class="team-heading" style="font-size:18px;font-weight:700">Список пользователей</h3><div style="font-size:11.5px;color:#A2A7B5;font-weight:600;margin-top:4px">Роли, статусы и группы доступа Keitaro</div></div>
+        <div style="overflow-x:auto">
+          <table style="border-collapse:collapse;width:100%;min-width:1120px">
+            <thead><tr style="border-top:1px solid #F0F1F6;border-bottom:1px solid #F0F1F6">
+              <th style="text-align:left;padding:12px 24px;font-size:11px;color:#A2A7B5;text-transform:uppercase;letter-spacing:.6px">Пользователь</th>
+              <th style="text-align:left;padding:12px 18px;font-size:11px;color:#A2A7B5;text-transform:uppercase;letter-spacing:.6px">Роль</th>
+              <th style="text-align:left;padding:12px 18px;font-size:11px;color:#A2A7B5;text-transform:uppercase;letter-spacing:.6px">Родитель</th>
+              <th style="text-align:left;padding:12px 18px;font-size:11px;color:#A2A7B5;text-transform:uppercase;letter-spacing:.6px">Группы Keitaro</th>
+              <th style="text-align:left;padding:12px 18px;font-size:11px;color:#A2A7B5;text-transform:uppercase;letter-spacing:.6px">Статус</th>
+              <th style="width:68px"></th>
+            </tr></thead>
+            <tbody id="teamTableBody">
+              <tr class="user-row" data-user-row data-role="Administrator" data-status="active" style="border-bottom:1px solid #F5F6FA">
+                <td style="padding:14px 24px"><div style="display:flex;align-items:center;gap:12px"><span class="avatar" style="background:linear-gradient(135deg,#5A5FE0,#8A78EF)">ЕВ</span><div><div style="font-size:13.5px;font-weight:700">Евгений Волков</div><div style="font-size:11px;color:#A2A7B5;margin-top:3px">@evano</div></div></div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;color:#5A5FE0;background:#EEF0FF;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700">Administrator</span></td>
+                <td style="padding:14px 18px"><span style="color:#A2A7B5;font-size:12.5px">—</span></td>
+                <td style="padding:14px 18px"><div style="font-size:12px;font-weight:700">All companies</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:3px">Все группы офферов</div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;align-items:center;gap:6px;color:#16B57F;background:#E4F7F0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:#16B57F"></span>Активен</span></td>
+                <td style="padding:14px 18px"><details class="row-actions" style="position:relative"><summary style="width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="12" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="19" cy="12" r="1.6" fill="#A2A7B5"/></svg></summary><div class="row-menu"><button type="button">Редактировать</button><button type="button">Сбросить пароль</button><button type="button">Заблокировать</button></div></details></td>
+              </tr>
+              <tr class="user-row" data-user-row data-role="Team Lead" data-status="active" style="border-bottom:1px solid #F5F6FA">
+                <td style="padding:14px 24px"><div style="display:flex;align-items:center;gap:12px"><span class="avatar" style="background:#16B57F">АК</span><div><div style="font-size:13.5px;font-weight:700">Анна Ковалёва</div><div style="font-size:11px;color:#A2A7B5;margin-top:3px">@anna.tl</div></div></div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;color:#227B62;background:#E4F7F0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700">Team Lead</span></td>
+                <td style="padding:14px 18px"><div style="display:flex;align-items:center"><span class="mini-avatar" style="background:#5A5FE0">ЕВ</span><span style="font-size:11.5px;font-weight:600;margin-left:7px">Евгений</span></div></td>
+                <td style="padding:14px 18px"><div style="font-size:12px;font-weight:700">Media Buyers EU</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:3px">Health · Nutra</div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;align-items:center;gap:6px;color:#16B57F;background:#E4F7F0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:#16B57F"></span>Активен</span></td>
+                <td style="padding:14px 18px"><details class="row-actions" style="position:relative"><summary style="width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="12" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="19" cy="12" r="1.6" fill="#A2A7B5"/></svg></summary><div class="row-menu"><button type="button">Редактировать</button><button type="button">Сбросить пароль</button><button type="button">Заблокировать</button></div></details></td>
+              </tr>
+              <tr class="user-row" data-user-row data-role="Buyer" data-status="active" style="border-bottom:1px solid #F5F6FA">
+                <td style="padding:14px 24px"><div style="display:flex;align-items:center;gap:12px"><span class="avatar" style="background:#E8912B">МЛ</span><div><div style="font-size:13.5px;font-weight:700">Максим Левин</div><div style="font-size:11px;color:#A2A7B5;margin-top:3px">@max.buy</div></div></div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;color:#B16B13;background:#FFF2E0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700">Buyer</span></td>
+                <td style="padding:14px 18px"><div style="display:flex;align-items:center"><span class="mini-avatar" style="background:#16B57F">АК</span><span style="font-size:11.5px;font-weight:600;margin-left:7px">Анна</span></div></td>
+                <td style="padding:14px 18px"><div style="font-size:12px;font-weight:700">Media Buyers EU</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:3px">Health</div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;align-items:center;gap:6px;color:#16B57F;background:#E4F7F0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:#16B57F"></span>Активен</span></td>
+                <td style="padding:14px 18px"><details class="row-actions" style="position:relative"><summary style="width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="12" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="19" cy="12" r="1.6" fill="#A2A7B5"/></svg></summary><div class="row-menu"><button type="button">Редактировать</button><button type="button">Сбросить пароль</button><button type="button">Заблокировать</button></div></details></td>
+              </tr>
+              <tr class="user-row" data-user-row data-role="Buyer" data-status="active" style="border-bottom:1px solid #F5F6FA">
+                <td style="padding:14px 24px"><div style="display:flex;align-items:center;gap:12px"><span class="avatar" style="background:#F1556C">ОК</span><div><div style="font-size:13.5px;font-weight:700">Ольга Ким</div><div style="font-size:11px;color:#A2A7B5;margin-top:3px">@olga.media</div></div></div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;color:#B16B13;background:#FFF2E0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700">Buyer</span></td>
+                <td style="padding:14px 18px"><div style="display:flex;align-items:center"><span class="mini-avatar" style="background:#16B57F">АК</span><span class="mini-avatar" style="background:#6D5FF5">ДС</span><span style="font-size:11.5px;font-weight:600;margin-left:7px">2</span></div></td>
+                <td style="padding:14px 18px"><div style="font-size:12px;font-weight:700">Media Buyers EU</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:3px">Nutra</div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;align-items:center;gap:6px;color:#16B57F;background:#E4F7F0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:#16B57F"></span>Активен</span></td>
+                <td style="padding:14px 18px"><details class="row-actions" style="position:relative"><summary style="width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="12" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="19" cy="12" r="1.6" fill="#A2A7B5"/></svg></summary><div class="row-menu"><button type="button">Редактировать</button><button type="button">Сбросить пароль</button><button type="button">Заблокировать</button></div></details></td>
+              </tr>
+              <tr class="user-row" data-user-row data-role="Finance" data-status="active" style="border-bottom:1px solid #F5F6FA">
+                <td style="padding:14px 24px"><div style="display:flex;align-items:center;gap:12px"><span class="avatar" style="background:#3D8DE8">ДС</span><div><div style="font-size:13.5px;font-weight:700">Денис Соколов</div><div style="font-size:11px;color:#A2A7B5;margin-top:3px">@den.finance</div></div></div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;color:#3377BF;background:#E8F3FF;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700">Finance</span></td>
+                <td style="padding:14px 18px"><div style="display:flex;align-items:center"><span class="mini-avatar" style="background:#5A5FE0">ЕВ</span><span style="font-size:11.5px;font-weight:600;margin-left:7px">Евгений</span></div></td>
+                <td style="padding:14px 18px"><div style="font-size:12px;font-weight:700">All companies</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:3px">Без офферов</div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;align-items:center;gap:6px;color:#16B57F;background:#E4F7F0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:#16B57F"></span>Активен</span></td>
+                <td style="padding:14px 18px"><details class="row-actions" style="position:relative"><summary style="width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="12" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="19" cy="12" r="1.6" fill="#A2A7B5"/></svg></summary><div class="row-menu"><button type="button">Редактировать</button><button type="button">Сбросить пароль</button><button type="button">Заблокировать</button></div></details></td>
+              </tr>
+              <tr class="user-row" data-user-row data-role="Buyer" data-status="blocked">
+                <td style="padding:14px 24px"><div style="display:flex;align-items:center;gap:12px"><span class="avatar" style="background:#A2A7B5">ИП</span><div><div style="font-size:13.5px;font-weight:700">Илья Петров</div><div style="font-size:11px;color:#A2A7B5;margin-top:3px">@ilya.buy</div></div></div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;color:#B16B13;background:#FFF2E0;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700">Buyer</span></td>
+                <td style="padding:14px 18px"><div style="display:flex;align-items:center"><span class="mini-avatar" style="background:#16B57F">АК</span><span style="font-size:11.5px;font-weight:600;margin-left:7px">Анна</span></div></td>
+                <td style="padding:14px 18px"><div style="font-size:12px;font-weight:700">Media Buyers EU</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:3px">Health</div></td>
+                <td style="padding:14px 18px"><span style="display:inline-flex;align-items:center;gap:6px;color:#F1556C;background:#FDECEF;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:#F1556C"></span>Заблокирован</span></td>
+                <td style="padding:14px 18px"><details class="row-actions" style="position:relative"><summary style="width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="12" cy="12" r="1.6" fill="#A2A7B5"/><circle cx="19" cy="12" r="1.6" fill="#A2A7B5"/></svg></summary><div class="row-menu"><button type="button">Редактировать</button><button type="button">Сбросить пароль</button><button type="button">Разблокировать</button></div></details></td>
+              </tr>
+              <tr id="usersEmptyState" style="display:none"><td colspan="6" style="padding:44px;text-align:center"><div style="font-size:14px;font-weight:700">Пользователи не найдены</div><div style="font-size:12px;color:#A2A7B5;margin-top:4px">Измените поиск или фильтры</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 24px;border-top:1px solid #F0F1F6"><span id="usersResultCount" style="font-size:12px;color:#8A8FA3;font-weight:600">Показано 6 из 24</span><div id="teamPagination" style="display:flex;gap:8px"><span style="width:34px;height:34px;border-radius:9px;background:#5A5FE0;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">1</span><span style="width:34px;height:34px;border:1px solid #ECEEF3;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6B7180">2</span><span style="width:34px;height:34px;border:1px solid #ECEEF3;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6B7180">3</span><span style="width:34px;height:34px;border:1px solid #ECEEF3;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6B7180">4</span></div></div>
+      </div>
+    </section>
+
+    <!-- ROLES -->
+    <section class="team-panel" data-team-panel="roles">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:2px 0 16px;gap:16px"><div><h3 class="team-heading" style="font-size:18px;font-weight:700">Роли и права доступа</h3><div style="font-size:11.5px;color:#A2A7B5;margin-top:4px">Настройте доступ к разделам и функциям CRM</div></div><button id="openRoleModal" type="button" style="height:40px;border:0;border-radius:10px;background:#5A5FE0;color:#fff;padding:0 15px;font-size:12px;font-weight:700">+ Создать роль</button></div>
+      <div id="rolesGrid" class="role-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+        <article class="role-card"><div style="display:flex;align-items:center;justify-content:space-between"><div style="width:42px;height:42px;border-radius:12px;background:#EEF0FF;display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3 4 7v5c0 4.8 3.3 7.7 8 9 4.7-1.3 8-4.2 8-9V7l-8-4Z" stroke="#5A5FE0" stroke-width="2"/></svg></div><span style="font-size:11px;color:#A2A7B5;font-weight:700">2 пользователя</span></div><h4 class="team-heading" style="font-size:16px;margin-top:15px">Administrator</h4><p style="font-size:11.5px;color:#8A8FA3;line-height:1.55;margin-top:5px">Полный доступ ко всем разделам, настройкам и журналам.</p><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px"><span class="permission-pill">Dashboard</span><span class="permission-pill">Финансы</span><span class="permission-pill">Команда</span><span class="permission-pill">+8</span></div><div style="display:flex;gap:8px;margin-top:18px"><button type="button" style="flex:1;height:36px;border:1px solid #E5E7EF;background:#fff;border-radius:9px;color:#5A5FE0;font-size:11.5px;font-weight:700">Редактировать</button><button type="button" style="width:38px;height:36px;border:1px solid #E5E7EF;background:#fff;border-radius:9px;color:#8A8FA3" title="Копировать роль"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="2"/></svg></button></div></article>
+        <article class="role-card"><div style="display:flex;align-items:center;justify-content:space-between"><div style="width:42px;height:42px;border-radius:12px;background:#E4F7F0;display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="3" stroke="#16B57F" stroke-width="2"/><circle cx="17" cy="8" r="3" stroke="#16B57F" stroke-width="2"/><path d="M2 20a6 6 0 0 1 12 0M11 20a6 6 0 0 1 12 0" stroke="#16B57F" stroke-width="2"/></svg></div><span style="font-size:11px;color:#A2A7B5;font-weight:700">4 пользователя</span></div><h4 class="team-heading" style="font-size:16px;margin-top:15px">Team Lead</h4><p style="font-size:11.5px;color:#8A8FA3;line-height:1.55;margin-top:5px">Просмотр команды, статистики и финансов подчинённых.</p><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px"><span class="permission-pill">Dashboard</span><span class="permission-pill">Медиаборд</span><span class="permission-pill">Команда</span><span class="permission-pill">+4</span></div><div style="display:flex;gap:8px;margin-top:18px"><button type="button" style="flex:1;height:36px;border:1px solid #E5E7EF;background:#fff;border-radius:9px;color:#5A5FE0;font-size:11.5px;font-weight:700">Редактировать</button><button type="button" style="width:38px;height:36px;border:1px solid #E5E7EF;background:#fff;border-radius:9px;color:#8A8FA3" title="Копировать роль"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="2"/></svg></button></div></article>
+        <article class="role-card"><div style="display:flex;align-items:center;justify-content:space-between"><div style="width:42px;height:42px;border-radius:12px;background:#FFF2E0;display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 17 15 6l3 3L7 20H4v-3ZM13 8l3 3" stroke="#E8912B" stroke-width="2" stroke-linejoin="round"/></svg></div><span style="font-size:11px;color:#A2A7B5;font-weight:700">14 пользователей</span></div><h4 class="team-heading" style="font-size:16px;margin-top:15px">Buyer</h4><p style="font-size:11.5px;color:#8A8FA3;line-height:1.55;margin-top:5px">Работа со своими офферами, заливами и статистикой.</p><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px"><span class="permission-pill">Dashboard</span><span class="permission-pill">Медиаборд</span><span class="permission-pill">Оффера</span></div><div style="display:flex;gap:8px;margin-top:18px"><button type="button" style="flex:1;height:36px;border:1px solid #E5E7EF;background:#fff;border-radius:9px;color:#5A5FE0;font-size:11.5px;font-weight:700">Редактировать</button><button type="button" style="width:38px;height:36px;border:1px solid #E5E7EF;background:#fff;border-radius:9px;color:#8A8FA3" title="Копировать роль"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="2"/></svg></button></div></article>
+        <article class="role-card"><div style="display:flex;align-items:center;justify-content:space-between"><div style="width:42px;height:42px;border-radius:12px;background:#E8F3FF;display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="2" stroke="#3D8DE8" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#3D8DE8" stroke-width="2"/></svg></div><span style="font-size:11px;color:#A2A7B5;font-weight:700">2 пользователя</span></div><h4 class="team-heading" style="font-size:16px;margin-top:15px">Finance</h4><p style="font-size:11.5px;color:#8A8FA3;line-height:1.55;margin-top:5px">Финансовая отчётность, импорт, экспорт и расчёт выплат.</p><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px"><span class="permission-pill">Финансы</span><span class="permission-pill">Dashboard</span><span class="permission-pill">Экспорт</span></div><div style="display:flex;gap:8px;margin-top:18px"><button type="button" style="flex:1;height:36px;border:1px solid #E5E7EF;background:#fff;border-radius:9px;color:#5A5FE0;font-size:11.5px;font-weight:700">Редактировать</button><button type="button" style="width:38px;height:36px;border:1px solid #E5E7EF;background:#fff;border-radius:9px;color:#8A8FA3" title="Копировать роль"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="2"/></svg></button></div></article>
+      </div>
+    </section>
+
+    <!-- HIERARCHY -->
+    <section class="team-panel" data-team-panel="hierarchy">
+      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:18px;padding:24px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px"><div><h3 class="team-heading" style="font-size:18px;font-weight:700">Структура подчинённости</h3><div style="font-size:11.5px;color:#A2A7B5;margin-top:4px">Уровни доступа и все связи между руководителями и сотрудниками</div></div><span id="hierarchyLevelCount" style="font-size:11px;color:#5A5FE0;background:#EEF0FF;padding:6px 9px;border-radius:8px;font-weight:700">—</span></div>
+        <div id="hierarchyContent">
+          <div style="width:220px;margin:auto;border:1px solid #DDE0EA;border-radius:14px;padding:14px;background:#fff;box-shadow:0 8px 20px rgba(56,60,90,.07);display:flex;align-items:center;gap:11px"><span class="avatar" style="background:#5A5FE0">ЕВ</span><div><div style="font-size:12.5px;font-weight:700">Евгений Волков</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:2px">Administrator</div></div></div>
+          <div class="tree-line"></div><div class="tree-branch"></div>
+          <div class="hierarchy-grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:32px">
+            <div>
+              <div style="width:220px;margin:auto;border:1px solid #DDE0EA;border-radius:14px;padding:14px;background:#fff;display:flex;align-items:center;gap:11px"><span class="avatar" style="background:#16B57F">АК</span><div><div style="font-size:12.5px;font-weight:700">Анна Ковалёва</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:2px">Team Lead · 6 баеров</div></div></div>
+              <div class="tree-line"></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div style="border:1px solid #ECEEF3;border-radius:12px;padding:12px;display:flex;gap:9px;align-items:center"><span class="avatar" style="width:34px;height:34px;background:#E8912B">МЛ</span><div><div style="font-size:11.5px;font-weight:700">Максим</div><div style="font-size:10px;color:#A2A7B5">Buyer</div></div></div><div style="border:1px solid #ECEEF3;border-radius:12px;padding:12px;display:flex;gap:9px;align-items:center"><span class="avatar" style="width:34px;height:34px;background:#F1556C">ОК</span><div><div style="font-size:11.5px;font-weight:700">Ольга</div><div style="font-size:10px;color:#A2A7B5">Buyer</div></div></div></div>
+            </div>
+            <div>
+              <div style="width:220px;margin:auto;border:1px solid #DDE0EA;border-radius:14px;padding:14px;background:#fff;display:flex;align-items:center;gap:11px"><span class="avatar" style="background:#6D5FF5">РС</span><div><div style="font-size:12.5px;font-weight:700">Роман Смирнов</div><div style="font-size:10.5px;color:#A2A7B5;margin-top:2px">Team Lead · 5 баеров</div></div></div>
+              <div class="tree-line"></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div style="border:1px solid #ECEEF3;border-radius:12px;padding:12px;display:flex;gap:9px;align-items:center"><span class="avatar" style="width:34px;height:34px;background:#3D8DE8">ДС</span><div><div style="font-size:11.5px;font-weight:700">Денис</div><div style="font-size:10px;color:#A2A7B5">Buyer</div></div></div><div style="border:1px solid #ECEEF3;border-radius:12px;padding:12px;display:flex;gap:9px;align-items:center"><span class="avatar" style="width:34px;height:34px;background:#2F9C7B">АМ</span><div><div style="font-size:11.5px;font-weight:700">Алексей</div><div style="font-size:10px;color:#A2A7B5">Buyer</div></div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- CREATE USER MODAL -->
+<div id="userModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
+  <div class="modal-card">
+    <div style="padding:22px 24px 18px;border-bottom:1px solid #ECEEF3;display:flex;align-items:flex-start;justify-content:space-between;gap:18px"><div><h2 id="userModalTitle" class="team-heading" style="font-size:20px">Новый пользователь</h2><div id="userModalSubtitle" style="font-size:11.5px;color:#A2A7B5;margin-top:5px">Создайте учётную запись и назначьте доступы</div></div><button id="closeUserModal" type="button" aria-label="Закрыть" style="width:34px;height:34px;border:0;border-radius:9px;background:#F4F5F9;color:#8A8FA3"><svg width="17" height="17" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
+    <form id="createUserForm">
+      <div class="form-grid" style="padding:22px 24px;display:grid;grid-template-columns:1fr 1fr;gap:17px">
+        <label><span class="field-label">Имя пользователя</span><input class="form-input" name="name" required placeholder="Например, Артём Иванов"></label>
+        <label><span class="field-label">Логин</span><input class="form-input" name="login" required placeholder="@username"></label>
+        <label id="userPasswordField"><span class="field-label">Пароль</span><input class="form-input" name="password" type="password" required minlength="8" placeholder="Минимум 8 символов"></label>
+        <label><span class="field-label">Роль</span><select class="form-input" name="role" required><option value="">Выберите роль</option></select></label>
+        <label><span class="field-label">Статус</span><select class="form-input" name="status"><option value="active">Активен</option><option value="blocked">Заблокирован</option></select></label>
+        <div><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span class="field-label">Родительские пользователи</span><span style="color:#A2A7B5;font-size:9.5px;font-weight:600;margin-bottom:7px">можно несколько</span></div><div id="parentPicker" class="parent-picker"><button id="parentPickerTrigger" class="form-input parent-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false"><span id="parentPickerSummary" class="parent-picker-summary is-empty"><span class="parent-picker-summary-text">Не выбраны — верхний уровень</span></span></button><div id="parentPickerMenu" class="parent-picker-menu" role="listbox" aria-multiselectable="true" hidden><input id="parentPickerSearch" class="form-input parent-picker-search" type="search" autocomplete="off" placeholder="Найти пользователя"><div id="parentPickerOptions" class="parent-picker-options"></div><div class="parent-picker-footer"><span id="parentPickerCount">Не выбрано</span><button id="parentPickerClear" class="parent-picker-clear" type="button">Очистить</button></div></div></div></div>
+        <label><span class="field-label">Группа кампаний Keitaro</span><select class="form-input" name="companyGroup"><option value="">Без привязки</option></select></label>
+        <label><span class="field-label">Группа офферов Keitaro</span><select class="form-input" name="offerGroup"><option value="">Без привязки</option></select></label>
+      </div>
+      <div style="padding:16px 24px 22px;border-top:1px solid #ECEEF3;display:flex;justify-content:flex-end;gap:10px"><button id="cancelUserModal" type="button" style="height:42px;border:1px solid #E1E4ED;background:#fff;border-radius:10px;padding:0 16px;color:#6B7180;font-size:12.5px;font-weight:700">Отмена</button><button id="saveUserButton" type="submit" style="height:42px;border:0;background:#5A5FE0;border-radius:10px;padding:0 18px;color:#fff;font-size:12.5px;font-weight:700;box-shadow:0 7px 16px rgba(90,95,224,.23)">Создать пользователя</button></div>
+    </form>
+  </div>
+</div>
+
+<!-- ROLE MODAL -->
+<div id="roleModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="roleModalTitle">
+  <div class="modal-card" style="width:min(680px,100%)">
+    <div style="padding:22px 24px 18px;border-bottom:1px solid #ECEEF3;display:flex;align-items:flex-start;justify-content:space-between;gap:18px"><div><h2 id="roleModalTitle" class="team-heading" style="font-size:20px">Новая роль</h2><div style="font-size:11.5px;color:#A2A7B5;margin-top:5px">Назначьте роль и разрешённые действия</div></div><button id="closeRoleModal" type="button" aria-label="Закрыть" style="width:34px;height:34px;border:0;border-radius:9px;background:#F4F5F9;color:#8A8FA3">×</button></div>
+    <form id="roleForm">
+      <div style="padding:22px 24px;display:grid;gap:17px">
+        <label><span class="field-label">Название роли</span><input class="form-input" name="roleName" required maxlength="80" placeholder="Например, Senior Buyer"></label>
+        <label><span class="field-label">Описание</span><input class="form-input" name="roleDescription" maxlength="255" placeholder="Кратко опишите уровень доступа"></label>
+        <div><span class="field-label">Права доступа</span><div id="rolePermissions" style="display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:9px"></div></div>
+      </div>
+      <div style="padding:16px 24px 22px;border-top:1px solid #ECEEF3;display:flex;justify-content:flex-end;gap:10px"><button id="cancelRoleModal" type="button" style="height:42px;border:1px solid #E1E4ED;background:#fff;border-radius:10px;padding:0 16px;color:#6B7180;font-size:12.5px;font-weight:700">Отмена</button><button id="saveRoleButton" type="submit" style="height:42px;border:0;background:#5A5FE0;border-radius:10px;padding:0 18px;color:#fff;font-size:12.5px;font-weight:700">Сохранить роль</button></div>
+    </form>
+  </div>
+</div>
+<div id="teamToast" class="toast"><span style="width:20px;height:20px;border-radius:50%;background:#16B57F;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Пользователь создан</div>
+
+<script>
+(() => {
+  const byId = (id) => document.getElementById(id);
+  const userRows = () => Array.from(document.querySelectorAll('[data-user-row]'));
+
+  function openModal() {
+    byId('userModal')?.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    window.setTimeout(() => document.querySelector('#createUserForm input')?.focus(), 50);
+  }
+  function closeModal() {
+    byId('userModal')?.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+  function filterUsers() {
+    const query = (byId('teamSearch')?.value || '').trim().toLocaleLowerCase('ru');
+    const role = byId('teamRoleFilter')?.value || '';
+    const status = byId('teamStatusFilter')?.value || '';
+    let visible = 0;
+    userRows().forEach((row) => {
+      const matches = (!query || row.textContent.toLocaleLowerCase('ru').includes(query)) &&
+        (!role || row.dataset.role === role) && (!status || row.dataset.status === status);
+      row.style.display = matches ? '' : 'none';
+      if (matches) visible += 1;
+    });
+    if (byId('usersEmptyState')) byId('usersEmptyState').style.display = visible ? 'none' : '';
+    if (byId('usersResultCount')) byId('usersResultCount').textContent = `Показано ${visible} из ${byId('teamTotal')?.textContent || visible}`;
+  }
+
+  document.addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-team-tab]');
+    if (tab) {
+      const name = tab.dataset.teamTab;
+      document.querySelectorAll('[data-team-tab]').forEach((item) => item.classList.toggle('active', item === tab));
+      document.querySelectorAll('[data-team-panel]').forEach((panel) => panel.classList.toggle('active', panel.dataset.teamPanel === name));
+    }
+    if (event.target.closest('#openUserModal')) openModal();
+    if (event.target.closest('#closeUserModal') || event.target.closest('#cancelUserModal')) closeModal();
+    if (event.target === byId('userModal')) closeModal();
+    if (event.target.closest('#resetTeamFilters')) {
+      ['teamSearch','teamRoleFilter','teamStatusFilter'].forEach((id) => { if (byId(id)) byId(id).value = ''; });
+      filterUsers();
+    }
+  });
+  document.addEventListener('input', (event) => { if (event.target?.id === 'teamSearch') filterUsers(); });
+  document.addEventListener('change', (event) => { if (['teamRoleFilter','teamStatusFilter'].includes(event.target?.id)) filterUsers(); });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeModal(); });
+  document.addEventListener('submit', (event) => {
+    if (event.target?.id !== 'createUserForm') return;
+    event.preventDefault();
+    closeModal();
+    event.target.reset();
+    const toast = byId('teamToast');
+    toast?.classList.add('show');
+    window.setTimeout(() => toast?.classList.remove('show'), 2200);
+  });
+})();
+</script>
+</body>
+</html>

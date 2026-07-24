@@ -1,0 +1,7 @@
+services:
+  api:
+    env_file: .env.staging
+  worker:
+    env_file: .env.staging
+  scheduler:
+    env_file: .env.staging

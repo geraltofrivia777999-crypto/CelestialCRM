@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Manrope',-apple-system,'Helvetica Neue',sans-serif;background:#EEF0F6;color:#171A26;-webkit-font-smoothing:antialiased}
+  a{color:#5A5FE0;text-decoration:none}
+  a:hover{color:#4448c9}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#D6D9E4;border-radius:8px}
+</style>
+</head>
+<body>
+<div style="display:flex;min-height:100vh;background:#EEF0F6">
+
+  <!-- SIDEBAR -->
+  <aside style="width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #ECEEF3;display:flex;flex-direction:column;position:sticky;top:0;height:100vh">
+    <div style="padding:26px 24px 22px;display:flex;align-items:center;gap:11px">
+      <div style="width:36px;height:36px;border-radius:10px;background:#5A5FE0;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(90,95,224,.35)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M12 12v10M12 12 3 7M12 12l9-5" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div style="font-family:'Space Grotesk';font-weight:700;font-size:16px;letter-spacing:-.3px">Celestial</div>
+        <div style="font-size:10px;color:#A2A7B5;font-weight:600;letter-spacing:1px;text-transform:uppercase">Traffic CRM</div>
+      </div>
+    </div>
+
+    <nav style="flex:1;padding:6px 14px;overflow-y:auto">
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#B4B8C6;padding:10px 12px 8px">Основное</div>
+
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;background:#5A5FE0;color:#fff;font-weight:600;font-size:14px;box-shadow:0 8px 18px rgba(90,95,224,.28);margin-bottom:3px">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="#fff" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="#fff" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="#fff" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="#fff" stroke-width="2"/></svg>
+        Dashboard
+      </div>
+
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#A2A7B5" stroke-width="2"/><path d="M3 9h18M8 4v16" stroke="#A2A7B5" stroke-width="2"/></svg>
+        Медиаборд
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3 2 8l10 5 10-5-10-5Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M2 16l10 5 10-5M2 12l10 5 10-5" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/></svg>
+        Meta Ads
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2.5" stroke="#A2A7B5" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#A2A7B5" stroke-width="2"/><path d="M6 9v6M18 9v6" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
+        Финансы
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h10" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
+        Партнёрки
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20.6 8.5 12 4 3.4 8.5 12 13l8.6-4.5Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M3.4 15.5 12 20l8.6-4.5" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/></svg>
+        Оффера
+      </div>
+
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#B4B8C6;padding:16px 12px 8px">Рабочее</div>
+
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#A2A7B5" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
+        Команда
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#A2A7B5" stroke-width="2"/></svg>
+        Workspace
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" stroke="#A2A7B5" stroke-width="2"/></svg>
+        Утилиты
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#A2A7B5" stroke-width="2"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 3h-4l-.4 2.2a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 21h4l.4-2.2a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" stroke="#A2A7B5" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        Настройки
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M5 4h11l3 3v13H5V4Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M8 10h8M8 14h8M8 18h5" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
+        Логи
+      </div>
+    </nav>
+
+    <div style="margin:14px;padding:16px;border-radius:16px;background:linear-gradient(150deg,#6D5FF5,#5A5FE0 55%,#4B7BF0)">
+      <div style="color:#fff;font-weight:700;font-size:13px;line-height:1.4">Синхронизация Keitaro</div>
+      <div style="color:rgba(255,255,255,.8);font-size:11.5px;margin-top:4px;line-height:1.5">Данные обновлены 3 мин назад</div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:7px">
+        <span style="width:7px;height:7px;border-radius:50%;background:#7BEBB8;box-shadow:0 0 0 3px rgba(123,235,184,.3)"></span>
+        <span style="color:#fff;font-size:12px;font-weight:600">API активен</span>
+      </div>
+    </div>
+
+    <div style="padding:12px 16px 18px;border-top:1px solid #ECEEF3;display:flex;align-items:center;gap:11px">
+      <div id="dashboardUserAvatar" style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#5A5FE0,#8E8BF0);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">—</div>
+      <div style="flex:1;min-width:0">
+        <div id="dashboardUserName" style="font-weight:700;font-size:13.5px">—</div>
+        <div id="dashboardUserRole" style="font-size:11.5px;color:#A2A7B5">—</div>
+      </div>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main style="flex:1;min-width:0;padding:26px 34px 40px">
+
+    <!-- TOP BAR -->
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:24px">
+      <div>
+        <div id="dashboardToday" style="font-size:13px;color:#A2A7B5;font-weight:600">&nbsp;</div>
+        <h1 style="font-family:'Space Grotesk','Manrope',sans-serif;font-size:27px;font-weight:700;letter-spacing:-.6px;margin-top:3px">Обзор дашборда</h1>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #ECEEF3;border-radius:12px;padding:0 14px;height:44px;width:220px">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="#A2A7B5" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
+          <span style="color:#A2A7B5;font-size:13.5px">Поиск…</span>
+        </div>
+        <button style="width:44px;height:44px;border:1px solid #ECEEF3;background:#fff;border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6Z" stroke="#6B7180" stroke-width="2" stroke-linejoin="round"/><path d="M10 20a2 2 0 0 0 4 0" stroke="#6B7180" stroke-width="2" stroke-linecap="round"/></svg>
+          <span style="position:absolute;top:10px;right:11px;width:7px;height:7px;background:#F1556C;border-radius:50%;border:2px solid #fff"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- GLOBAL FILTERS (1.1) -->
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:22px">
+      <span style="font-size:12px;font-weight:700;color:#A2A7B5;text-transform:uppercase;letter-spacing:.8px">Фильтры</span>
+      <label style="display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:7px 12px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="#5A5FE0" stroke-width="2"/><path d="M3 9h18M8 3v4M16 3v4" stroke="#5A5FE0" stroke-width="2" stroke-linecap="round"/></svg>
+        <span style="font-size:13px;color:#6B7180;font-weight:500">Период:</span>
+        <select id="dashboardPeriod" style="border:none;background:transparent;font:700 13px Manrope,sans-serif;color:#171A26;outline:none;cursor:pointer">
+          <option value="7">Последние 7 дней</option>
+          <option value="30" selected>Последние 30 дней</option>
+          <option value="90">Последние 90 дней</option>
+          <option value="month">Текущий месяц</option>
+          <option value="all">Всё время</option>
+          <option value="custom">Произвольный</option>
+        </select>
+      </label>
+      <label id="dashboardCustomRange" style="display:none;align-items:center;gap:7px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:7px 12px">
+        <input id="dashboardDateFrom" type="date" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none">
+        <span style="font-size:12.5px;color:#6B7180;font-weight:500">—</span>
+        <input id="dashboardDateTo" type="date" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none">
+      </label>
+      <label style="display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:7px 12px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="#5A5FE0" stroke-width="2"/><path d="M4 21a8 8 0 0 1 16 0" stroke="#5A5FE0" stroke-width="2" stroke-linecap="round"/></svg>
+        <span style="font-size:13px;color:#6B7180;font-weight:500">Пользователь:</span>
+        <select id="dashboardBuyer" style="border:none;background:transparent;font:700 13px Manrope,sans-serif;color:#171A26;outline:none;cursor:pointer;max-width:200px"><option value="">Вся команда</option></select>
+      </label>
+      <div style="flex:1"></div>
+      <button id="dashboardExport" style="display:flex;align-items:center;gap:8px;background:#171A26;color:#fff;border:none;border-radius:11px;padding:10px 18px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 3v12M8 11l4 4 4-4M4 20h16" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Экспорт
+      </button>
+    </div>
+
+    <!-- KPI CARDS (1.2) -->
+    <div style="display:grid;grid-template-columns:1.35fr 1fr 1fr 1fr;gap:18px;margin-bottom:22px">
+
+      <!-- HERO: Доход -->
+      <div style="grid-row:span 2;background:linear-gradient(160deg,#5A5FE0,#4C50CE);border-radius:20px;padding:24px;color:#fff;display:flex;flex-direction:column;box-shadow:0 14px 34px rgba(90,95,224,.32)">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="width:40px;height:40px;border-radius:12px;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2v20M17 6.5C17 4.6 14.8 4 12 4S7 4.9 7 7s2 2.7 5 3.2 5 1.3 5 3.6-2.2 3.2-5 3.2-5-.9-5-2.8" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <span style="font-size:14px;font-weight:600;color:rgba(255,255,255,.9)">Доход</span>
+          </div>
+          <span style="font-size:11px;font-weight:700;background:rgba(255,255,255,.18);padding:5px 9px;border-radius:8px">Revenue</span>
+        </div>
+        <div id="dashboardRevenue" style="font-family:'Space Grotesk';font-size:44px;font-weight:700;letter-spacing:-1.2px;margin-top:20px">—</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+          <span id="dashboardRevenueDelta" style="display:inline-flex;align-items:center;gap:3px;font-size:13px;font-weight:700;background:rgba(255,255,255,.18);color:#fff;padding:4px 9px;border-radius:8px">—</span>
+          <span style="font-size:12.5px;color:rgba(255,255,255,.75)">vs пред. период</span>
+        </div>
+        <div style="flex:1;min-height:20px"></div>
+        <svg id="dashboardHeroSpark" viewBox="0 0 320 90" preserveAspectRatio="none" style="width:100%;height:90px">
+          <defs><linearGradient id="heroFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".38"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
+        </svg>
+      </div>
+
+      <!-- Расход -->
+      <div style="background:#fff;border-radius:18px;padding:19px;border:1px solid #ECEEF3">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:#6B7180;font-weight:600">Расход</span>
+          <span style="font-size:10.5px;font-weight:700;color:#A2A7B5;background:#F4F5F9;padding:3px 7px;border-radius:6px">Spend</span>
+        </div>
+        <div id="dashboardSpend" style="font-family:'Space Grotesk';font-size:26px;font-weight:700;letter-spacing:-.6px;margin-top:12px">—</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+          <span id="dashboardSpendDelta" style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:700;color:#A2A7B5">—</span>
+          <span style="font-size:11.5px;color:#A2A7B5">vs пред. период</span>
+        </div>
+      </div>
+
+      <!-- Профит -->
+      <div style="background:#fff;border-radius:18px;padding:19px;border:1px solid #ECEEF3">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:#6B7180;font-weight:600">Профит</span>
+          <span style="font-size:10.5px;font-weight:700;color:#A2A7B5;background:#F4F5F9;padding:3px 7px;border-radius:6px">Profit</span>
+        </div>
+        <div id="dashboardProfit" style="font-family:'Space Grotesk';font-size:26px;font-weight:700;letter-spacing:-.6px;margin-top:12px;color:#16B57F">—</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+          <span id="dashboardProfitDelta" style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:700;color:#A2A7B5">—</span>
+          <span style="font-size:11.5px;color:#A2A7B5">vs пред. период</span>
+        </div>
+      </div>
+
+      <!-- ROI -->
+      <div style="background:#fff;border-radius:18px;padding:19px;border:1px solid #ECEEF3">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:#6B7180;font-weight:600">ROI</span>
+          <span style="font-size:10.5px;font-weight:700;color:#A2A7B5;background:#F4F5F9;padding:3px 7px;border-radius:6px">%</span>
+        </div>
+        <div id="dashboardRoi" style="font-family:'Space Grotesk';font-size:26px;font-weight:700;letter-spacing:-.6px;margin-top:12px">—</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+          <span id="dashboardRoiDelta" style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:700;color:#A2A7B5">—</span>
+          <span style="font-size:11.5px;color:#A2A7B5">vs пред. период</span>
+        </div>
+      </div>
+
+      <!-- Лиды -->
+      <div style="background:#fff;border-radius:18px;padding:19px;border:1px solid #ECEEF3">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:#6B7180;font-weight:600">Лиды</span>
+          <span style="font-size:10.5px;font-weight:700;color:#A2A7B5;background:#F4F5F9;padding:3px 7px;border-radius:6px">Leads</span>
+        </div>
+        <div id="dashboardLeads" style="font-family:'Space Grotesk';font-size:26px;font-weight:700;letter-spacing:-.6px;margin-top:12px">—</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+          <span id="dashboardLeadsDelta" style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:700;color:#A2A7B5">—</span>
+          <span style="font-size:11.5px;color:#A2A7B5">vs пред. период</span>
+        </div>
+      </div>
+
+      <!-- Продажи -->
+      <div style="background:#fff;border-radius:18px;padding:19px;border:1px solid #ECEEF3">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:#6B7180;font-weight:600">Продажи</span>
+          <span style="font-size:10.5px;font-weight:700;color:#A2A7B5;background:#F4F5F9;padding:3px 7px;border-radius:6px">FTD</span>
+        </div>
+        <div id="dashboardSales" style="font-family:'Space Grotesk';font-size:26px;font-weight:700;letter-spacing:-.6px;margin-top:12px">—</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+          <span id="dashboardSalesDelta" style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:700;color:#A2A7B5">—</span>
+          <span style="font-size:11.5px;color:#A2A7B5">vs пред. период</span>
+        </div>
+      </div>
+
+      <!-- EPL -->
+      <div style="background:#fff;border-radius:18px;padding:19px;border:1px solid #ECEEF3">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:#6B7180;font-weight:600">EPL</span>
+          <span style="font-size:10.5px;font-weight:700;color:#A2A7B5;background:#F4F5F9;padding:3px 7px;border-radius:6px">$/lead</span>
+        </div>
+        <div id="dashboardEpl" style="font-family:'Space Grotesk';font-size:26px;font-weight:700;letter-spacing:-.6px;margin-top:12px">—</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+          <span id="dashboardEplDelta" style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:700;color:#A2A7B5">—</span>
+          <span style="font-size:11.5px;color:#A2A7B5">vs пред. период</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHART + WORKING OFFERS -->
+    <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:18px">
+
+      <!-- Динамика -->
+      <div style="background:#fff;border-radius:20px;padding:24px;border:1px solid #ECEEF3">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px">
+          <div>
+            <h3 style="font-family:'Space Grotesk','Manrope',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Динамика показателей</h3>
+            <div style="display:flex;align-items:center;gap:18px;margin-top:12px">
+              <div style="display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:3px;background:#5A5FE0"></span><span style="font-size:12.5px;color:#6B7180;font-weight:600">Доход</span></div>
+              <div style="display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:3px;background:#F5A524"></span><span style="font-size:12.5px;color:#6B7180;font-weight:600">Расход</span></div>
+              <div style="display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:3px;background:#16B57F"></span><span style="font-size:12.5px;color:#6B7180;font-weight:600">Профит</span></div>
+            </div>
+          </div>
+        </div>
+
+        <svg id="dashboardChartSvg" viewBox="0 0 720 260" style="width:100%;height:260px">
+          <defs>
+            <linearGradient id="incFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5A5FE0" stop-opacity=".16"/><stop offset="1" stop-color="#5A5FE0" stop-opacity="0"/></linearGradient>
+          </defs>
+        </svg>
+        <div id="dashboardChartLabels" style="display:flex;justify-content:space-between;margin-top:8px;padding:0 4px"></div>
+      </div>
+
+      <!-- Рабочие оффера (1.3) -->
+      <div style="background:#fff;border-radius:20px;padding:24px;border:1px solid #ECEEF3;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <h3 style="font-family:'Space Grotesk','Manrope',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Рабочие оффера</h3>
+          <span id="dashboardOffersCount" style="font-size:12px;font-weight:700;color:#5A5FE0;background:#EEF0FF;padding:5px 10px;border-radius:8px">—</span>
+        </div>
+        <div style="font-size:12.5px;color:#A2A7B5;margin-bottom:16px">Активные к выдаче</div>
+
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <div style="display:grid;grid-template-columns:1fr auto auto;gap:12px;padding:0 6px 10px;border-bottom:1px solid #F0F1F6">
+            <span style="font-size:11px;font-weight:700;color:#B4B8C6;text-transform:uppercase;letter-spacing:.6px">Оффер</span>
+            <span style="font-size:11px;font-weight:700;color:#B4B8C6;text-transform:uppercase;letter-spacing:.6px">GEO</span>
+            <span style="font-size:11px;font-weight:700;color:#B4B8C6;text-transform:uppercase;letter-spacing:.6px;width:82px">Партнёрка</span>
+          </div>
+          <div id="dashboardWorkingOffers" style="display:flex;flex-direction:column;overflow-y:auto;max-height:340px"></div>
+        </div>
+
+        <div style="flex:1;min-height:12px"></div>
+        <a href="Offers.dc.html" style="display:block;text-align:center;margin-top:14px;width:100%;background:#F4F5F9;border-radius:12px;padding:13px;font-weight:700;font-size:13px;color:#5A5FE0;cursor:pointer;font-family:inherit">Все оффера →</a>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
