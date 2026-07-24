@@ -38,6 +38,13 @@ def amount_with_commission(amount: Decimal, commission_pct: Decimal) -> Decimal:
     return q(amount * (Decimal("1") + commission_pct / Decimal("100")))
 
 
+def service_cost(
+    quantity: Decimal, install_cost: Decimal, commission_pct: Decimal
+) -> Decimal:
+    """RENT for one service: installs × install cost, plus its commission (ТЗ 2.4.1)."""
+    return amount_with_commission(rent_cost(quantity, install_cost), commission_pct)
+
+
 def finance_import_key(
     record_date: date, buyer_id: UUID, offer_id: UUID, link: str | None
 ) -> str:

@@ -204,6 +204,9 @@ class SyncRun(UUIDMixin, Base):
     rows_processed: Mapped[int] = mapped_column(default=0)
     error: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
 
 
 class KeitaroStatDaily(UUIDMixin, TimestampMixin, Base):
@@ -358,6 +361,9 @@ class MediaRecord(UUIDMixin, TimestampMixin, Base):
     spend_calculated: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
     spend_override: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     source: Mapped[str] = mapped_column(String(30), default="manual")
+    manual_fields: Mapped[list] = mapped_column(
+        JSON, default=list, server_default="[]", nullable=False
+    )
     external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 

@@ -1,7 +1,7 @@
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,6 +21,8 @@ from app.schemas import (
     UserUpdate,
 )
 from app.services.audit import audit
+
+MAX_PAGE_SIZE = 500
 
 router = APIRouter(tags=["team"])
 
@@ -72,7 +74,7 @@ async def list_users(
         .where(*filters)
         .options(selectinload(User.role).selectinload(Role.permissions))
         .order_by(User.name)
-        .limit(min(limit, 100))
+        .limit(min(limit, MAX_PAGE_SIZE))
         .offset(offset)
     )
     users = list((await db.execute(stmt)).scalars().all())
@@ -80,7 +82,7 @@ async def list_users(
     return Page(
         items=[_user_payload(user, parents.get(user.id, [])) for user in users],
         total=total or 0,
-        limit=min(limit, 100),
+        limit=min(limit, MAX_PAGE_SIZE),
         offset=offset,
     )
 
@@ -312,7 +314,7 @@ async def update_role(
     return role
 
 
-@router.delete("/roles/{role_id}", status_code=204)
+@router.delete("/roles/{role_id}", status_code=204, response_class=Response)
 async def delete_role(
     role_id: uuid.UUID,
     request: Request,

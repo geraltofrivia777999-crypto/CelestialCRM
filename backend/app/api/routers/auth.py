@@ -23,13 +23,23 @@ async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    # Logins are unique per workspace, not globally, so more than one row can match.
     stmt = (
         select(User)
         .where(User.login == payload.login.strip().lower())
         .options(selectinload(User.role).selectinload(Role.permissions))
+        .order_by(User.created_at)
     )
-    user = (await db.execute(stmt)).scalar_one_or_none()
-    if not user or not verify_password(payload.password, user.password_hash):
+    candidates = list((await db.execute(stmt)).scalars().all())
+    user = next(
+        (
+            candidate
+            for candidate in candidates
+            if verify_password(payload.password, candidate.password_hash)
+        ),
+        None,
+    )
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid login or password")
     if user.status != Status.active:
         raise HTTPException(status_code=403, detail="User is blocked")
@@ -49,13 +59,15 @@ async def login(
     return user
 
 
-@router.post("/logout", status_code=204)
+@router.post("/logout", status_code=204, response_class=Response)
 async def logout(
     response: Response,
+    request: Request,
     crm_session: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> None:
+    await audit(db, user, "auth.logout", "User signed out", request=request)
     if crm_session:
         await db.execute(delete(Session).where(Session.token_hash == hash_session_token(crm_session)))
     else:

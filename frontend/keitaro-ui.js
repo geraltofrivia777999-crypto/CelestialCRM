@@ -240,10 +240,10 @@
         return permission.code === "*" || permission.code === "team.manage";
       });
     var requests = [
-      api.get("/users?limit=100"),
+      api.getAll("/users"),
       api.get("/roles"),
-      api.get("/campaigns?limit=100").catch(function () { return { items: [] }; }),
-      api.get("/offers?limit=100").catch(function () { return { items: [] }; }),
+      api.getAll("/campaigns").catch(function () { return { items: [] }; }),
+      api.getAll("/offers").catch(function () { return { items: [] }; }),
       canManage
         ? api.get("/permissions").catch(function () { return []; })
         : Promise.resolve([])
@@ -1329,8 +1329,8 @@
 
   async function loadSettings() {
     var results = await Promise.all([
-      api.get("/services?limit=100"),
-      api.get("/spend-providers?limit=100"),
+      api.getAll("/services"),
+      api.getAll("/spend-providers"),
       api.get("/integrations/keitaro/overview")
     ]);
     var services = results[0];
@@ -1516,7 +1516,11 @@
   async function start() {
     try {
       currentSessionUser = await api.get("/auth/me");
-      if (window.CelestialShell) await window.CelestialShell.init(currentSessionUser);
+      if (window.CelestialShell) {
+        var shell = await window.CelestialShell.init(currentSessionUser);
+        // The shell already rendered an access-denied screen; loading would only 403.
+        if (shell && shell.allowed === false) return;
+      }
     } catch (error) {
       fail(error);
       return;

@@ -4,6 +4,7 @@
   var api = window.CelestialAPI;
   var shellState = {
     user: null,
+    allowed: true,
     syncCard: null,
     syncStatus: null,
     syncTimer: null,
@@ -19,6 +20,144 @@
     "Команда": "/Team.dc.html",
     "Настройки": "/Settings.dc.html"
   };
+
+  // Present in the sidebar markup but not implemented yet. Marked as such instead of
+  // silently swallowing the click.
+  var upcoming = {
+    "Meta Ads": "Модуль Meta Ads ещё не реализован",
+    "Workspace": "Модуль Workspace ещё не реализован",
+    "Утилиты": "Модуль «Утилиты» ещё не реализован",
+    "Логи": "Модуль «Логи» ещё не реализован"
+  };
+
+  // The .dc.html files double as design mock-ups, so they ship with demo rows and demo
+  // numbers baked into the markup. Every container below is owned by JS: it is blanked
+  // before the first request so a failed or forbidden load can never leave fake people,
+  // services or KPIs on screen.
+  var pageRules = [
+    {
+      id: "mediaboard",
+      match: "mediaboard",
+      permission: "media.view",
+      title: "Медиаборд",
+      containers: ["mediaTableHead", "mediaTableBody"],
+      values: ["mediaResultCount"]
+    },
+    {
+      id: "finance",
+      match: "finance",
+      permission: "finance.view",
+      title: "Финансы",
+      containers: ["financeTableHead", "financeTableBody"],
+      values: ["financeResultCount", "financeKpiRevenue", "financeKpiCosts",
+        "financeKpiProfit", "financeKpiRoi"]
+    },
+    {
+      id: "partners",
+      match: "partner",
+      permission: "partners.view",
+      title: "Партнёрки",
+      containers: ["partnersTableBody", "partnersPagination"],
+      values: ["partnersTotal", "partnersActive", "partnersOffers", "partnersResultCount"]
+    },
+    {
+      id: "offers",
+      match: "offer",
+      permission: "offers.view",
+      title: "Оффера",
+      containers: ["offersTableBody", "offersPagination"],
+      values: ["offersTotal", "offersActive", "offersGeos", "offersResultCount"]
+    },
+    {
+      id: "team",
+      match: "team",
+      permission: "team.view",
+      title: "Команда",
+      containers: ["teamTableBody", "rolesGrid", "hierarchyContent", "teamPagination"],
+      values: ["teamTotal", "teamActive", "teamRoles", "teamSidebarTotal",
+        "teamUsersTabCount", "teamRolesTabCount", "usersResultCount", "hierarchyLevelCount"]
+    },
+    {
+      id: "settings",
+      match: "settings",
+      permission: "settings.view",
+      title: "Настройки",
+      containers: ["servicesTableBody", "providersTableBody", "integrationsPanel"],
+      values: ["settingsServicesTotal", "settingsProvidersTotal", "settingsConnectionsTotal",
+        "settingsServicesTabCount", "settingsProvidersTabCount", "settingsConnectionsTabCount",
+        "settingsServicesResultCount", "settingsProvidersResultCount", "settingsSyncSummary"]
+    },
+    {
+      id: "dashboard",
+      match: "",
+      permission: "dashboard.view",
+      title: "Dashboard",
+      containers: ["dashboardWorkingOffers", "dashboardChartSvg", "dashboardChartLabels"],
+      values: ["dashboardRevenue", "dashboardSpend", "dashboardProfit", "dashboardRoi",
+        "dashboardLeads", "dashboardSales", "dashboardEpl", "dashboardOffersCount",
+        "dashboardRevenueDelta", "dashboardSpendDelta", "dashboardProfitDelta",
+        "dashboardRoiDelta", "dashboardLeadsDelta", "dashboardSalesDelta", "dashboardEplDelta"]
+    }
+  ];
+
+  function currentRule() {
+    var path = window.location.pathname.toLowerCase();
+    return pageRules.find(function (rule) {
+      return rule.match && path.indexOf(rule.match) >= 0;
+    }) || pageRules[pageRules.length - 1];
+  }
+
+  function columnCount(element) {
+    var table = element.closest ? element.closest("table") : null;
+    var header = table ? table.querySelector("thead tr") : null;
+    return header ? Math.max(header.children.length, 1) : 1;
+  }
+
+  function clearMockData(rule) {
+    rule.containers.forEach(function (id) {
+      var element = document.getElementById(id);
+      if (!element) return;
+      if (element.tagName === "TBODY") {
+        element.innerHTML = '<tr><td colspan="' + columnCount(element) +
+          '" style="padding:44px 24px;text-align:center;color:#A2A7B5;font-size:13px">' +
+          "Загрузка данных…</td></tr>";
+      } else {
+        element.innerHTML = "";
+      }
+    });
+    rule.values.forEach(function (id) {
+      var element = document.getElementById(id);
+      if (element) element.textContent = "—";
+    });
+  }
+
+  function renderAccessDenied(rule) {
+    var host = document.querySelector("main") || document.body;
+    host.innerHTML =
+      '<section role="alert" style="max-width:520px;margin:96px auto;padding:32px;text-align:center;' +
+      "background:#fff;border:1px solid #E5E7EF;border-radius:18px;font-family:'Manrope',sans-serif\">" +
+      '<div style="width:52px;height:52px;margin:0 auto 18px;border-radius:15px;background:#FDECEF;' +
+      'display:flex;align-items:center;justify-content:center">' +
+      '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<rect x="4" y="10" width="16" height="10" rx="2.5" stroke="#D94B61" stroke-width="2"/>' +
+      '<path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="#D94B61" stroke-width="2" stroke-linecap="round"/></svg></div>' +
+      '<h1 style="font:700 20px \'Space Grotesk\',Manrope,sans-serif;color:#171A26">Раздел недоступен</h1>' +
+      '<p style="margin-top:10px;font-size:13px;color:#6B7180;line-height:1.55">У вашей роли нет прав на раздел «' +
+      escapeHtml(rule.title) + '». Обратитесь к администратору, если доступ нужен для работы.</p>' +
+      '<a href="/" style="display:inline-block;margin-top:20px;height:40px;line-height:40px;padding:0 20px;' +
+      "background:#5A5FE0;color:#fff;border-radius:10px;font:700 12.5px Manrope,sans-serif;text-decoration:none\">" +
+      "На дашборд</a></section>";
+  }
+
+  function applyNavPermissions(user) {
+    document.querySelectorAll("nav a, nav > div").forEach(function (element) {
+      var name = pageName(element);
+      if (!name) return;
+      var rule = pageRules.find(function (item) { return item.title === name; });
+      if (!rule || hasPermission(user, rule.permission)) return;
+      element.style.display = "none";
+    });
+  }
 
   function escapeHtml(value) {
     return String(value == null ? "" : value)
@@ -67,14 +206,39 @@
       "#celestialSyncCard[data-actionable=true]{cursor:pointer}" +
       "#celestialSyncCard[data-actionable=true]:hover,#celestialSyncCard[data-actionable=true]:focus-visible{" +
       "transform:translateY(-1px);box-shadow:0 10px 24px rgba(90,95,224,.25)}" +
+      ".celestial-upcoming-module{cursor:not-allowed!important;color:#9095A6!important}" +
+      ".celestial-upcoming-badge{display:inline-flex;align-items:center;justify-content:center;margin-left:auto;" +
+      "border:1px solid #DDE0FF;border-radius:999px;background:#F0F1FF;color:#666BE5;padding:2px 6px;" +
+      "font:800 8px/1.25 Manrope,sans-serif;letter-spacing:.045em;white-space:nowrap}" +
       "@media(max-width:760px){#celestialAccountMenu{position:fixed;left:14px;right:14px;bottom:76px}}";
     document.head.appendChild(style);
   }
 
-  function pageName(element) {
+  function matchName(element, names) {
     var text = (element.textContent || "").replace(/\s+/g, " ").trim();
-    return Object.keys(pages).find(function (name) {
+    return names.find(function (name) {
       return text === name || text.indexOf(name + " ") === 0;
+    });
+  }
+
+  function pageName(element) {
+    return matchName(element, Object.keys(pages));
+  }
+
+  function markUpcoming(element, name) {
+    if (element.classList.contains("celestial-upcoming-module")) return;
+    element.classList.add("celestial-upcoming-module");
+    element.setAttribute("aria-disabled", "true");
+    element.title = upcoming[name] + " — раздел появится позже";
+    var badge = document.createElement("span");
+    badge.className = "celestial-upcoming-badge";
+    badge.setAttribute("aria-hidden", "true");
+    badge.textContent = "СКОРО";
+    element.appendChild(badge);
+    element.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      toast(upcoming[name], "info");
     });
   }
 
@@ -83,7 +247,11 @@
 
     candidates.forEach(function (element) {
       var name = pageName(element);
-      if (!name) return;
+      if (!name) {
+        var pending = matchName(element, Object.keys(upcoming));
+        if (pending) markUpcoming(element, pending);
+        return;
+      }
 
       var target = pages[name];
       if (element.tagName === "A") {
@@ -389,20 +557,38 @@
   }
 
   async function initShell(user) {
-    if (!user || document.documentElement.dataset.shellReady) return;
+    if (!user) return { allowed: false };
+    if (document.documentElement.dataset.shellReady) {
+      return { allowed: shellState.allowed };
+    }
     document.documentElement.dataset.shellReady = "true";
     shellState.user = user;
     injectShellStyles();
     setupAccount(user);
+    applyNavPermissions(user);
+
+    var rule = currentRule();
+    shellState.allowed = hasPermission(user, rule.permission);
+    if (!shellState.allowed) {
+      // Never fall through to the page loader: it would 403 and leave the mock-up
+      // rows from the markup visible as if they were real data.
+      renderAccessDenied(rule);
+      return { allowed: false };
+    }
+
     setupSyncCard();
+    return { allowed: true };
   }
 
   document.addEventListener("DOMContentLoaded", function () {
     setupNavigation();
+    // Runs before authentication so the demo rows never flash on screen.
+    clearMockData(currentRule());
   });
 
   window.CelestialShell = {
     init: initShell,
-    refreshSync: refreshSyncStatus
+    refreshSync: refreshSyncStatus,
+    currentRule: currentRule
   };
 })();

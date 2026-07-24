@@ -1,11 +1,11 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_current_user, require_permission
+from app.core.deps import require_any_permission, require_permission
 from app.models import (
     FinanceServiceValue,
     FinanceSpendValue,
@@ -25,6 +25,8 @@ from app.schemas import (
 )
 from app.services.audit import audit
 
+MAX_PAGE_SIZE = 500
+
 router = APIRouter(tags=["settings"])
 
 
@@ -35,7 +37,9 @@ async def list_services(
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(get_current_user),
+    current: User = Depends(
+        require_any_permission("settings.view", "media.view", "finance.view")
+    ),
 ) -> Page:
     filters = [Service.workspace_id == current.workspace_id]
     if search:
@@ -49,7 +53,7 @@ async def list_services(
                 select(Service)
                 .where(*filters)
                 .order_by(Service.name)
-                .limit(min(limit, 100))
+                .limit(min(limit, MAX_PAGE_SIZE))
                 .offset(offset)
             )
         ).scalars()
@@ -57,7 +61,7 @@ async def list_services(
     return Page(
         items=[ServiceOut.model_validate(item).model_dump(mode="json") for item in items],
         total=total or 0,
-        limit=min(limit, 100),
+        limit=min(limit, MAX_PAGE_SIZE),
         offset=offset,
     )
 
@@ -102,7 +106,9 @@ async def list_spend_providers(
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(get_current_user),
+    current: User = Depends(
+        require_any_permission("settings.view", "media.view", "finance.view")
+    ),
 ) -> Page:
     filters = [SpendProvider.workspace_id == current.workspace_id]
     if search:
@@ -116,7 +122,7 @@ async def list_spend_providers(
                 select(SpendProvider)
                 .where(*filters)
                 .order_by(SpendProvider.name)
-                .limit(min(limit, 100))
+                .limit(min(limit, MAX_PAGE_SIZE))
                 .offset(offset)
             )
         ).scalars()
@@ -124,7 +130,7 @@ async def list_spend_providers(
     return Page(
         items=[SpendProviderOut.model_validate(item).model_dump(mode="json") for item in items],
         total=total or 0,
-        limit=min(limit, 100),
+        limit=min(limit, MAX_PAGE_SIZE),
         offset=offset,
     )
 
@@ -166,7 +172,7 @@ async def update_spend_provider(
     return provider
 
 
-@router.delete("/services/{service_id}", status_code=204)
+@router.delete("/services/{service_id}", status_code=204, response_class=Response)
 async def delete_service(
     service_id: uuid.UUID,
     request: Request,
@@ -197,7 +203,7 @@ async def delete_service(
     await db.commit()
 
 
-@router.delete("/spend-providers/{provider_id}", status_code=204)
+@router.delete("/spend-providers/{provider_id}", status_code=204, response_class=Response)
 async def delete_spend_provider(
     provider_id: uuid.UUID,
     request: Request,

@@ -1,6 +1,7 @@
 import json
 import uuid
 from datetime import date
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -250,6 +251,43 @@ async def test_manual_catalog_status_survives_sync(database) -> None:
         assert partner.status == Status.inactive
         assert offer.status_overridden is True
         assert partner.status_overridden is True
+
+
+async def test_sync_keeps_manual_media_values_and_spend(database) -> None:
+    async with SessionLocal() as db:
+        media = await db.scalar(
+            select(MediaRecord).order_by(MediaRecord.record_date.desc())
+        )
+        assert media is not None
+        media.manual_fields = ["installs", "revenue"]
+        media.installs = 4242
+        media.revenue = Decimal("999")
+        media.registrations = 0
+        # Owned by the "Агенты и платёжки" block, never by Keitaro (ТЗ 2.4.4).
+        media.spend_calculated = Decimal("77.5")
+        media_id = media.id
+        connection_id = str(
+            await db.scalar(select(IntegrationConnection.id).limit(1))
+        )
+        await db.commit()
+
+    async with SessionLocal() as db:
+        run = SyncRun(connection_id=uuid.UUID(connection_id), mode="incremental")
+        db.add(run)
+        await db.commit()
+        run_id = str(run.id)
+
+    engine = KeitaroSyncEngine(SessionLocal, client_factory=FakeKeitaroClient)
+    assert (await engine.run(connection_id, run_id, "incremental"))["status"] == "success"
+
+    async with SessionLocal() as db:
+        media = await db.get(MediaRecord, media_id)
+        assert media.installs == 4242
+        assert media.revenue == Decimal("999.0000")
+        assert media.spend_calculated == Decimal("77.5000")
+        # Unpinned fields still track Keitaro.
+        assert media.registrations == 10
+        assert media.external_payload["keitaro_cost"] == "50.25"
 
 
 def test_sidebar_status_uses_real_keitaro_state(database) -> None:

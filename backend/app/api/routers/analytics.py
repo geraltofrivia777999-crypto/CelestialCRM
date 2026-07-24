@@ -31,6 +31,7 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    MEDIA_MANUAL_FIELDS,
     DashboardSummary,
     FinanceRecordIn,
     FinanceValuesIn,
@@ -44,7 +45,7 @@ from app.services.formulas import (
     finance_import_key,
     finance_metrics,
     media_metrics,
-    rent_cost,
+    service_cost,
 )
 
 router = APIRouter(tags=["analytics"])
@@ -149,7 +150,7 @@ async def list_media_records(
             cost = (
                 value.manual_cost_override
                 if value.manual_cost_override is not None
-                else rent_cost(value.quantity, service.install_cost)
+                else service_cost(value.quantity, service.install_cost, service.commission_pct)
             )
             rent_by_record[value.media_record_id] = (
                 rent_by_record.get(value.media_record_id, Decimal("0")) + cost
@@ -241,11 +242,27 @@ async def upsert_media_record(
     )
     created = record is None
     if not record:
-        record = MediaRecord(workspace_id=current.workspace_id, **payload.model_dump())
+        record = MediaRecord(
+            workspace_id=current.workspace_id,
+            record_date=payload.record_date,
+            buyer_id=payload.buyer_id,
+            offer_id=payload.offer_id,
+        )
         db.add(record)
-    else:
-        for key, value in payload.model_dump().items():
-            setattr(record, key, value)
+    # Only the manual metrics are writable here. `spend_calculated` belongs to the
+    # "Агенты и платёжки" block, and a filled field is pinned against Keitaro sync
+    # while clearing it hands the field back to Keitaro.
+    manual = set(record.manual_fields or [])
+    for field in MEDIA_MANUAL_FIELDS:
+        value = getattr(payload, field)
+        setattr(record, field, value)
+        if value is None:
+            manual.discard(field)
+        else:
+            manual.add(field)
+    record.manual_fields = sorted(manual)
+    if created:
+        record.source = "manual"
     await audit(
         db,
         current,
@@ -324,7 +341,7 @@ async def replace_media_values(
         rent += (
             value.manual_cost_override
             if value.manual_cost_override is not None
-            else rent_cost(value.quantity, service.install_cost)
+            else service_cost(value.quantity, service.install_cost, service.commission_pct)
         )
         db.add(MediaServiceValue(media_record_id=record.id, **value.model_dump()))
     for value in payload.spend_providers:
@@ -441,7 +458,7 @@ async def list_finance_records(
             cost = (
                 value.manual_cost_override
                 if value.manual_cost_override is not None
-                else rent_cost(value.quantity, service.install_cost)
+                else service_cost(value.quantity, service.install_cost, service.commission_pct)
             )
             services_by_record.setdefault(value.finance_record_id, {})[
                 str(value.service_id)
@@ -567,7 +584,7 @@ async def replace_finance_values(
         rent += (
             value.manual_cost_override
             if value.manual_cost_override is not None
-            else rent_cost(value.quantity, service.install_cost)
+            else service_cost(value.quantity, service.install_cost, service.commission_pct)
         )
         db.add(FinanceServiceValue(finance_record_id=record.id, **value.model_dump()))
     for value in payload.spend_providers:
@@ -841,7 +858,8 @@ async def export_finance(
             external_id,
             record.link or "",
             record.rent,
-            record.spend,
+            # Match what the table shows: a manual override wins over the calculation.
+            record.spend_override if record.spend_override is not None else record.spend,
             record.qual,
             record.revenue,
             record.salary,

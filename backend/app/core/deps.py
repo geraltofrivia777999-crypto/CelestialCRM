@@ -3,13 +3,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from fastapi import Cookie, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.security import hash_session_token
-from app.models import Role, Session, Status, User, UserParent
+from app.models import Permission, Role, Session, Status, User, UserParent
 
 
 async def get_current_user(
@@ -33,19 +33,45 @@ async def get_current_user(
     return user
 
 
+def has_permission(user: User, *permission_codes: str) -> bool:
+    codes = {permission.code for permission in user.role.permissions}
+    return "*" in codes or any(code in codes for code in permission_codes)
+
+
 def require_permission(permission_code: str) -> Callable:
     async def dependency(user: User = Depends(get_current_user)) -> User:
-        codes = {permission.code for permission in user.role.permissions}
-        if "*" not in codes and permission_code not in codes:
+        if not has_permission(user, permission_code):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
         return user
 
     return dependency
 
 
+def require_any_permission(*permission_codes: str) -> Callable:
+    async def dependency(user: User = Depends(get_current_user)) -> User:
+        if not has_permission(user, *permission_codes):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        return user
+
+    return dependency
+
+
+async def has_full_access(db: AsyncSession, user: User) -> bool:
+    """Full access means an explicit `*` or holding every permission that exists.
+
+    Deliberately not keyed on the role name: a renamed or copied administrator role
+    (ТЗ 7.1) must keep working.
+    """
+    codes = {permission.code for permission in user.role.permissions}
+    if "*" in codes:
+        return True
+    total = await db.scalar(select(func.count()).select_from(Permission))
+    return bool(total) and len(codes) >= total
+
+
 async def accessible_user_ids(db: AsyncSession, user: User) -> set[uuid.UUID]:
     """Return the user and every descendant visible through the parent hierarchy."""
-    if user.role.name == "Administrator":
+    if await has_full_access(db, user):
         rows = await db.scalars(
             select(User.id).where(User.workspace_id == user.workspace_id)
         )

@@ -10,6 +10,8 @@ from app.models import KeitaroCampaign, Offer, OfferBuyer, Partner, Status, User
 from app.schemas import AssignBuyers, CatalogStatusUpdate, OfferOut, Page
 from app.services.audit import audit
 
+MAX_PAGE_SIZE = 500
+
 router = APIRouter(tags=["references"])
 
 
@@ -34,7 +36,7 @@ async def list_partners(
                 select(Partner)
                 .where(*filters)
                 .order_by(Partner.name)
-                .limit(min(limit, 100))
+                .limit(min(limit, MAX_PAGE_SIZE))
                 .offset(offset)
             )
         ).scalars()
@@ -61,7 +63,7 @@ async def list_partners(
             for row in rows
         ],
         total=total or 0,
-        limit=min(limit, 100),
+        limit=min(limit, MAX_PAGE_SIZE),
         offset=offset,
     )
 
@@ -124,7 +126,7 @@ async def list_campaigns(
                 select(KeitaroCampaign)
                 .where(*filters)
                 .order_by(KeitaroCampaign.name)
-                .limit(min(limit, 100))
+                .limit(min(limit, MAX_PAGE_SIZE))
                 .offset(offset)
             )
         ).scalars()
@@ -143,7 +145,7 @@ async def list_campaigns(
             for row in rows
         ],
         total=total or 0,
-        limit=min(limit, 100),
+        limit=min(limit, MAX_PAGE_SIZE),
         offset=offset,
     )
 
@@ -176,7 +178,7 @@ async def list_offers(
     offers = list(
         (
             await db.execute(
-                stmt.order_by(Offer.name).limit(min(limit, 100)).offset(offset)
+                stmt.order_by(Offer.name).limit(min(limit, MAX_PAGE_SIZE)).offset(offset)
             )
         ).scalars()
     )
@@ -200,7 +202,7 @@ async def list_offers(
             for offer in offers
         ],
         total=total or 0,
-        limit=min(limit, 100),
+        limit=min(limit, MAX_PAGE_SIZE),
         offset=offset,
     )
 

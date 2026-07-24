@@ -476,6 +476,10 @@
     function renderTable() {
       var body = el("TableBody");
       if (!body) return;
+      var count = el("ResultCount");
+      if (count) {
+        count.textContent = "Показано записей: " + state.records.length + " из " + state.total;
+      }
       if (!state.records.length) {
         body.innerHTML = '<tr><td colspan="' + columnCount() +
           '" style="padding:44px 24px;text-align:center;color:#A2A7B5;font-size:13px">' +
@@ -506,10 +510,6 @@
           openEditModal(record || null);
         });
       });
-      var count = el("ResultCount");
-      if (count) {
-        count.textContent = "Показано записей: " + state.records.length + " из " + state.total;
-      }
     }
 
     /* ----- data loading ----- */
@@ -525,11 +525,11 @@
 
     async function loadRefs() {
       var results = await Promise.all([
-        api.get("/services?limit=100"),
-        api.get("/spend-providers?limit=100"),
+        api.getAll("/services"),
+        api.getAll("/spend-providers"),
         api.get("/users/options"),
-        api.get("/offers?limit=100"),
-        api.get("/partners?limit=100"),
+        api.getAll("/offers"),
+        api.getAll("/partners"),
         api.get("/me/preferences/" + config.preferenceKey)
       ]);
       state.services = (results[0].items || []).filter(function (s) { return s.status === "active"; });
@@ -551,8 +551,15 @@
       fillSelect("FilterGeo", geos.map(function (geo) { return { id: geo, name: geo }; }), "id", "name");
     }
 
+    function endpointWithFilters() {
+      var query = filterQuery().replace(/^&/, "");
+      return config.endpoint + (query ? "?" + query : "");
+    }
+
     async function loadRecords() {
-      var page = await api.get(config.endpoint + "?limit=1000" + filterQuery());
+      // Every matching row is needed: the group totals are summed on the client,
+      // so a truncated page would render wrong aggregates.
+      var page = await api.getAll(endpointWithFilters(), 1000);
       state.records = page.items || [];
       state.total = page.total || 0;
       renderTable();

@@ -18,9 +18,24 @@
 
     var response = await fetch(API_ROOT + path, config);
     var contentType = response.headers.get("content-type") || "";
-    var payload = contentType.indexOf("application/json") >= 0
-      ? await response.json()
-      : await response.text();
+    var payload = null;
+
+    // 204/205 carry no body, and an empty body must never be fed to JSON.parse —
+    // it throws before the response.ok check and turns a success into an error.
+    if (response.status !== 204 && response.status !== 205) {
+      var raw = await response.text();
+      if (raw) {
+        if (contentType.indexOf("application/json") >= 0) {
+          try {
+            payload = JSON.parse(raw);
+          } catch (parseError) {
+            payload = raw;
+          }
+        } else {
+          payload = raw;
+        }
+      }
+    }
 
     if (!response.ok) {
       var fields = payload && payload.error && payload.error.details
@@ -40,10 +55,32 @@
     return payload;
   }
 
+  // Follows a paginated endpoint to the end. The server caps `limit`, so asking for
+  // more than the cap silently truncated the list before this existed.
+  async function getAll(path, pageSize) {
+    var size = pageSize || 200;
+    var separator = path.indexOf("?") >= 0 ? "&" : "?";
+    var items = [];
+    var total = 0;
+    var offset = 0;
+
+    for (var guard = 0; guard < 100; guard += 1) {
+      var page = await request(path + separator + "limit=" + size + "&offset=" + offset);
+      var batch = page.items || [];
+      items = items.concat(batch);
+      total = page.total || 0;
+      if (!batch.length || items.length >= total) break;
+      offset += batch.length;
+    }
+
+    return { items: items, total: total, limit: items.length, offset: 0 };
+  }
+
   window.CelestialAPI = {
     get: function (path) {
       return request(path);
     },
+    getAll: getAll,
     post: function (path, data, idempotencyKey) {
       var headers = { "Content-Type": "application/json" };
       if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;

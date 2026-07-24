@@ -8,6 +8,7 @@ from app.services.formulas import (
     finance_metrics,
     media_metrics,
     rent_cost,
+    service_cost,
 )
 
 
@@ -33,6 +34,16 @@ def test_finance_metrics_include_rent_and_spend() -> None:
 def test_cost_calculations() -> None:
     assert rent_cost(Decimal("1000"), Decimal("0.03")) == Decimal("30.0000")
     assert amount_with_commission(Decimal("100"), Decimal("8.5")) == Decimal("108.5000")
+
+
+def test_service_cost_applies_the_configured_commission() -> None:
+    # ТЗ 2.4.1: both the install price and the service commission are taken into account.
+    assert service_cost(
+        Decimal("1000"), Decimal("0.03"), Decimal("0")
+    ) == Decimal("30.0000")
+    assert service_cost(
+        Decimal("1000"), Decimal("0.03"), Decimal("10")
+    ) == Decimal("33.0000")
 
 
 def test_finance_import_key_is_normalized_and_stable() -> None:

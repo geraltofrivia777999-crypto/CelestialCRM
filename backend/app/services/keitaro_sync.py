@@ -291,11 +291,18 @@ class KeitaroSyncEngine:
                     )
                     db.add(media)
                 media.source = "keitaro"
-                media.installs = aggregate["unique_clicks"]
-                media.registrations = aggregate["leads"]
-                media.ftd = aggregate["sales"]
-                media.revenue = aggregate["revenue"]
-                media.spend_calculated = aggregate["cost"]
+                # Fields a user filled in by hand stay pinned (ТЗ 2.5).
+                pinned = set(media.manual_fields or [])
+                if "installs" not in pinned:
+                    media.installs = aggregate["unique_clicks"]
+                if "registrations" not in pinned:
+                    media.registrations = aggregate["leads"]
+                if "ftd" not in pinned:
+                    media.ftd = aggregate["sales"]
+                if "revenue" not in pinned:
+                    media.revenue = aggregate["revenue"]
+                # SPEND is owned by the "Агенты и платёжки" block (ТЗ 2.4.4), so the
+                # Keitaro cost is kept for reference only and never overwrites it.
                 media.external_payload = {
                     "clicks": aggregate["clicks"],
                     "unique_clicks": aggregate["unique_clicks"],

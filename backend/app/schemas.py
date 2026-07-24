@@ -183,6 +183,13 @@ class CatalogStatusUpdate(BaseModel):
 
 
 class MediaRecordIn(BaseModel):
+    """Manual media input.
+
+    `spend_calculated` is intentionally absent: it is owned by the
+    "Агенты и платёжки" block and is only ever written by
+    `PUT /media-records/{id}/values`.
+    """
+
     record_date: date
     buyer_id: uuid.UUID
     offer_id: uuid.UUID
@@ -190,9 +197,10 @@ class MediaRecordIn(BaseModel):
     registrations: int | None = None
     ftd: int | None = None
     revenue: Decimal | None = None
-    spend_calculated: Decimal = Decimal("0")
     spend_override: Decimal | None = None
-    source: str = "manual"
+
+
+MEDIA_MANUAL_FIELDS = ("installs", "registrations", "ftd", "revenue", "spend_override")
 
 
 class MediaServiceValueIn(BaseModel):

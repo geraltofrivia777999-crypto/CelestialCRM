@@ -392,7 +392,7 @@
 
   async function loadOffers() {
     var results = await Promise.all([
-      api.get("/offers?limit=200"),
+      api.getAll("/offers"),
       api.get("/users/options")
     ]);
     offersState.offers = results[0].items || [];
@@ -485,7 +485,7 @@
   }
 
   async function loadPartners() {
-    var page = await api.get("/partners?limit=200");
+    var page = await api.getAll("/partners");
     partnersState.partners = page.items || [];
     renderPartnerStats();
     renderPartnerRows();
