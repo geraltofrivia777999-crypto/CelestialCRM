@@ -149,6 +149,39 @@
     document.head.appendChild(style);
   }
 
+  function ensureStructureStyles() {
+    if (byId("celestialStructureStyles")) return;
+    var style = document.createElement("style");
+    style.id = "celestialStructureStyles";
+    style.textContent =
+      ".cs-slot{display:inline-flex;align-items:center;gap:8px;flex-shrink:0}" +
+      ".cs-slot:first-child > .cs-sep{display:none}" +
+      ".cs-sep{display:inline-flex;align-items:center;color:#C7CAD6;flex-shrink:0}" +
+      // touch-action:none lets a finger drag the chip instead of scrolling the page.
+      ".cs-chip{display:inline-flex;align-items:center;gap:7px;border:1px solid transparent;" +
+      "border-radius:10px;padding:6px 11px 6px 8px;font:700 12.5px 'Manrope',sans-serif;" +
+      "background:#EEF0FF;color:#5A5FE0;cursor:grab;user-select:none;touch-action:none;" +
+      "transition:background .18s,color .18s,border-color .18s,box-shadow .18s,transform .12s}" +
+      '.cs-chip[data-on="0"]{background:#F4F5F9;color:#A2A7B5}' +
+      ".cs-chip:hover{border-color:rgba(90,95,224,.28)}" +
+      '.cs-chip[data-on="0"]:hover{border-color:#DDE0EA}' +
+      ".cs-chip:focus-visible{outline:none;border-color:#8589E9;box-shadow:0 0 0 3px rgba(90,95,224,.16)}" +
+      ".cs-grip{display:inline-flex;flex-shrink:0;opacity:.5;transition:opacity .18s}" +
+      ".cs-chip:hover .cs-grip{opacity:.95}" +
+      // Pressing feedback: the chip dips a touch before it lifts off.
+      ".cs-chip--pressed{transform:scale(.96)}" +
+      // What stays behind in the row while the clone follows the pointer.
+      ".cs-chip--ghost{background:#F1F2F7;border:1px dashed #C9CDDB;color:transparent;box-shadow:none}" +
+      ".cs-chip--ghost .cs-grip{visibility:hidden}" +
+      ".cs-chip--flying{position:fixed;z-index:10060;margin:0;pointer-events:none;cursor:grabbing;" +
+      "border-color:rgba(90,95,224,.4);box-shadow:0 18px 38px rgba(31,34,49,.24);" +
+      "transform:scale(1.06) rotate(-1.5deg)}" +
+      "body.cs-dragging{cursor:grabbing}" +
+      "body.cs-dragging .cs-chip{cursor:grabbing}" +
+      "@media(prefers-reduced-motion:reduce){.cs-chip,.cs-slot{transition:none!important}}";
+    document.head.appendChild(style);
+  }
+
   var LEVELS = {
     buyer: { label: "Баер", key: function (r) { return r.buyer_id; }, name: function (r) { return r.buyer; } },
     geo: { label: "GEO", key: function (r) { return r.geo || "—"; }, name: function (r) { return r.geo || "Без GEO"; } },
@@ -261,52 +294,245 @@
 
     /* ----- structure bar ----- */
 
+    var SEP_SVG = '<span class="cs-sep"><svg width="15" height="15" viewBox="0 0 24 24" fill="none">' +
+      '<path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+      'stroke-linejoin="round"/></svg></span>';
+    var GRIP_SVG = '<span class="cs-grip"><svg width="9" height="14" viewBox="0 0 9 14" fill="currentColor">' +
+      '<circle cx="2" cy="2" r="1.35"/><circle cx="7" cy="2" r="1.35"/><circle cx="2" cy="7" r="1.35"/>' +
+      '<circle cx="7" cy="7" r="1.35"/><circle cx="2" cy="12" r="1.35"/><circle cx="7" cy="12" r="1.35"/>' +
+      "</svg></span>";
+
     function renderStructureBar() {
       var bar = el("StructureBar");
       if (!bar) return;
-      bar.innerHTML = state.structure.items.map(function (item, index) {
-        var on = item.on;
-        return '<span data-index="' + index + '" style="display:inline-flex;align-items:center;gap:6px;' +
-          "background:" + (on ? "#EEF0FF" : "#F4F5F9") + ";color:" + (on ? "#5A5FE0" : "#A2A7B5") +
-          ';border-radius:9px;padding:6px 10px;font-size:12.5px;font-weight:700;user-select:none">' +
-          '<button data-move="-1" title="Влево" style="border:none;background:transparent;cursor:pointer;color:inherit;padding:0;font-size:12px">◀</button>' +
-          '<span data-toggle="1" title="Показать/скрыть уровень" style="cursor:pointer">' +
-          escapeHtml(LEVELS[item.key].label) + "</span>" +
-          '<button data-move="1" title="Вправо" style="border:none;background:transparent;cursor:pointer;color:inherit;padding:0;font-size:12px">▶</button>' +
-          "</span>";
-      }).join('<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="#C7CAD6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>');
-      bar.querySelectorAll("[data-move]").forEach(function (button) {
-        button.addEventListener("click", function () {
-          var chip = button.closest("[data-index]");
-          var index = Number(chip.getAttribute("data-index"));
-          var target = index + Number(button.getAttribute("data-move"));
-          if (target < 0 || target >= state.structure.items.length) return;
-          var items = state.structure.items;
-          var moved = items.splice(index, 1)[0];
-          items.splice(target, 0, moved);
-          saveStructure();
-        });
+      ensureStructureStyles();
+      // Each slot carries the separator that precedes its chip, so reordering slots keeps
+      // the arrows correct without touching them (the first one hides its separator in CSS).
+      bar.innerHTML = state.structure.items.map(function (item) {
+        return '<span class="cs-slot" data-key="' + escapeHtml(item.key) + '">' + SEP_SVG +
+          '<span class="cs-chip" tabindex="0" role="button" aria-pressed="' + (item.on ? "true" : "false") +
+          '" data-on="' + (item.on ? "1" : "0") +
+          '" title="Перетащите, чтобы изменить порядок · клик включает или скрывает уровень">' +
+          GRIP_SVG + "<span>" + escapeHtml(LEVELS[item.key].label) + "</span></span></span>";
+      }).join("");
+      bindStructureBar(bar);
+    }
+
+    function toggleLevel(key) {
+      var item = null;
+      var enabled = 0;
+      state.structure.items.forEach(function (candidate) {
+        if (candidate.key === key) item = candidate;
+        if (candidate.on) enabled += 1;
       });
-      bar.querySelectorAll("[data-toggle]").forEach(function (span) {
-        span.addEventListener("click", function () {
-          var chip = span.closest("[data-index]");
-          var item = state.structure.items[Number(chip.getAttribute("data-index"))];
-          var enabledCount = state.structure.items.filter(function (i) { return i.on; }).length;
-          if (item.on && enabledCount <= 1) {
-            toast("Должен остаться хотя бы один уровень структуры", "error");
-            return;
-          }
-          item.on = !item.on;
-          saveStructure();
+      if (!item) return;
+      if (item.on && enabled <= 1) {
+        toast("Должен остаться хотя бы один уровень структуры", "error");
+        return;
+      }
+      item.on = !item.on;
+      saveStructure(key);
+    }
+
+    function moveLevel(key, offset) {
+      var items = state.structure.items;
+      var index = items.findIndex(function (item) { return item.key === key; });
+      var target = index + offset;
+      if (index < 0 || target < 0 || target >= items.length) return;
+      items.splice(target, 0, items.splice(index, 1)[0]);
+      saveStructure(key);
+    }
+
+    /* Slides every slot from where it used to be to where it is now (FLIP). */
+    function flipSlots(slots, before) {
+      var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+      slots.forEach(function (slot, index) {
+        var after = slot.getBoundingClientRect();
+        var dx = before[index].left - after.left;
+        var dy = before[index].top - after.top;
+        if (!dx && !dy) return;
+        if (reduced) return;
+        slot.style.transition = "none";
+        slot.style.transform = "translate(" + dx + "px," + dy + "px)";
+        window.requestAnimationFrame(function () {
+          slot.style.transition = "transform 200ms cubic-bezier(.22,.61,.36,1)";
+          slot.style.transform = "";
         });
       });
     }
 
-    function saveStructure() {
-      renderStructureBar();
-      renderTable();
+    function bindStructureBar(bar) {
+      var drag = null;
+
+      bar.addEventListener("pointerdown", function (event) {
+        if (event.button) return;
+        var chip = event.target.closest(".cs-chip");
+        if (!chip || drag) return;
+        drag = {
+          chip: chip,
+          slot: chip.parentElement,
+          key: chip.parentElement.getAttribute("data-key"),
+          startX: event.clientX,
+          startY: event.clientY,
+          fromIndex: slotIndex(chip.parentElement),
+          touch: event.pointerType === "touch",
+          lifted: false,
+          hold: 0
+        };
+        chip.classList.add("cs-chip--pressed");
+        // A finger cannot "move a little to start a drag" without feeling like a slip,
+        // so touch lifts the chip on a short hold instead.
+        if (drag.touch) drag.hold = window.setTimeout(lift, 180);
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+      });
+
+      bar.addEventListener("click", function (event) {
+        var chip = event.target.closest(".cs-chip");
+        // A drag ends over the chip too; only a real click may toggle the level.
+        if (!chip || chip.dataset.csDragged) return;
+        toggleLevel(chip.parentElement.getAttribute("data-key"));
+      });
+
+      bar.addEventListener("keydown", function (event) {
+        var chip = event.target.closest(".cs-chip");
+        if (!chip) return;
+        var key = chip.parentElement.getAttribute("data-key");
+        if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+          event.preventDefault();
+          toggleLevel(key);
+        } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          event.preventDefault();
+          moveLevel(key, event.key === "ArrowLeft" ? -1 : 1);
+        }
+      });
+
+      function slotIndex(slot) {
+        return Array.prototype.indexOf.call(bar.children, slot);
+      }
+
+      function lift() {
+        if (!drag || drag.lifted) return;
+        drag.lifted = true;
+        window.clearTimeout(drag.hold);
+        var rect = drag.chip.getBoundingClientRect();
+        drag.grabX = drag.startX - rect.left;
+        drag.grabY = drag.startY - rect.top;
+        var flyer = drag.chip.cloneNode(true);
+        flyer.classList.remove("cs-chip--pressed");
+        flyer.classList.add("cs-chip--flying");
+        flyer.removeAttribute("tabindex");
+        flyer.style.width = rect.width + "px";
+        flyer.style.height = rect.height + "px";
+        flyer.style.left = rect.left + "px";
+        flyer.style.top = rect.top + "px";
+        // Start flat and let the class's lift transform animate in.
+        flyer.style.transform = "none";
+        document.body.appendChild(flyer);
+        window.requestAnimationFrame(function () { flyer.style.transform = ""; });
+        drag.flyer = flyer;
+        drag.chip.classList.remove("cs-chip--pressed");
+        drag.chip.classList.add("cs-chip--ghost");
+        document.body.classList.add("cs-dragging");
+        if (drag.touch && navigator.vibrate) {
+          try { navigator.vibrate(8); } catch (ignored) { /* opt-in only */ }
+        }
+      }
+
+      function onMove(event) {
+        if (!drag) return;
+        if (!drag.lifted) {
+          if (Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY) < 5) return;
+          lift();
+        }
+        event.preventDefault();
+        drag.flyer.style.left = event.clientX - drag.grabX + "px";
+        drag.flyer.style.top = event.clientY - drag.grabY + "px";
+        reorderTo(event.clientX, event.clientY);
+      }
+
+      /* Walks the row and drops the dragged slot wherever the pointer has passed a midpoint. */
+      function reorderTo(x, y) {
+        var slots = Array.prototype.slice.call(bar.children);
+        var current = slots.indexOf(drag.slot);
+        var target = current;
+        for (var i = 0; i < slots.length; i += 1) {
+          if (i === current) continue;
+          var rect = slots[i].getBoundingClientRect();
+          // The bar wraps on narrow screens, so a slot only counts once the pointer is on its line.
+          if (y < rect.top - 6 || y > rect.bottom + 6) continue;
+          var middle = rect.left + rect.width / 2;
+          if (i < current && x < middle) { target = i; break; }
+          if (i > current && x > middle) target = i;
+        }
+        if (target === current) return;
+        var before = slots.map(function (slot) { return slot.getBoundingClientRect(); });
+        bar.insertBefore(drag.slot, target < current ? slots[target] : slots[target].nextSibling);
+        flipSlots(slots, before);
+      }
+
+      function onUp() {
+        if (!drag) return;
+        var finished = drag;
+        drag = null;
+        window.clearTimeout(finished.hold);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        finished.chip.classList.remove("cs-chip--pressed");
+        if (!finished.lifted) return;
+
+        // Fly the clone home, then hand the row back to the real chip.
+        var landing = finished.chip.getBoundingClientRect();
+        var flyer = finished.flyer;
+        flyer.style.transition = "left 200ms cubic-bezier(.22,.61,.36,1)," +
+          "top 200ms cubic-bezier(.22,.61,.36,1),transform 200ms cubic-bezier(.22,.61,.36,1)," +
+          "box-shadow 200ms";
+        flyer.style.left = landing.left + "px";
+        flyer.style.top = landing.top + "px";
+        flyer.style.transform = "none";
+        flyer.style.boxShadow = "none";
+        window.setTimeout(function () {
+          flyer.remove();
+          finished.chip.classList.remove("cs-chip--ghost");
+        }, 210);
+        document.body.classList.remove("cs-dragging");
+
+        // Suppress the click this drag is about to fire on the chip underneath.
+        finished.chip.dataset.csDragged = "1";
+        window.setTimeout(function () { delete finished.chip.dataset.csDragged; }, 0);
+
+        if (slotIndex(finished.slot) !== finished.fromIndex) commitOrder();
+      }
+
+      function commitOrder() {
+        var byKey = {};
+        state.structure.items.forEach(function (item) { byKey[item.key] = item; });
+        state.structure.items = Array.prototype.map.call(bar.children, function (slot) {
+          return byKey[slot.getAttribute("data-key")];
+        });
+        // Deliberately not re-rendering the bar: the landing animation is still running.
+        renderTable();
+        persistStructure();
+      }
+    }
+
+    function persistStructure() {
       api.put("/me/preferences/" + config.preferenceKey, { value: state.structure })
         .catch(function () { toast("Не удалось сохранить структуру", "error"); });
+    }
+
+    function saveStructure(focusKey) {
+      renderStructureBar();
+      if (focusKey) {
+        var bar = el("StructureBar");
+        var slot = bar && bar.querySelector('[data-key="' + focusKey + '"] .cs-chip');
+        // Re-rendering drops focus, which would strand a keyboard user mid-reorder.
+        if (slot && bar.contains(document.activeElement) === false) slot.focus();
+      }
+      renderTable();
+      persistStructure();
     }
 
     /* ----- table header ----- */

@@ -53,7 +53,11 @@ body > div:first-of-type {
 /* Board tables keep their context column visible and only scroll inside the card. */
 .celestial-board-scroll {
   min-height: 0;
-  overscroll-behavior: contain;
+  /* Horizontal only. The wrapper scrolls sideways but never vertically, so
+   * containing the vertical axis just swallowed the wheel and froze the page
+   * while the pointer sat over the table. */
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-gutter: stable;
 }
 
