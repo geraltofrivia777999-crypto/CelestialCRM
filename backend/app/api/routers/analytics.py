@@ -91,6 +91,236 @@ def _media_filters(
     return filters
 
 
+# A board never shows more distinct buyer×offer combinations than this. The cap keeps a
+# careless filter from turning the grouped response back into a full table dump.
+GROUP_LIMIT = 5000
+
+
+def _service_cost_column(value_model, service_model=Service):
+    """SQL twin of `service_cost()` — same two-step rounding, so sums match the API."""
+    return func.round(
+        func.coalesce(
+            value_model.manual_cost_override,
+            func.round(value_model.quantity * service_model.install_cost, 4)
+            * (service_model.commission_pct / 100 + 1),
+        ),
+        4,
+    )
+
+
+def _provider_amount_column(value_model, provider_model=SpendProvider):
+    """SQL twin of `amount_with_commission()`."""
+    return func.round(
+        func.coalesce(
+            value_model.manual_amount_override,
+            func.round(
+                value_model.base_amount * (provider_model.commission_pct / 100 + 1), 4
+            ),
+        ),
+        4,
+    )
+
+
+def _group_dimensions(filtered):
+    return [
+        filtered.c.buyer_id,
+        filtered.c.buyer,
+        filtered.c.geo,
+        filtered.c.partner_id,
+        filtered.c.partner,
+        filtered.c.offer_id,
+        filtered.c.offer,
+    ]
+
+
+def _group_identity(row) -> tuple:
+    return (row.buyer_id, row.offer_id)
+
+
+def _group_head(row) -> dict:
+    return {
+        "buyer_id": str(row.buyer_id),
+        "buyer": row.buyer,
+        "geo": row.geo,
+        "partner_id": str(row.partner_id) if row.partner_id else None,
+        "partner": row.partner,
+        "offer_id": str(row.offer_id),
+        "offer": row.offer,
+    }
+
+
+@router.get("/media-records/groups")
+async def media_record_groups(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    buyer_id: uuid.UUID | None = None,
+    offer_id: uuid.UUID | None = None,
+    geo: str | None = None,
+    partner_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("media.view")),
+) -> dict:
+    """Pre-aggregated board rows, one per buyer × offer.
+
+    The board groups by buyer / GEO / partner / offer in any order the user picks, and
+    every one of those dimensions is a function of this pair — so the client can build
+    each arrangement from this single response without re-fetching, and without ever
+    holding the raw records.
+    """
+    visible_buyers = await accessible_user_ids(db, current)
+    filters = _media_filters(
+        current.workspace_id,
+        visible_buyers,
+        date_from,
+        date_to,
+        buyer_id,
+        offer_id,
+        geo,
+        partner_id,
+    )
+    filtered = (
+        select(
+            MediaRecord.id.label("record_id"),
+            MediaRecord.buyer_id.label("buyer_id"),
+            User.name.label("buyer"),
+            MediaRecord.offer_id.label("offer_id"),
+            Offer.name.label("offer"),
+            Offer.geo.label("geo"),
+            Offer.partner_id.label("partner_id"),
+            Partner.name.label("partner"),
+            MediaRecord.installs.label("installs"),
+            MediaRecord.registrations.label("registrations"),
+            MediaRecord.ftd.label("ftd"),
+            MediaRecord.revenue.label("revenue"),
+            MediaRecord.spend_override.label("spend_override"),
+            MediaRecord.spend_calculated.label("spend_calculated"),
+        )
+        .join(User, User.id == MediaRecord.buyer_id)
+        .join(Offer, Offer.id == MediaRecord.offer_id)
+        .outerjoin(Partner, Partner.id == Offer.partner_id)
+        .where(*filters)
+        .subquery("filtered_media")
+    )
+    dimensions = _group_dimensions(filtered)
+
+    rent_per_record = (
+        select(
+            MediaServiceValue.media_record_id.label("record_id"),
+            func.sum(_service_cost_column(MediaServiceValue)).label("rent"),
+        )
+        .join(Service, Service.id == MediaServiceValue.service_id)
+        .join(filtered, filtered.c.record_id == MediaServiceValue.media_record_id)
+        .group_by(MediaServiceValue.media_record_id)
+        .subquery("rent_per_record")
+    )
+    spend_per_record = (
+        select(
+            MediaSpendValue.media_record_id.label("record_id"),
+            func.sum(_provider_amount_column(MediaSpendValue)).label("spend"),
+        )
+        .join(SpendProvider, SpendProvider.id == MediaSpendValue.provider_id)
+        .join(filtered, filtered.c.record_id == MediaSpendValue.media_record_id)
+        .group_by(MediaSpendValue.media_record_id)
+        .subquery("spend_per_record")
+    )
+    # Mirrors `media_metrics()`: a manual override wins, otherwise the providers decide,
+    # and the stored value is the fallback for records that have no provider split yet.
+    effective_spend = func.coalesce(
+        filtered.c.spend_override,
+        spend_per_record.c.spend,
+        filtered.c.spend_calculated,
+    )
+    base_rows = (
+        await db.execute(
+            select(
+                *dimensions,
+                func.count().label("records"),
+                func.sum(filtered.c.installs).label("installs"),
+                func.sum(filtered.c.registrations).label("registrations"),
+                func.sum(filtered.c.ftd).label("ftd"),
+                func.sum(filtered.c.revenue).label("revenue"),
+                func.sum(func.coalesce(rent_per_record.c.rent, 0)).label("rent"),
+                func.sum(effective_spend).label("spend"),
+            )
+            .select_from(filtered)
+            .outerjoin(rent_per_record, rent_per_record.c.record_id == filtered.c.record_id)
+            .outerjoin(
+                spend_per_record, spend_per_record.c.record_id == filtered.c.record_id
+            )
+            .group_by(*dimensions)
+            .order_by(filtered.c.buyer, filtered.c.offer)
+            .limit(GROUP_LIMIT + 1)
+        )
+    ).all()
+    truncated = len(base_rows) > GROUP_LIMIT
+    base_rows = base_rows[:GROUP_LIMIT]
+
+    groups: dict[tuple, dict] = {}
+    record_count = 0
+    for row in base_rows:
+        record_count += int(row.records)
+        groups[_group_identity(row)] = {
+            **_group_head(row),
+            "records": int(row.records),
+            "installs": row.installs,
+            "registrations": row.registrations,
+            "ftd": row.ftd,
+            "revenue": row.revenue,
+            "rent": row.rent,
+            "spend": row.spend,
+            "services": {},
+            "providers": {},
+        }
+
+    service_rows = (
+        await db.execute(
+            select(
+                filtered.c.buyer_id,
+                filtered.c.offer_id,
+                MediaServiceValue.service_id,
+                func.sum(MediaServiceValue.quantity).label("quantity"),
+                func.sum(_service_cost_column(MediaServiceValue)).label("cost"),
+            )
+            .select_from(filtered)
+            .join(MediaServiceValue, MediaServiceValue.media_record_id == filtered.c.record_id)
+            .join(Service, Service.id == MediaServiceValue.service_id)
+            .group_by(filtered.c.buyer_id, filtered.c.offer_id, MediaServiceValue.service_id)
+        )
+    ).all()
+    for row in service_rows:
+        group = groups.get((row.buyer_id, row.offer_id))
+        if group is not None:
+            group["services"][str(row.service_id)] = {
+                "quantity": row.quantity,
+                "cost": row.cost,
+            }
+
+    provider_rows = (
+        await db.execute(
+            select(
+                filtered.c.buyer_id,
+                filtered.c.offer_id,
+                MediaSpendValue.provider_id,
+                func.sum(_provider_amount_column(MediaSpendValue)).label("amount"),
+            )
+            .select_from(filtered)
+            .join(MediaSpendValue, MediaSpendValue.media_record_id == filtered.c.record_id)
+            .join(SpendProvider, SpendProvider.id == MediaSpendValue.provider_id)
+            .group_by(filtered.c.buyer_id, filtered.c.offer_id, MediaSpendValue.provider_id)
+        )
+    ).all()
+    for row in provider_rows:
+        group = groups.get((row.buyer_id, row.offer_id))
+        if group is not None:
+            group["providers"][str(row.provider_id)] = {"amount": row.amount}
+
+    return {
+        "groups": list(groups.values()),
+        "record_count": record_count,
+        "truncated": truncated,
+    }
+
+
 @router.get("/media-records", response_model=Page)
 async def list_media_records(
     date_from: date | None = None,
@@ -123,12 +353,12 @@ async def list_media_records(
     )
     rows = (
         await db.execute(
-            select(MediaRecord, User.name, Offer.name, Offer.geo, Partner.name)
+            select(MediaRecord, User.name, Offer.name, Offer.geo, Partner.name, Offer.partner_id)
             .join(User, User.id == MediaRecord.buyer_id)
             .join(Offer, Offer.id == MediaRecord.offer_id)
             .outerjoin(Partner, Partner.id == Offer.partner_id)
             .where(*filters)
-            .order_by(MediaRecord.record_date.desc(), User.name, Offer.name)
+            .order_by(MediaRecord.record_date.desc(), User.name, Offer.name, MediaRecord.id)
             .limit(min(limit, 1000))
             .offset(offset)
         )
@@ -186,7 +416,7 @@ async def list_media_records(
                 "manual_amount_override": value.manual_amount_override,
             }
     items = []
-    for record, buyer_name, offer_name, geo_value, partner_name in rows:
+    for record, buyer_name, offer_name, geo_value, partner_name, partner_id_value in rows:
         calculated_spend = spend_by_record.get(record.id, record.spend_calculated)
         calculated = media_metrics(
             record.revenue or Decimal("0"),
@@ -204,6 +434,7 @@ async def list_media_records(
                 "offer": offer_name,
                 "geo": geo_value,
                 "partner": partner_name,
+                "partner_id": str(partner_id_value) if partner_id_value else None,
                 "installs": record.installs,
                 "registrations": record.registrations,
                 "ftd": record.ftd,
@@ -399,6 +630,152 @@ def _finance_filters(
     return filters
 
 
+@router.get("/finance-records/groups")
+async def finance_record_groups(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    buyer_id: uuid.UUID | None = None,
+    offer_id: uuid.UUID | None = None,
+    geo: str | None = None,
+    partner_id: uuid.UUID | None = None,
+    link: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("finance.view")),
+) -> dict:
+    """Pre-aggregated finance rows, one per buyer × offer. See `media_record_groups()`."""
+    visible_buyers = await accessible_user_ids(db, current)
+    filters = _finance_filters(
+        current.workspace_id,
+        visible_buyers,
+        date_from,
+        date_to,
+        buyer_id,
+        offer_id,
+        geo,
+        partner_id,
+        link,
+    )
+    filtered = (
+        select(
+            FinanceRecord.id.label("record_id"),
+            FinanceRecord.buyer_id.label("buyer_id"),
+            User.name.label("buyer"),
+            FinanceRecord.offer_id.label("offer_id"),
+            Offer.name.label("offer"),
+            Offer.geo.label("geo"),
+            Offer.partner_id.label("partner_id"),
+            Partner.name.label("partner"),
+            FinanceRecord.qual.label("qual"),
+            FinanceRecord.rent.label("rent"),
+            FinanceRecord.spend.label("spend"),
+            FinanceRecord.spend_override.label("spend_override"),
+            FinanceRecord.revenue.label("revenue"),
+            FinanceRecord.salary.label("salary"),
+        )
+        .join(User, User.id == FinanceRecord.buyer_id)
+        .join(Offer, Offer.id == FinanceRecord.offer_id)
+        .outerjoin(Partner, Partner.id == Offer.partner_id)
+        .where(*filters)
+        .subquery("filtered_finance")
+    )
+    dimensions = _group_dimensions(filtered)
+    effective_spend = func.coalesce(filtered.c.spend_override, filtered.c.spend)
+
+    base_rows = (
+        await db.execute(
+            select(
+                *dimensions,
+                func.count().label("records"),
+                func.sum(filtered.c.qual).label("qual"),
+                func.sum(filtered.c.rent).label("rent"),
+                func.sum(effective_spend).label("spend"),
+                func.sum(filtered.c.revenue).label("revenue"),
+                func.sum(filtered.c.salary).label("salary"),
+            )
+            .select_from(filtered)
+            .group_by(*dimensions)
+            .order_by(filtered.c.buyer, filtered.c.offer)
+            .limit(GROUP_LIMIT + 1)
+        )
+    ).all()
+    truncated = len(base_rows) > GROUP_LIMIT
+    base_rows = base_rows[:GROUP_LIMIT]
+
+    groups: dict[tuple, dict] = {}
+    record_count = 0
+    for row in base_rows:
+        record_count += int(row.records)
+        groups[_group_identity(row)] = {
+            **_group_head(row),
+            "records": int(row.records),
+            "qual": row.qual,
+            "rent": row.rent,
+            "spend": row.spend,
+            "revenue": row.revenue,
+            "salary": row.salary,
+            "services": {},
+            "providers": {},
+        }
+
+    service_rows = (
+        await db.execute(
+            select(
+                filtered.c.buyer_id,
+                filtered.c.offer_id,
+                FinanceServiceValue.service_id,
+                func.sum(FinanceServiceValue.quantity).label("quantity"),
+                func.sum(_service_cost_column(FinanceServiceValue)).label("cost"),
+            )
+            .select_from(filtered)
+            .join(
+                FinanceServiceValue,
+                FinanceServiceValue.finance_record_id == filtered.c.record_id,
+            )
+            .join(Service, Service.id == FinanceServiceValue.service_id)
+            .group_by(
+                filtered.c.buyer_id, filtered.c.offer_id, FinanceServiceValue.service_id
+            )
+        )
+    ).all()
+    for row in service_rows:
+        group = groups.get((row.buyer_id, row.offer_id))
+        if group is not None:
+            group["services"][str(row.service_id)] = {
+                "quantity": row.quantity,
+                "cost": row.cost,
+            }
+
+    provider_rows = (
+        await db.execute(
+            select(
+                filtered.c.buyer_id,
+                filtered.c.offer_id,
+                FinanceSpendValue.provider_id,
+                func.sum(_provider_amount_column(FinanceSpendValue)).label("amount"),
+            )
+            .select_from(filtered)
+            .join(
+                FinanceSpendValue,
+                FinanceSpendValue.finance_record_id == filtered.c.record_id,
+            )
+            .join(SpendProvider, SpendProvider.id == FinanceSpendValue.provider_id)
+            .group_by(
+                filtered.c.buyer_id, filtered.c.offer_id, FinanceSpendValue.provider_id
+            )
+        )
+    ).all()
+    for row in provider_rows:
+        group = groups.get((row.buyer_id, row.offer_id))
+        if group is not None:
+            group["providers"][str(row.provider_id)] = {"amount": row.amount}
+
+    return {
+        "groups": list(groups.values()),
+        "record_count": record_count,
+        "truncated": truncated,
+    }
+
+
 @router.get("/finance-records", response_model=Page)
 async def list_finance_records(
     date_from: date | None = None,
@@ -433,12 +810,16 @@ async def list_finance_records(
     )
     rows = (
         await db.execute(
-            select(FinanceRecord, User.name, Offer.name, Offer.geo, Partner.name)
+            select(
+                FinanceRecord, User.name, Offer.name, Offer.geo, Partner.name, Offer.partner_id
+            )
             .join(User, User.id == FinanceRecord.buyer_id)
             .join(Offer, Offer.id == FinanceRecord.offer_id)
             .outerjoin(Partner, Partner.id == Offer.partner_id)
             .where(*filters)
-            .order_by(FinanceRecord.record_date.desc(), User.name)
+            # `id` is the tie-breaker: date+buyer is not unique for finance, and without
+            # a total order LIMIT/OFFSET pages overlap — rows repeat and others vanish.
+            .order_by(FinanceRecord.record_date.desc(), User.name, FinanceRecord.id)
             .limit(min(limit, 1000))
             .offset(offset)
         )
@@ -488,7 +869,7 @@ async def list_finance_records(
                 "manual_amount_override": value.manual_amount_override,
             }
     items = []
-    for record, buyer_name, offer_name, geo_value, partner_name in rows:
+    for record, buyer_name, offer_name, geo_value, partner_name, partner_id_value in rows:
         effective_spend = (
             record.spend_override if record.spend_override is not None else record.spend
         )
@@ -502,6 +883,7 @@ async def list_finance_records(
                 "offer": offer_name,
                 "geo": geo_value,
                 "partner": partner_name,
+                "partner_id": str(partner_id_value) if partner_id_value else None,
                 "link": record.link,
                 "rent": record.rent,
                 "spend": effective_spend,

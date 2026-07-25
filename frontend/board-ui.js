@@ -28,9 +28,51 @@
 
   function percent(value) {
     if (value == null || !isFinite(value)) return "–";
+    // Past a few hundred percent the decimal is noise, and it costs two characters
+    // in a column that has none to spare.
+    var digits = Math.abs(Number(value)) >= 1000 ? 0 : 1;
     return new Intl.NumberFormat("ru-RU", {
-      minimumFractionDigits: 0, maximumFractionDigits: 1
+      minimumFractionDigits: 0, maximumFractionDigits: digits
     }).format(Number(value)) + "%";
+  }
+
+  /* Drops a trailing ".0" / ".00" so 1.00M reads as 1M. */
+  function scaled(value, digits) {
+    return String(Number(value.toFixed(digits)));
+  }
+
+  function compactNumber(value) {
+    var abs = Math.abs(value);
+    if (abs >= 1e9) return scaled(value / 1e9, 2) + "B";
+    if (abs >= 1e6) return scaled(value / 1e6, 2) + "M";
+    return num(value);
+  }
+
+  function compactMoney(value) {
+    var abs = Math.abs(value);
+    if (abs >= 1e9) return "$" + scaled(value / 1e9, 2) + "B";
+    if (abs >= 1e6) return "$" + scaled(value / 1e6, 2) + "M";
+    // Below $10k the exact figure still fits, and cents matter there (CPD, small spend).
+    if (abs >= 1e4) return "$" + scaled(value / 1e3, 1) + "K";
+    return money(value);
+  }
+
+  var DASH = '<span style="color:#C7CAD6">–</span>';
+
+  /* Returns the cell text plus the exact value for a tooltip, whenever the two differ. */
+  function formatCell(kind, value, compact) {
+    if (value == null || value === "" || !isFinite(Number(value))) {
+      return { text: DASH, title: "" };
+    }
+    var amount = Number(value);
+    if (kind === "percent") {
+      var rendered = percent(amount);
+      return { text: rendered, title: rendered };
+    }
+    var full = kind === "money" ? money(amount) : num(amount);
+    if (!compact) return { text: full, title: full };
+    var short = kind === "money" ? compactMoney(amount) : compactNumber(amount);
+    return { text: short, title: full };
   }
 
   function toast(message, kind) {
@@ -182,11 +224,38 @@
     document.head.appendChild(style);
   }
 
+  // `filter` names the query parameter that narrows the leaf request down to this node.
+  // A null value (an offer with no GEO or no partner) cannot be expressed as a filter,
+  // so those nodes fall back to matching the fetched page client-side — see loadLeaves.
   var LEVELS = {
-    buyer: { label: "Баер", key: function (r) { return r.buyer_id; }, name: function (r) { return r.buyer; } },
-    geo: { label: "GEO", key: function (r) { return r.geo || "—"; }, name: function (r) { return r.geo || "Без GEO"; } },
-    partner: { label: "Партнёрка", key: function (r) { return r.partner || "—"; }, name: function (r) { return r.partner || "Без ПП"; } },
-    offer: { label: "Оффер", key: function (r) { return r.offer_id; }, name: function (r) { return r.offer; } }
+    buyer: {
+      label: "Баер", filter: "buyer_id",
+      key: function (r) { return r.buyer_id; },
+      name: function (r) { return r.buyer; },
+      value: function (r) { return r.buyer_id; },
+      matches: function (r, value) { return r.buyer_id === value; }
+    },
+    geo: {
+      label: "GEO", filter: "geo",
+      key: function (r) { return r.geo || "—"; },
+      name: function (r) { return r.geo || "Без GEO"; },
+      value: function (r) { return r.geo; },
+      matches: function (r, value) { return (r.geo || null) === (value || null); }
+    },
+    partner: {
+      label: "Партнёрка", filter: "partner_id",
+      key: function (r) { return r.partner || "—"; },
+      name: function (r) { return r.partner || "Без ПП"; },
+      value: function (r) { return r.partner_id; },
+      matches: function (r, value) { return (r.partner_id || null) === (value || null); }
+    },
+    offer: {
+      label: "Оффер", filter: "offer_id",
+      key: function (r) { return r.offer_id; },
+      name: function (r) { return r.offer; },
+      value: function (r) { return r.offer_id; },
+      matches: function (r, value) { return r.offer_id === value; }
+    }
   };
 
   var TH_SUB = 'style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;' +
@@ -208,12 +277,89 @@
 
   function td(content, opts) {
     opts = opts || {};
-    return '<td style="text-align:right;padding:12px;font-family:Space Grotesk;font-size:12.5px;' +
+    return "<td" + (opts.title ? ' title="' + escapeHtml(opts.title) + '"' : "") +
+      ' class="cs-cell" style="text-align:right;padding:12px;font-family:Space Grotesk;font-size:12.5px;' +
       "font-weight:" + (opts.bold ? "800" : "600") + ";border-bottom:1px solid #F2F3F8;white-space:nowrap;" +
       (opts.color ? "color:" + opts.color + ";" : "") + (opts.extra || "") + '">' + content + "</td>";
   }
 
   /* ---------- board factory ---------- */
+
+  var LEAF_PAGE = 200;
+
+  // Column groups in board order. `services` and `providers` are filled from the
+  // workspace catalog; the rest come from each board's `metricColumns`.
+  var COLUMN_GROUPS = [
+    { key: "services", label: "Сервисы", background: "#F1F2FF", color: "#5A5FE0", border: "#E1E3F5" },
+    { key: "providers", label: "Агенты и платёжки", background: "#FFF6E9", color: "#C9821F", border: "#F2E5CC" },
+    { key: "funnel", label: null, background: "#E9F8F1", color: "#16B57F", border: "#D2EEE1" },
+    { key: "costs", label: "Затраты", background: "#F4F5F9", color: "#6B7180", border: "#E4E6EF" },
+    { key: "result", label: "Результат", background: "#1F2231", color: "#fff", border: "#1F2231" }
+  ];
+
+  function defaultDisplay() {
+    return {
+      compact: true,
+      dense: false,
+      groups: { services: true, providers: true, funnel: true, costs: true, result: true }
+    };
+  }
+
+  function signTone(value) {
+    return value >= 0 ? "#16B57F" : "#D94B61";
+  }
+
+  function amount(value) {
+    return value == null ? 0 : Number(value);
+  }
+
+  function ensureViewStyles() {
+    if (byId("celestialViewStyles")) return;
+    var style = document.createElement("style");
+    style.id = "celestialViewStyles";
+    style.textContent =
+      ".cs-view{position:relative;flex-shrink:0}" +
+      ".cs-view-button{display:inline-flex;align-items:center;gap:7px;border:1px solid #E1E4ED;" +
+      "background:#fff;border-radius:11px;padding:8px 14px;font:700 12.5px 'Manrope',sans-serif;" +
+      "color:#5A5FE0;cursor:pointer;transition:border-color .18s,background .18s}" +
+      ".cs-view-button:hover{border-color:#BFC3F0;background:#F8F9FF}" +
+      '.cs-view-button[aria-expanded="true"]{border-color:#8589E9;background:#F1F2FF}' +
+      // Anchored to the button's right edge, which is itself right-aligned in the card —
+      // that keeps the panel on screen at every width without flipping sides.
+      ".cs-view-panel{position:absolute;top:calc(100% + 8px);right:0;z-index:10050;" +
+      "width:min(290px,calc(100vw - 32px));" +
+      "background:#fff;border:1px solid #E7E9F1;border-radius:14px;padding:14px;" +
+      "box-shadow:0 18px 44px rgba(31,34,49,.18)}" +
+      ".cs-view-panel[hidden]{display:none}" +
+      ".cs-view-row{display:flex;align-items:center;justify-content:space-between;gap:10px;" +
+      "margin-bottom:11px}" +
+      ".cs-view-row--stack{display:block;margin-bottom:0}" +
+      ".cs-view-label{font:700 11px 'Manrope',sans-serif;color:#8A8FA3;text-transform:uppercase;" +
+      "letter-spacing:.5px}" +
+      ".cs-seg{display:inline-flex;background:#F4F5F9;border-radius:9px;padding:2px}" +
+      ".cs-seg-button{border:none;background:transparent;border-radius:7px;padding:6px 11px;" +
+      "font:700 11.5px 'Manrope',sans-serif;color:#8A8FA3;cursor:pointer;transition:background .16s,color .16s}" +
+      '.cs-seg-button[aria-pressed="true"]{background:#fff;color:#171A26;' +
+      "box-shadow:0 1px 3px rgba(31,34,49,.12)}" +
+      ".cs-view-groups{display:grid;gap:7px;margin-top:9px}" +
+      ".cs-view-check{display:flex;align-items:center;gap:9px;font:600 12.5px 'Manrope',sans-serif;" +
+      "color:#3A3F4F;cursor:pointer}" +
+      ".cs-view-check input{width:15px;height:15px;accent-color:#5A5FE0;cursor:pointer}";
+    document.head.appendChild(style);
+  }
+
+  function ensureBoardTableStyles() {
+    if (byId("celestialBoardTableStyles")) return;
+    var style = document.createElement("style");
+    style.id = "celestialBoardTableStyles";
+    // Collapsing is a visibility change, not a re-render: every group row is in the DOM
+    // already, so folding a branch costs a class toggle instead of rebuilding the table.
+    style.textContent =
+      ".cs-row--hidden{display:none}" +
+      ".cs-arrow{transition:transform .15s}" +
+      'tr[data-open="0"] > td .cs-arrow{transform:rotate(-90deg)}';
+    document.head.appendChild(style);
+  }
 
   function createBoard(config) {
     var state = {
@@ -223,9 +369,15 @@
       buyers: [],
       offers: [],
       partners: [],
-      records: [],
-      total: 0,
+      // Pre-aggregated rows, one per buyer × offer. The raw records behind them are
+      // fetched only for the branch the user actually opens (see loadLeaves).
+      groups: [],
+      recordCount: 0,
+      truncated: false,
+      leaves: {},
+      leavesOpen: {},
       structure: null,
+      display: defaultDisplay(),
       collapsed: {},
       canManage: false
     };
@@ -264,6 +416,25 @@
       add("offer_id", "FilterOffer");
       if (config.extraFilters) config.extraFilters(params);
       return params.length ? "&" + params.join("&") : "";
+    }
+
+    /* The same filters as an object, so a node's own values can override the bar's. */
+    function filterParams() {
+      var params = {};
+      filterQuery().replace(/^&/, "").split("&").forEach(function (pair) {
+        if (!pair) return;
+        var parts = pair.split("=");
+        params[parts[0]] = decodeURIComponent(parts[1] || "");
+      });
+      return params;
+    }
+
+    function queryString(params) {
+      return Object.keys(params).filter(function (key) {
+        return params[key] !== "" && params[key] != null;
+      }).map(function (key) {
+        return key + "=" + encodeURIComponent(params[key]);
+      }).join("&");
     }
 
     function fillSelect(id, items, valueKey, labelKey) {
@@ -362,6 +533,10 @@
     }
 
     function bindStructureBar(bar) {
+      // The bar is re-rendered on every structure change but the element itself stays,
+      // so binding per render stacked a second handler that undid the first one's toggle.
+      if (bar.dataset.structureBound) return;
+      bar.dataset.structureBound = "1";
       var drag = null;
 
       bar.addEventListener("pointerdown", function (event) {
@@ -513,6 +688,7 @@
           return byKey[slot.getAttribute("data-key")];
         });
         // Deliberately not re-rendering the bar: the landing animation is still running.
+        resetLeafState();
         renderTable();
         persistStructure();
       }
@@ -523,7 +699,14 @@
         .catch(function () { toast("Не удалось сохранить структуру", "error"); });
     }
 
+    /* Node paths are built from the level order, so any change invalidates them. */
+    function resetLeafState() {
+      state.leaves = {};
+      state.leavesOpen = {};
+    }
+
     function saveStructure(focusKey) {
+      resetLeafState();
       renderStructureBar();
       if (focusKey) {
         var bar = el("StructureBar");
@@ -535,38 +718,172 @@
       persistStructure();
     }
 
+    /* ----- display settings ----- */
+
+    function persistDisplay() {
+      api.put("/me/preferences/" + config.displayPreferenceKey, { value: state.display })
+        .catch(function () { toast("Не удалось сохранить настройки вида", "error"); });
+    }
+
+    function applyDisplay(rerenderHead) {
+      var table = el("TableHead") && el("TableHead").closest("table");
+      if (table) table.classList.toggle("celestial-board-table--dense", !!state.display.dense);
+      if (rerenderHead) renderHead();
+      renderTable();
+    }
+
+    function segmented(name, options, active) {
+      return '<div class="cs-seg">' + options.map(function (option) {
+        return '<button type="button" class="cs-seg-button" data-view="' + name +
+          '" data-value="' + option.value + '" aria-pressed="' +
+          (option.value === active ? "true" : "false") + '">' +
+          escapeHtml(option.label) + "</button>";
+      }).join("") + "</div>";
+    }
+
+    function renderViewPanel(panel) {
+      var groups = COLUMN_GROUPS.map(function (group) {
+        var on = state.display.groups[group.key] !== false;
+        return '<label class="cs-view-check"><input type="checkbox" data-group="' + group.key +
+          '"' + (on ? " checked" : "") + '><span>' +
+          escapeHtml(group.label || config.funnelTitle) + "</span></label>";
+      }).join("");
+      panel.innerHTML =
+        '<div class="cs-view-row"><span class="cs-view-label">Числа</span>' +
+        segmented("compact", [
+          { value: "1", label: "Компактные" },
+          { value: "0", label: "Полные" }
+        ], state.display.compact ? "1" : "0") + "</div>" +
+        '<div class="cs-view-row"><span class="cs-view-label">Плотность</span>' +
+        segmented("dense", [
+          { value: "0", label: "Обычная" },
+          { value: "1", label: "Плотная" }
+        ], state.display.dense ? "1" : "0") + "</div>" +
+        '<div class="cs-view-row cs-view-row--stack"><span class="cs-view-label">Колонки</span>' +
+        '<div class="cs-view-groups">' + groups + "</div></div>";
+    }
+
+    function bindViewControls() {
+      var bar = el("StructureBar");
+      var card = bar && bar.parentElement;
+      if (!card || byId(p + "ViewButton")) return;
+      ensureViewStyles();
+      card.classList.add("cs-structure-card");
+      var host = document.createElement("div");
+      host.className = "cs-view";
+      host.innerHTML =
+        '<button type="button" class="cs-view-button" id="' + p + 'ViewButton" aria-expanded="false">' +
+        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+        '<path d="M4 6h16M4 12h16M4 18h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+        "</svg>Вид</button>" +
+        '<div class="cs-view-panel" id="' + p + 'ViewPanel" hidden></div>';
+      card.appendChild(host);
+
+      var button = byId(p + "ViewButton");
+      var panel = byId(p + "ViewPanel");
+
+      function close() {
+        panel.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+        document.removeEventListener("click", onOutside, true);
+        document.removeEventListener("keydown", onKey);
+      }
+      function onOutside(event) {
+        if (!host.contains(event.target)) close();
+      }
+      function onKey(event) {
+        if (event.key === "Escape") { close(); button.focus(); }
+      }
+      button.addEventListener("click", function () {
+        if (!panel.hidden) { close(); return; }
+        renderViewPanel(panel);
+        panel.hidden = false;
+        button.setAttribute("aria-expanded", "true");
+        document.addEventListener("click", onOutside, true);
+        document.addEventListener("keydown", onKey);
+      });
+      panel.addEventListener("click", function (event) {
+        var segment = event.target.closest("[data-view]");
+        if (!segment) return;
+        var on = segment.getAttribute("data-value") === "1";
+        state.display[segment.getAttribute("data-view")] = on;
+        renderViewPanel(panel);
+        applyDisplay(false);
+        persistDisplay();
+      });
+      panel.addEventListener("change", function (event) {
+        var checkbox = event.target.closest("[data-group]");
+        if (!checkbox) return;
+        var key = checkbox.getAttribute("data-group");
+        var enabled = COLUMN_GROUPS.filter(function (group) {
+          return state.display.groups[group.key] !== false;
+        });
+        if (!checkbox.checked && enabled.length <= 1) {
+          checkbox.checked = true;
+          toast("Должна остаться хотя бы одна группа колонок", "error");
+          return;
+        }
+        state.display.groups[key] = checkbox.checked;
+        applyDisplay(true);
+        persistDisplay();
+      });
+    }
+
     /* ----- table header ----- */
+
+    // Rebuilt whenever the catalog or the visible groups change; every row renders
+    // against this one description instead of re-deriving the column list.
+    var layout = [];
+
+    function buildLayout() {
+      var byGroup = { funnel: [], costs: [], result: [] };
+      config.metricColumns.forEach(function (column) {
+        byGroup[column.group].push(column);
+      });
+      var catalog = {
+        services: state.services.map(function (service) {
+          return { label: service.name, kind: "num", bucket: "services", id: service.id };
+        }),
+        providers: state.providers.map(function (provider) {
+          return { label: provider.name, kind: "money", bucket: "providers", id: provider.id };
+        })
+      };
+      layout = COLUMN_GROUPS.map(function (group) {
+        return Object.assign({}, group, {
+          label: group.label || config.funnelTitle,
+          columns: catalog[group.key] || byGroup[group.key] || []
+        });
+      }).filter(function (group) {
+        return state.display.groups[group.key] !== false && group.columns.length;
+      });
+    }
 
     function renderHead() {
       var head = el("TableHead");
       if (!head) return;
-      var funnel = config.funnelColumns;
-      var results = config.resultColumns;
+      buildLayout();
       var row1 = "<tr>" +
-        '<th rowspan="2" style="position:sticky;left:0;top:0;z-index:5;background:#F8F9FC;text-align:left;padding:14px 16px;min-width:290px;width:290px;border-bottom:1px solid #E7E9F1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;text-transform:uppercase;letter-spacing:.6px">Структура</th>' +
-        groupTh("Сервисы", state.services.length, "#F1F2FF", "#5A5FE0", "#E1E3F5") +
-        groupTh("Агенты и платёжки", state.providers.length, "#FFF6E9", "#C9821F", "#F2E5CC") +
-        groupTh(config.funnelTitle, funnel.length, "#E9F8F1", "#16B57F", "#D2EEE1") +
-        groupTh("Затраты", 2, "#F4F5F9", "#6B7180", "#E4E6EF") +
-        groupTh("Результат", results.length, "#1F2231", "#fff", "#1F2231") +
+        '<th rowspan="2" class="cs-head-structure" style="position:sticky;left:0;top:0;z-index:5;background:#F8F9FC;text-align:left;padding:14px 16px;border-bottom:1px solid #E7E9F1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;text-transform:uppercase;letter-spacing:.6px">Структура</th>' +
+        layout.map(function (group) {
+          return groupTh(group.label, group.columns.length, group.background, group.color, group.border);
+        }).join("") +
         (state.canManage ? '<th rowspan="2" style="position:sticky;top:0;z-index:4;background:#F8F9FC;border-bottom:1px solid #E7E9F1;width:44px"></th>' : "") +
         "</tr>";
       var row2 = "<tr>" +
-        state.services.map(function (service, index) {
-          return subTh(service.name, index === 0 ? ";border-left:1px solid #EEF0F7" : "");
+        layout.map(function (group, groupIndex) {
+          return group.columns.map(function (column, index) {
+            return subTh(column.label,
+              index === 0 && groupIndex === 0 ? ";border-left:1px solid #EEF0F7" : "");
+          }).join("");
         }).join("") +
-        state.providers.map(function (provider) { return subTh(provider.name); }).join("") +
-        funnel.map(function (column) { return subTh(column.label); }).join("") +
-        subTh("RENT") + subTh("SPEND") +
-        results.map(function (column) { return subTh(column.label); }).join("") +
         "</tr>";
       head.innerHTML = row1 + row2;
     }
 
     function columnCount() {
-      return 1 + state.services.length + state.providers.length +
-        config.funnelColumns.length + 2 + config.resultColumns.length +
-        (state.canManage ? 1 : 0);
+      return layout.reduce(function (total, group) {
+        return total + group.columns.length;
+      }, 1) + (state.canManage ? 1 : 0);
     }
 
     /* ----- aggregation ----- */
@@ -574,12 +891,14 @@
     function newAggregate() {
       return {
         services: {}, providers: {},
-        sums: {}, count: 0
+        sums: {}, count: 0, records: 0
       };
     }
 
     function accumulate(aggregate, record) {
       aggregate.count += 1;
+      // A group row stands for many records; a raw record stands for itself.
+      aggregate.records += Number(record.records == null ? 1 : record.records);
       state.services.forEach(function (service) {
         var value = (record.services || {})[service.id];
         if (value) {
@@ -601,7 +920,9 @@
     }
 
     function groupRecords(records, levels) {
-      var root = { children: {}, order: [], aggregate: newAggregate(), records: [] };
+      var root = {
+        children: {}, order: [], aggregate: newAggregate(), records: [], scope: {}
+      };
       records.forEach(function (record) {
         accumulate(root.aggregate, record);
         var node = root;
@@ -609,9 +930,14 @@
           var level = LEVELS[levelKey];
           var key = String(level.key(record));
           if (!node.children[key]) {
+            // `scope` is this node's slice of the data, inherited down the branch, and
+            // is what turns a node back into a request for its own records.
+            var scope = Object.assign({}, node.scope);
+            scope[levelKey] = level.value(record);
             node.children[key] = {
               key: key, level: levelKey, name: level.name(record),
-              children: {}, order: [], aggregate: newAggregate(), records: []
+              children: {}, order: [], aggregate: newAggregate(), records: [],
+              scope: scope
             };
             node.order.push(key);
           }
@@ -626,50 +952,117 @@
     /* ----- rendering ----- */
 
     function metricCells(source, opts) {
+      var compact = state.display.compact;
       var cells = "";
-      state.services.forEach(function (service, index) {
-        var value = source.services[service.id];
-        cells += td(value == null ? '<span style="color:#C7CAD6">–</span>' : num(value),
-          { bold: opts.bold, extra: index === 0 ? "border-left:1px solid #F0F1F7;" : "" });
+      layout.forEach(function (group, groupIndex) {
+        group.columns.forEach(function (column, index) {
+          var value = column.bucket
+            ? source[column.bucket][column.id]
+            : column.get(source.sums);
+          var formatted = formatCell(column.kind, value, compact);
+          var numeric = value == null ? null : Number(value);
+          cells += td(formatted.text, {
+            bold: opts.bold || column.bold,
+            title: formatted.title,
+            color: column.tone && numeric != null ? column.tone(numeric) : undefined,
+            extra: index === 0 && groupIndex === 0 ? "border-left:1px solid #F0F1F7;" : ""
+          });
+        });
       });
-      state.providers.forEach(function (provider) {
-        var value = source.providers[provider.id];
-        cells += td(value == null ? '<span style="color:#C7CAD6">–</span>' : money(value), { bold: opts.bold });
-      });
-      cells += config.metricCells(source.sums, opts);
       return cells;
     }
 
     function nodePath(prefixPath, key) { return prefixPath + "|" + key; }
 
+    function noticeRow(depth, owner, content) {
+      return '<tr data-owner="' + escapeHtml(owner) + '" style="background:#fff">' +
+        '<td colspan="' + columnCount() + '" style="padding:10px 16px 10px ' +
+        (16 + depth * 22) + 'px;border-bottom:1px solid #F2F3F8;font-size:11.5px;' +
+        'font-weight:700;color:#8A8FA3">' + content + "</td></tr>";
+    }
+
     function renderNodeRows(node, depth, path, output) {
-      var isCollapsed = !!state.collapsed[path];
-      var arrow = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="transform:rotate(' +
-        (isCollapsed ? "-90deg" : "0deg") + ');transition:transform .15s"><path d="m6 9 6 6 6-6" stroke="' +
+      var isLeafLevel = !node.order.length;
+      // A leaf-level node hides raw records that are not loaded yet, so its arrow tracks
+      // a separate flag: group nodes default to open, record lists default to closed.
+      var isOpen = isLeafLevel ? !!state.leavesOpen[path] : !state.collapsed[path];
+      var arrow = '<svg class="cs-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none">' +
+        '<path d="m6 9 6 6 6-6" stroke="' +
         (depth === 0 ? "#5A5FE0" : "#8A8FA3") + '" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       var background = depth === 0 ? "#F5F6FF" : "#fff";
+      var count = node.aggregate.records;
       var label = '<div style="display:flex;align-items:center;gap:9px">' + arrow +
         '<span style="font-weight:' + (depth === 0 ? "800" : "700") + ';font-size:' +
         (depth === 0 ? "13.5px" : "12.5px") + '">' + escapeHtml(node.name) + "</span>" +
         '<span style="font-size:10.5px;font-weight:700;color:#A2A7B5">' +
-        escapeHtml(LEVELS[node.level].label) + "</span></div>";
-      output.push('<tr data-node="' + escapeHtml(path) + '" style="background:' + background + ';cursor:pointer">' +
+        escapeHtml(LEVELS[node.level].label) + "</span>" +
+        (isLeafLevel
+          ? '<span style="font-size:10.5px;font-weight:700;color:#C7CAD6">' +
+            num(count) + " " + recordWord(count) + "</span>"
+          : "") +
+        "</div>";
+      output.push('<tr data-node="' + escapeHtml(path) + '"' +
+        (isLeafLevel ? ' data-leaf-node="1"' : "") +
+        ' data-open="' + (isOpen ? "1" : "0") +
+        '" style="background:' + background + ';cursor:pointer">' +
         '<td style="position:sticky;left:0;z-index:2;background:' + background +
         ';padding:12px 16px 12px ' + (16 + depth * 22) +
         'px;border-bottom:1px solid #EDEFF6;border-right:1px solid #E7E9F1">' + label + "</td>" +
         metricCells({ services: node.aggregate.services, providers: node.aggregate.providers, sums: node.aggregate.sums }, { bold: depth === 0 }) +
         (state.canManage ? td("", {}) : "") +
         "</tr>");
-      if (isCollapsed) return;
+      // Descendants are always emitted — collapsing hides them, so reopening a branch
+      // never costs a rebuild. Only records that have not been fetched are missing.
+      if (isLeafLevel) {
+        renderLeafRows(node, depth + 1, path, output);
+        return;
+      }
       node.order.forEach(function (key) {
         renderNodeRows(node.children[key], depth + 1, nodePath(path, key), output);
       });
-      node.records.forEach(function (record) {
-        output.push(renderLeafRow(record, depth + 1));
-      });
     }
 
-    function renderLeafRow(record, depth) {
+    function recordWord(count) {
+      var tail = count % 100;
+      if (tail > 10 && tail < 20) return "записей";
+      switch (count % 10) {
+        case 1: return "запись";
+        case 2: case 3: case 4: return "записи";
+        default: return "записей";
+      }
+    }
+
+    function renderLeafRows(node, depth, path, output) {
+      var leaf = state.leaves[path];
+      if (!leaf) {
+        // Nothing fetched yet: the placeholder only matters once the node is opened.
+        if (state.leavesOpen[path]) output.push(noticeRow(depth, path, "Загружаю записи…"));
+        return;
+      }
+      if (leaf.error) {
+        output.push(noticeRow(depth, path, '<span style="color:#D94B61">' +
+          escapeHtml(leaf.error) + "</span>"));
+        return;
+      }
+      leaf.items.forEach(function (record) {
+        output.push(renderLeafRow(record, depth, path));
+      });
+      if (leaf.loading) {
+        output.push(noticeRow(depth, path, "Загружаю записи…"));
+        return;
+      }
+      if (!leaf.done) {
+        output.push(noticeRow(depth, path,
+          '<button type="button" data-more="' + escapeHtml(path) + '" ' +
+          'style="border:1px solid #E1E4ED;background:#F8F9FC;border-radius:9px;padding:6px 13px;' +
+          "font:700 11.5px Manrope,sans-serif;color:#5A5FE0;cursor:pointer\">Показать ещё · " +
+          num(leaf.items.length) + " из " + num(node.aggregate.records) + "</button>"));
+      } else if (!leaf.items.length) {
+        output.push(noticeRow(depth, path, "Записей нет"));
+      }
+    }
+
+    function renderLeafRow(record, depth, owner) {
       var recordServices = {};
       var recordProviders = {};
       state.services.forEach(function (service) {
@@ -689,7 +1082,7 @@
         '<span style="font-size:12px;font-weight:600;color:#6B7180">' + escapeHtml(record.record_date) + "</span>" +
         '<span style="font-size:11px;color:#A2A7B5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px">' +
         escapeHtml(config.leafLabel(record)) + "</span></div>";
-      return '<tr style="background:#fff">' +
+      return '<tr data-owner="' + escapeHtml(owner || "") + '" style="background:#fff">' +
         '<td style="position:sticky;left:0;z-index:2;background:#fff;padding:10px 16px 10px ' +
         (16 + depth * 22) + 'px;border-bottom:1px solid #F2F3F8;border-right:1px solid #E7E9F1">' + label + "</td>" +
         metricCells({ services: recordServices, providers: recordProviders, sums: sums }, { bold: false, leaf: true, record: record }) +
@@ -700,43 +1093,123 @@
         "</tr>";
     }
 
+    // The tree the last render drew, so a click can resolve a path without rebuilding it.
+    var currentTree = null;
+
+    function findNode(path) {
+      if (!currentTree) return null;
+      var node = currentTree;
+      var keys = path.split("|");
+      for (var i = 0; i < keys.length; i += 1) {
+        node = node.children[keys[i]];
+        if (!node) return null;
+      }
+      return node;
+    }
+
     function renderTable() {
       var body = el("TableBody");
       if (!body) return;
       var count = el("ResultCount");
       if (count) {
-        count.textContent = "Показано записей: " + state.records.length + " из " + state.total;
+        count.textContent = state.truncated
+          ? "Показано " + num(state.groups.length) + " групп (срез ограничен) · записей: " + num(state.recordCount)
+          : "Групп: " + num(state.groups.length) + " · записей: " + num(state.recordCount);
       }
-      if (!state.records.length) {
+      if (!state.groups.length) {
+        currentTree = null;
         body.innerHTML = '<tr><td colspan="' + columnCount() +
           '" style="padding:44px 24px;text-align:center;color:#A2A7B5;font-size:13px">' +
           escapeHtml(config.emptyMessage) + "</td></tr>";
         return;
       }
-      var tree = groupRecords(state.records, activeLevels());
+      currentTree = groupRecords(state.groups, activeLevels());
       var output = [];
-      tree.order.forEach(function (key) {
-        renderNodeRows(tree.children[key], 0, key, output);
+      currentTree.order.forEach(function (key) {
+        renderNodeRows(currentTree.children[key], 0, key, output);
       });
-      tree.records.forEach(function (record) { output.push(renderLeafRow(record, 0)); });
       body.innerHTML = output.join("");
-      body.querySelectorAll("[data-node]").forEach(function (row) {
-        row.addEventListener("click", function (event) {
-          if (event.target.closest("[data-edit]")) return;
-          var path = row.getAttribute("data-node");
-          state.collapsed[path] = !state.collapsed[path];
-          renderTable();
-        });
-      });
-      body.querySelectorAll("[data-edit]").forEach(function (button) {
-        button.addEventListener("click", function (event) {
+      applyVisibility();
+    }
+
+    /* A row is visible unless one of its ancestors is folded; leaf rows additionally
+     * require their own node to be open. Pure class work — no HTML is rebuilt. */
+    function isPathVisible(path) {
+      var keys = path.split("|");
+      var prefix = "";
+      for (var i = 0; i < keys.length - 1; i += 1) {
+        prefix = i ? prefix + "|" + keys[i] : keys[i];
+        if (state.collapsed[prefix]) return false;
+      }
+      return true;
+    }
+
+    function applyVisibility() {
+      var body = el("TableBody");
+      if (!body) return;
+      var rows = body.children;
+      for (var i = 0; i < rows.length; i += 1) {
+        var row = rows[i];
+        var path = row.getAttribute("data-node");
+        var visible;
+        if (path) {
+          visible = isPathVisible(path);
+        } else {
+          var owner = row.getAttribute("data-owner");
+          visible = owner
+            ? isPathVisible(owner) && !!state.leavesOpen[owner]
+            : true;
+        }
+        row.classList.toggle("cs-row--hidden", !visible);
+      }
+    }
+
+    /* One listener for the whole table: rows are re-rendered constantly, and binding
+     * per row leaked a handler per row on every collapse. */
+    function bindTableEvents() {
+      var body = el("TableBody");
+      if (!body || body.dataset.boardBound) return;
+      body.dataset.boardBound = "1";
+      body.addEventListener("click", function (event) {
+        var more = event.target.closest("[data-more]");
+        if (more) {
           event.stopPropagation();
-          var record = state.records.find(function (item) {
-            return item.id === button.getAttribute("data-edit");
-          });
-          openEditModal(record || null);
-        });
+          loadLeaves(more.getAttribute("data-more"), true).catch(fail);
+          return;
+        }
+        var edit = event.target.closest("[data-edit]");
+        if (edit) {
+          event.stopPropagation();
+          openEditModal(findLoadedRecord(edit.getAttribute("data-edit")));
+          return;
+        }
+        var row = event.target.closest("[data-node]");
+        if (!row) return;
+        var path = row.getAttribute("data-node");
+        if (row.getAttribute("data-leaf-node")) {
+          var open = !state.leavesOpen[path];
+          state.leavesOpen[path] = open;
+          row.setAttribute("data-open", open ? "1" : "0");
+          // Records already fetched are still in the DOM, so reopening costs nothing.
+          if (open && !state.leaves[path]) loadLeaves(path, false).catch(fail);
+          else applyVisibility();
+          return;
+        }
+        state.collapsed[path] = !state.collapsed[path];
+        row.setAttribute("data-open", state.collapsed[path] ? "0" : "1");
+        applyVisibility();
       });
+    }
+
+    function findLoadedRecord(id) {
+      var found = null;
+      Object.keys(state.leaves).some(function (path) {
+        found = (state.leaves[path].items || []).find(function (item) {
+          return item.id === id;
+        });
+        return !!found;
+      });
+      return found || null;
     }
 
     /* ----- data loading ----- */
@@ -757,7 +1230,8 @@
         api.get("/users/options"),
         api.getAll("/offers"),
         api.getAll("/partners"),
-        api.get("/me/preferences/" + config.preferenceKey)
+        api.get("/me/preferences/" + config.preferenceKey),
+        api.get("/me/preferences/" + config.displayPreferenceKey)
       ]);
       state.services = (results[0].items || []).filter(function (s) { return s.status === "active"; });
       state.providers = (results[1].items || []).filter(function (s) { return s.status === "active"; });
@@ -767,6 +1241,12 @@
       var preference = results[5] && results[5].value;
       state.structure = preference && Array.isArray(preference.items) && preference.items.length
         ? preference : defaultStructure();
+      var display = (results[6] && results[6].value) || {};
+      // Merged rather than replaced, so a preference saved before a new switch existed
+      // still gets that switch's default instead of `undefined`.
+      state.display = Object.assign(defaultDisplay(), display, {
+        groups: Object.assign(defaultDisplay().groups, display.groups || {})
+      });
       fillSelect("FilterBuyer", state.buyers, "id", "name");
       fillSelect("FilterPartner", state.partners, "id", "name");
       fillSelect("FilterOffer", state.offers, "id", "name");
@@ -778,19 +1258,85 @@
       fillSelect("FilterGeo", geos.map(function (geo) { return { id: geo, name: geo }; }), "id", "name");
     }
 
-    function endpointWithFilters() {
-      var query = filterQuery().replace(/^&/, "");
-      return config.endpoint + (query ? "?" + query : "");
+    async function loadRecords() {
+      // One request for the whole board: the server returns rows already summed per
+      // buyer × offer, which is every grouping the structure bar can ask for. The raw
+      // records stay on the server until a branch is opened.
+      var query = queryString(filterParams());
+      var data = await api.get(config.groupsEndpoint + (query ? "?" + query : ""));
+      state.groups = data.groups || [];
+      state.recordCount = data.record_count || 0;
+      state.truncated = !!data.truncated;
+      state.leaves = {};
+      renderTable();
+      if (state.truncated) {
+        toast("Слишком много групп — показан срез. Сузьте период или фильтры", "info");
+      }
+      if (config.onData) config.onData(state, currentTree);
+      // Branches the user had open must not be left showing a spinner forever.
+      await Promise.all(Object.keys(state.leavesOpen)
+        .filter(function (path) { return state.leavesOpen[path] && findNode(path); })
+        .map(function (path) {
+          return loadLeaves(path, false).catch(function () { /* shown in the row */ });
+        }));
     }
 
-    async function loadRecords() {
-      // Every matching row is needed: the group totals are summed on the client,
-      // so a truncated page would render wrong aggregates.
-      var page = await api.getAll(endpointWithFilters(), 1000);
-      state.records = page.items || [];
-      state.total = page.total || 0;
+    async function loadLeaves(path, append) {
+      var node = findNode(path);
+      if (!node) return;
+      var leaf = state.leaves[path];
+      if (leaf && leaf.loading) return;
+      if (append && !leaf) return;
+      // `offset` counts server rows, not kept ones: when a dimension cannot be filtered
+      // server-side, part of a page is dropped here and paging by kept rows would
+      // request the same page forever.
+      var offset = append ? leaf.offset : 0;
+      state.leaves[path] = {
+        items: leaf && append ? leaf.items : [],
+        offset: offset,
+        done: false,
+        loading: true,
+        error: null
+      };
       renderTable();
-      if (config.onData) config.onData(state);
+
+      var params = filterParams();
+      // The node is narrower than the filter bar, so its own values win. A dimension
+      // with no value (no GEO, no partner) has no filter — those pages get matched
+      // against the node client-side below.
+      var unfiltered = [];
+      Object.keys(node.scope).forEach(function (levelKey) {
+        var value = node.scope[levelKey];
+        if (value == null || value === "") unfiltered.push(levelKey);
+        else params[LEVELS[levelKey].filter] = value;
+      });
+      params.limit = LEAF_PAGE;
+      params.offset = offset;
+      try {
+        var page = await api.get(config.endpoint + "?" + queryString(params));
+        var fetched = page.items || [];
+        var items = fetched.filter(function (record) {
+          return unfiltered.every(function (levelKey) {
+            return LEVELS[levelKey].matches(record, node.scope[levelKey]);
+          });
+        });
+        var target = state.leaves[path];
+        target.items = target.items.concat(items);
+        target.offset = offset + fetched.length;
+        target.done = fetched.length < LEAF_PAGE;
+        target.loading = false;
+      } catch (error) {
+        state.leaves[path] = {
+          items: leaf && append ? leaf.items : [],
+          offset: offset,
+          done: false,
+          loading: false,
+          error: error && error.message ? error.message : "Не удалось загрузить записи"
+        };
+        renderTable();
+        throw error;
+      }
+      renderTable();
     }
 
     /* ----- edit modal ----- */
@@ -983,6 +1529,7 @@
         "celestial-board-page",
         "celestial-board-page--" + p
       );
+      ensureBoardTableStyles();
       var tableHead = el("TableHead");
       var table = tableHead && tableHead.closest("table");
       if (table) {
@@ -1001,8 +1548,13 @@
       }
       await loadRefs();
       renderStructureBar();
+      bindViewControls();
+      if (table && state.display.dense) {
+        table.classList.add("celestial-board-table--dense");
+      }
       renderHead();
       bindFilters();
+      bindTableEvents();
       if (config.afterInit) config.afterInit(state, { loadRecords: loadRecords, fail: fail, filterQuery: filterQuery });
       await loadRecords();
     }
@@ -1015,37 +1567,40 @@
   var mediaBoard = createBoard({
     prefix: "media",
     endpoint: "/media-records",
+    groupsEndpoint: "/media-records/groups",
     preferenceKey: "mediaboard.structure",
+    displayPreferenceKey: "mediaboard.display",
     managePermission: "media.manage",
     funnelTitle: "Воронка",
-    funnelColumns: [
-      { label: "INST" }, { label: "REG" }, { label: "FTD" }
-    ],
-    resultColumns: [
-      { label: "Revenue" }, { label: "Profit" }, { label: "ROI" }, { label: "CPD" }
+    metricColumns: [
+      { group: "funnel", label: "INST", kind: "num", get: function (s) { return s.installs; } },
+      { group: "funnel", label: "REG", kind: "num", get: function (s) { return s.registrations; } },
+      { group: "funnel", label: "FTD", kind: "num", get: function (s) { return s.ftd; } },
+      { group: "costs", label: "RENT", kind: "money", get: function (s) { return s.rent; } },
+      { group: "costs", label: "SPEND", kind: "money", get: function (s) { return s.spend; } },
+      { group: "result", label: "Revenue", kind: "money", get: function (s) { return s.revenue; } },
+      {
+        group: "result", label: "Profit", kind: "money", bold: true, tone: signTone,
+        get: function (s) { return amount(s.revenue) - amount(s.spend); }
+      },
+      {
+        group: "result", label: "ROI", kind: "percent", bold: true, tone: signTone,
+        get: function (s) {
+          var spend = amount(s.spend);
+          return spend > 0 ? (amount(s.revenue) - spend) / spend * 100 : null;
+        }
+      },
+      {
+        group: "result", label: "CPD", kind: "money",
+        get: function (s) {
+          var spend = amount(s.spend);
+          return s.ftd > 0 && spend > 0 ? spend / s.ftd : null;
+        }
+      }
     ],
     sumFields: ["installs", "registrations", "ftd", "rent", "spend", "revenue"],
     emptyMessage: "Данные появятся после первой синхронизации Keitaro или ручного ввода",
     leafLabel: function (record) { return record.offer || ""; },
-    metricCells: function (sums, opts) {
-      function dash(value, formatter) {
-        return value == null ? '<span style="color:#C7CAD6">–</span>' : formatter(value);
-      }
-      var spend = sums.spend == null ? 0 : sums.spend;
-      var revenue = sums.revenue == null ? 0 : sums.revenue;
-      var profit = revenue - spend;
-      var roi = spend > 0 ? profit / spend * 100 : null;
-      var cpd = sums.ftd > 0 && spend > 0 ? spend / sums.ftd : null;
-      return td(dash(sums.installs, num), { bold: opts.bold }) +
-        td(dash(sums.registrations, num), { bold: opts.bold }) +
-        td(dash(sums.ftd, num), { bold: opts.bold }) +
-        td(dash(sums.rent, money), { bold: opts.bold }) +
-        td(dash(sums.spend, money), { bold: opts.bold }) +
-        td(dash(sums.revenue, money), { bold: opts.bold }) +
-        td(money(profit), { bold: true, color: profit >= 0 ? "#16B57F" : "#D94B61" }) +
-        td(percent(roi), { bold: true, color: roi == null ? undefined : roi >= 0 ? "#16B57F" : "#D94B61" }) +
-        td(cpd == null ? "–" : money(cpd), { bold: opts.bold });
-    },
     modalMetricInputs: function (record, modalInput) {
       return modalInput("INST (инсталлы)", "mediaEditInstalls", "number",
           record && record.installs != null ? record.installs : "", 'step="1" min="0"') +
@@ -1083,12 +1638,30 @@
   var financeBoard = createBoard({
     prefix: "finance",
     endpoint: "/finance-records",
+    groupsEndpoint: "/finance-records/groups",
     preferenceKey: "finance.structure",
+    displayPreferenceKey: "finance.display",
     managePermission: "finance.manage",
     funnelTitle: "ПП",
-    funnelColumns: [{ label: "QUAL" }],
-    resultColumns: [
-      { label: "Revenue" }, { label: "Profit" }, { label: "ROI" }, { label: "ЗП" }
+    metricColumns: [
+      { group: "funnel", label: "QUAL", kind: "money", get: function (s) { return s.qual; } },
+      { group: "costs", label: "RENT", kind: "money", get: function (s) { return s.rent; } },
+      { group: "costs", label: "SPEND", kind: "money", get: function (s) { return s.spend; } },
+      { group: "result", label: "Revenue", kind: "money", get: function (s) { return s.revenue; } },
+      {
+        group: "result", label: "Profit", kind: "money", bold: true, tone: signTone,
+        get: function (s) {
+          return amount(s.revenue) - (amount(s.rent) + amount(s.spend));
+        }
+      },
+      {
+        group: "result", label: "ROI", kind: "percent", bold: true, tone: signTone,
+        get: function (s) {
+          var costs = amount(s.rent) + amount(s.spend);
+          return costs > 0 ? (amount(s.revenue) - costs) / costs * 100 : null;
+        }
+      },
+      { group: "result", label: "ЗП", kind: "money", get: function (s) { return s.salary; } }
     ],
     sumFields: ["qual", "rent", "spend", "revenue", "salary"],
     emptyMessage: "Финансовых записей пока нет — добавьте вручную или импортируйте файл",
@@ -1100,24 +1673,6 @@
     resetExtraFilters: function () {
       var element = byId("financeFilterLink");
       if (element) element.value = "";
-    },
-    metricCells: function (sums, opts) {
-      function dash(value, formatter) {
-        return value == null ? '<span style="color:#C7CAD6">–</span>' : formatter(value);
-      }
-      var rent = sums.rent == null ? 0 : sums.rent;
-      var spend = sums.spend == null ? 0 : sums.spend;
-      var revenue = sums.revenue == null ? 0 : sums.revenue;
-      var costs = rent + spend;
-      var profit = revenue - costs;
-      var roi = costs > 0 ? profit / costs * 100 : null;
-      return td(dash(sums.qual, money), { bold: opts.bold }) +
-        td(dash(sums.rent, money), { bold: opts.bold }) +
-        td(dash(sums.spend, money), { bold: opts.bold }) +
-        td(dash(sums.revenue, money), { bold: opts.bold }) +
-        td(money(profit), { bold: true, color: profit >= 0 ? "#16B57F" : "#D94B61" }) +
-        td(percent(roi), { bold: true, color: roi == null ? undefined : roi >= 0 ? "#16B57F" : "#D94B61" }) +
-        td(dash(sums.salary, money), { bold: opts.bold });
     },
     modalMetricInputs: function (record, modalInput) {
       return modalInput("QUAL (доход ПП), USD", "financeEditQual", "number",
@@ -1157,12 +1712,11 @@
     afterInit: function (state, board) {
       bindFinanceImportExport(state, board);
     },
-    onData: function (state) {
-      var revenue = 0, costs = 0;
-      state.records.forEach(function (record) {
-        revenue += Number(record.revenue || 0);
-        costs += Number(record.rent || 0) + Number(record.spend || 0);
-      });
+    onData: function (state, tree) {
+      // The root aggregate already covers every matching record, group by group.
+      var sums = tree ? tree.aggregate.sums : {};
+      var revenue = Number(sums.revenue || 0);
+      var costs = Number(sums.rent || 0) + Number(sums.spend || 0);
       var profit = revenue - costs;
       var kpi = {
         financeKpiRevenue: money(revenue),
