@@ -682,49 +682,18 @@
 <div id="metaWizard" role="dialog" aria-modal="true" aria-labelledby="metaWizardTitle" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
   <div style="width:100%;max-width:760px;background:#fff;border-radius:20px;padding:26px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:92vh;overflow:auto">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px">
-      <h2 id="metaWizardTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">Подключение через своё приложение</h2>
+      <h2 id="metaWizardTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">Подключение Meta Ads</h2>
       <button id="metaWizardClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
     </div>
 
     <div id="metaWizardSteps" style="display:flex;align-items:center;gap:10px;margin-bottom:22px;overflow-x:auto;padding-bottom:4px"></div>
 
-    <!-- 1. Инструкции -->
+    <!-- 1. Инструкции. Способ выбирается здесь: от него зависит и текст
+         инструкции, и то, что подключение запомнит про свой токен. -->
     <div class="meta-wizard-panel" data-step="1">
-      <div class="meta-note meta-note--info" style="margin-bottom:16px">
-        <b style="display:block;margin-bottom:6px">Что понадобится</b>
-        · аккаунт разработчика Facebook<br>
-        · права Admin или Employee в Business Manager<br>
-        · приложение, созданное на developers.facebook.com
-      </div>
-      <ol style="display:grid;gap:14px;padding-left:0;list-style:none;counter-reset:step">
-        <li style="display:flex;gap:12px">
-          <span style="flex-shrink:0;width:24px;height:24px;border-radius:50%;background:#F0EBEB;color:#6A6161;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center">1</span>
-          <div>
-            <div style="font-size:13px;font-weight:700">Создайте приложение в Facebook</div>
-            <div style="font-size:11.5px;color:#6A6161;font-weight:500;margin-top:4px;line-height:1.6">developers.facebook.com → My Apps → Create App. Тип приложения — <b>Business</b>.</div>
-            <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer" style="display:inline-block;font-size:11.5px;font-weight:700;margin-top:6px">Открыть Facebook Apps ↗</a>
-          </div>
-        </li>
-        <li style="display:flex;gap:12px">
-          <span style="flex-shrink:0;width:24px;height:24px;border-radius:50%;background:#F0EBEB;color:#6A6161;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center">2</span>
-          <div>
-            <div style="font-size:13px;font-weight:700">Привяжите приложение к Business Manager</div>
-            <div style="font-size:11.5px;color:#6A6161;font-weight:500;margin-top:4px;line-height:1.6">Настройки приложения → App Roles → Add Business Manager. Это даст приложению доступ к рекламным кабинетам вашего BM.</div>
-          </div>
-        </li>
-        <li style="display:flex;gap:12px">
-          <span style="flex-shrink:0;width:24px;height:24px;border-radius:50%;background:#F0EBEB;color:#6A6161;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center">3</span>
-          <div>
-            <div style="font-size:13px;font-weight:700">Выпустите токен системного пользователя</div>
-            <div style="font-size:11.5px;color:#6A6161;font-weight:500;margin-top:4px;line-height:1.6">Business Settings → System Users → Generate New Token → выберите приложение. Токен обычного пользователя живёт слишком мало и через пару месяцев отвалится.</div>
-            <div style="display:flex;gap:6px;margin-top:8px">
-              <span style="font-size:11px;font-weight:700;background:#F0EBEB;border-radius:7px;padding:4px 9px">ads_read</span>
-              <span style="font-size:11px;font-weight:700;background:#F0EBEB;border-radius:7px;padding:4px 9px">ads_management</span>
-            </div>
-            <div style="font-size:11.5px;color:#9B9292;font-weight:500;margin-top:7px;line-height:1.6"><b>ads_read</b> достаточно для статистики. <b>ads_management</b> нужен только для запуска кампаний и автоправил с действиями — он даёт право тратить бюджет.</div>
-          </div>
-        </li>
-      </ol>
+      <div style="font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:8px">Способ получения токена</div>
+      <div id="metaWizMethods" style="display:grid;gap:2px;margin-bottom:16px"></div>
+      <div id="metaWizGuide"></div>
     </div>
 
     <!-- 2. Токен -->

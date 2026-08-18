@@ -4579,8 +4579,149 @@
 
   var WIZARD_STEPS = ["Инструкции", "Токен", "Проверка", "Импорт", "Готово"];
 
+  /* Инструкция под выбранный способ. Держать одну на всех нельзя: у токена из
+     панели приложения и у токена сессии шаги вообще не пересекаются, а общий
+     текст «создайте приложение» для второго просто неверен. */
+  var AUTH_GUIDES = {
+    system_user: {
+      needs: [
+        "аккаунт разработчика Facebook",
+        "права Admin или Employee в Business Manager",
+        "приложение, созданное на developers.facebook.com"
+      ],
+      steps: [
+        {
+          title: "Создайте приложение в Facebook",
+          text: "developers.facebook.com → My Apps → Create App. Тип приложения — Business.",
+          link: { url: "https://developers.facebook.com/apps", label: "Открыть Facebook Apps" }
+        },
+        {
+          title: "Привяжите приложение к Business Manager",
+          text: "Настройки приложения → App Roles → Add Business Manager. Это даст " +
+            "приложению доступ к рекламным кабинетам вашего BM."
+        },
+        {
+          title: "Заведите системного пользователя и выдайте ему кабинеты",
+          text: "Business Settings → Users → System users → Add. Затем Assign assets: " +
+            "рекламные кабинеты с ролью «Управление кампаниями», страницы и пиксели."
+        },
+        {
+          title: "Выпустите токен",
+          text: "Generate New Token → выберите приложение и разрешения. Срок токена " +
+            "поставьте Never: с «60 days» синхронизация встанет через два месяца.",
+          scopes: ["ads_read", "ads_management", "business_management", "pages_show_list"]
+        }
+      ],
+      note: "ads_read достаточно для статистики. ads_management нужен для заливов и " +
+        "автоправил с действиями — он даёт право тратить бюджет."
+    },
+    session: {
+      needs: [
+        "доступ к своему аккаунту Facebook с правами в Business Manager",
+        "браузер, в котором вы уже вошли в Ads Manager"
+      ],
+      steps: [
+        {
+          title: "Войдите в Ads Manager своим аккаунтом",
+          text: "Токен берётся из сессии этого аккаунта, поэтому доступ к кабинетам у " +
+            "него будет ровно такой же, как у вас глазами.",
+          link: { url: "https://business.facebook.com/", label: "Открыть Business Manager" }
+        },
+        {
+          title: "Достаньте токен из сессии",
+          text: "Токен начинается с EAAB и принадлежит официальному приложению Meta, " +
+            "поэтому права у него обычно полные — отдельно ничего выдавать не нужно."
+        },
+        {
+          title: "Помните про срок",
+          text: "Токен живёт, пока жива сессия: смена пароля, выход из устройств или " +
+            "запрос подтверждения личности его обнуляют. Когда синхронизация встанет, " +
+            "получите новый тем же способом."
+        }
+      ],
+      note: "Meta считает использование токенов своих внутренних приложений нарушением " +
+        "условий и блокирует при этом обычно не токен, а Business Manager. Способ " +
+        "рабочий, но основным лучше держать System User."
+    },
+    app_token: {
+      needs: [
+        "аккаунт разработчика Facebook",
+        "приложение, созданное на developers.facebook.com"
+      ],
+      steps: [
+        {
+          title: "Откройте панель приложения",
+          text: "developers.facebook.com → ваше приложение → Инструменты → Marketing API.",
+          link: { url: "https://developers.facebook.com/apps", label: "Открыть Facebook Apps" }
+        },
+        {
+          title: "Отметьте разрешения и получите маркер",
+          text: "Отметьте все нужные права и нажмите «Получить маркер». Предыдущий " +
+            "маркер при этом отзывается.",
+          scopes: ["ads_read", "ads_management", "business_management", "pages_show_list"]
+        },
+        {
+          title: "Имейте в виду срок",
+          text: "Такой токен живёт часы. Он годится, чтобы проверить доступ к кабинетам, " +
+            "но для постоянной синхронизации нужен токен системного пользователя."
+        }
+      ],
+      note: "Если приложение в статусе development_access, реальные кабинеты через него " +
+        "не видны — доступен только кабинет-песочница."
+    }
+  };
+
+  function renderWizardGuide(method) {
+    var guide = AUTH_GUIDES[method] || AUTH_GUIDES.system_user;
+    byId("metaWizGuide").innerHTML =
+      '<div class="meta-note meta-note--info" style="margin-bottom:16px">' +
+      '<b style="display:block;margin-bottom:6px">Что понадобится</b>' +
+      guide.needs.map(function (item) { return "· " + escapeHtml(item); }).join("<br>") +
+      "</div>" +
+      '<ol style="display:grid;gap:14px;padding-left:0;list-style:none">' +
+      guide.steps.map(function (step, index) {
+        return '<li style="display:flex;gap:12px">' +
+          '<span style="flex-shrink:0;width:24px;height:24px;border-radius:50%;' +
+          "background:#F0EBEB;color:#6A6161;font-size:11.5px;font-weight:700;display:flex;" +
+          'align-items:center;justify-content:center">' + (index + 1) + "</span><div>" +
+          '<div style="font-size:13px;font-weight:700">' + escapeHtml(step.title) + "</div>" +
+          '<div style="font-size:11.5px;color:#6A6161;font-weight:500;margin-top:4px;' +
+          'line-height:1.6">' + escapeHtml(step.text) + "</div>" +
+          (step.link
+            ? '<a href="' + escapeHtml(step.link.url) + '" target="_blank" ' +
+              'rel="noopener noreferrer" style="display:inline-block;font-size:11.5px;' +
+              'font-weight:700;margin-top:6px">' + escapeHtml(step.link.label) + " ↗</a>"
+            : "") +
+          (step.scopes
+            ? '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">' +
+              step.scopes.map(function (scope) {
+                return '<span style="font-size:11px;font-weight:700;background:#F0EBEB;' +
+                  'border-radius:7px;padding:4px 9px">' + escapeHtml(scope) + "</span>";
+              }).join("") + "</div>"
+            : "") + "</div></li>";
+      }).join("") + "</ol>" +
+      '<div style="font-size:11.5px;color:#9B9292;font-weight:500;margin-top:12px;' +
+      'line-height:1.6">' + escapeHtml(guide.note) + "</div>";
+  }
+
+  function renderWizardMethods(selected) {
+    byId("metaWizMethods").innerHTML = AUTH_METHODS.map(function (method) {
+      return '<label class="meta-choice"><input type="radio" name="metaWizMethod" ' +
+        'value="' + method.code + '"' + (method.code === selected ? " checked" : "") +
+        '><span><span class="meta-choice__title">' + escapeHtml(method.label) + "</span>" +
+        '<span class="meta-choice__hint">' + escapeHtml(method.hint) + "</span></span></label>";
+    }).join("");
+    renderWizardGuide(selected);
+  }
+
+  function wizardMethodValue() {
+    var picked = byId("metaWizMethods").querySelector("input:checked");
+    return picked ? picked.value : "system_user";
+  }
+
   function openWizard() {
     state.wizard = { step: 1, accounts: [], picked: [], payload: null };
+    renderWizardMethods("system_user");
     byId("metaWizName").value = "";
     byId("metaWizToken").value = "";
     byId("metaWizBusiness").value = "";
@@ -4639,10 +4780,11 @@
       var name = byId("metaWizName").value.trim();
       var token = byId("metaWizToken").value.trim();
       if (!name) return wizardError("Укажите название подключения");
-      if (token.length < 20) return wizardError("Вставьте токен системного пользователя");
+      if (token.length < 20) return wizardError("Вставьте токен");
       wizard.payload = {
         name: name,
         access_token: token,
+        auth_method: wizardMethodValue(),
         business_id: byId("metaWizBusiness").value.trim() || null,
         attribution_sub_id: byId("metaWizSub").value
           ? Number(byId("metaWizSub").value) : null,
@@ -4905,6 +5047,11 @@
     });
 
     byId("metaWizardClose").addEventListener("click", closeWizard);
+    byId("metaWizMethods").addEventListener("change", function (event) {
+      if (event.target && event.target.name === "metaWizMethod") {
+        renderWizardGuide(event.target.value);
+      }
+    });
     byId("metaWizNext").addEventListener("click", function () {
       wizardNext().catch(function (error) {
         wizardError(error && error.message ? error.message : "Не получилось");
