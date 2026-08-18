@@ -5,85 +5,370 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Alumni+Sans:wght@600;700;800&display=swap" rel="stylesheet">
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Manrope',-apple-system,'Helvetica Neue',sans-serif;background:#EEF0F6;color:#171A26;-webkit-font-smoothing:antialiased}
-  a{color:#5A5FE0;text-decoration:none}
-  a:hover{color:#4448c9}
+  body{font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;background:#F4F1F1;color:#070505;-webkit-font-smoothing:antialiased}
+  a{color:#B91414;text-decoration:none}
+  a:hover{color:#8A0F0F}
   ::-webkit-scrollbar{width:9px;height:9px}
-  ::-webkit-scrollbar-thumb{background:#D6D9E4;border-radius:8px}
-  ::-webkit-scrollbar-track{background:#F4F5F9}
+  ::-webkit-scrollbar-thumb{background:#D8D0D0;border-radius:8px}
+  ::-webkit-scrollbar-track{background:#F7F4F4}
+
+  /* ---------- Финансы: книга баера по дням ----------
+     Каждая смысловая область имеет собственный цельный цвет: плотная шапка и
+     светлое тело. Поля ввода остаются интерактивными, но больше не разрывают
+     цвет секции отдельными жёлтыми ячейками. */
+  .fin{
+    --f-ink:#150E0E; --f-ink-2:#4E4141; --f-ink-3:#7E7070; --f-ink-4:#A89999;
+    --f-paper:#FFFFFF; --f-sand:#FAF7F6; --f-sand-2:#F3EDEC; --f-sand-3:#EDE5E4;
+    --f-line:#EBE4E3; --f-line-2:#DCD2D1;
+    --f-accent:#B91414; --f-accent-soft:#FCF1F1;
+    --f-gain:#0E7350; --f-loss:#BE2317; --f-loss-soft:#FCEFEE;
+    --f-fill:#FFFCF1; --f-fill-line:#E3CF9B; --f-fill-hot:#FFF6D6;
+    --f-band-cost:#C08A2E; --f-band-offer:#3C6C9F; --f-band-result:#2E7D5B;
+    /* Свои оттенки у каждой области: затраты — песочная, офферы — синяя,
+       результат — зелёная. По ним видно, где кончается один блок и начинается
+       следующий, без пересчёта строк глазами. */
+    --f-head-cost:#EED7A8; --f-sec-cost:#FCF5E8; --f-sec-cost-2:#F7EBD5;
+    --f-line-cost:#DFC58E; --f-hot-cost:#FFF0CF;
+    --f-head-offer:#C3CFED; --f-sec-offer:#EEF3FB; --f-sec-offer-2:#DFE9F6;
+    --f-line-offer:#B6C9E0; --f-hot-offer:#E3ECF8;
+    --f-head-result:#C2CEA5; --f-sec-result:#EDF5E9; --f-sec-result-2:#E0EDD9;
+    --f-line-result:#BDD0B4; --f-hot-result:#E3F0DD;
+    --f-wash-off:rgba(112,92,92,.055); --f-wash-hot:rgba(185,20,20,.055);
+    --f-shadow:0 1px 2px rgba(28,18,18,.05), 0 12px 30px -18px rgba(28,18,18,.28);
+    color:var(--f-ink);
+  }
+  .fin :focus-visible{outline:2px solid var(--f-accent);outline-offset:2px;border-radius:4px}
+  /* Свой `display` у класса перебивает `hidden` из стилей браузера, и скрытый
+     блок продолжает занимать место — так под шапкой ЗП оставалась белая
+     полоса от пустых групп. Правило закрывает это для всей страницы. */
+  .fin [hidden]{display:none!important}
+
+  .fin-top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:20px}
+  .fin-eyebrow{font:600 11px/1 Inter,sans-serif;letter-spacing:.15em;text-transform:uppercase;color:var(--f-ink-4);margin-bottom:10px}
+  .fin-name{position:relative}
+  .fin-buyer{display:inline-flex;align-items:center;gap:10px;border:0;background:transparent;padding:0;cursor:pointer;color:var(--f-ink);font:800 clamp(32px,3.6vw,44px)/.9 'Alumni Sans',Inter,sans-serif;letter-spacing:.005em;text-transform:uppercase}
+  .fin-buyer svg{color:var(--f-accent);margin-bottom:3px;transition:transform .18s}
+  .fin-buyer[aria-expanded="true"] svg{transform:rotate(180deg)}
+  .fin-buyer-menu{position:absolute;top:calc(100% + 10px);left:0;z-index:30;min-width:240px;max-height:340px;overflow:auto;background:var(--f-paper);border:1px solid var(--f-line);border-radius:13px;box-shadow:var(--f-shadow);padding:6px;list-style:none;margin:0}
+  .fin-buyer-menu li{padding:9px 12px;border-radius:9px;cursor:pointer;font:600 13.5px/1 Inter,sans-serif;color:var(--f-ink-2)}
+  .fin-buyer-menu li[data-sheet]:hover,.fin-buyer-menu li[aria-selected="true"]{background:var(--f-accent-soft);color:var(--f-accent)}
+  .fin-buyer-menu .fin-menu-title{padding:11px 12px 5px;cursor:default;color:var(--f-ink-4);font:800 9.5px/1 Inter,sans-serif;letter-spacing:.12em;text-transform:uppercase}
+  .fin-buyer-menu .fin-menu-title:not(:first-child){margin-top:5px;border-top:1px solid var(--f-line)}
+
+  /* Таблицы баера: общая сводка только читается, заполняются Tier1 и Tier2/3.
+     Переключатель стоит рядом с именем — это часть ответа на вопрос «чью
+     таблицу я сейчас смотрю», а не отдельный ряд под заголовком. */
+  .fin-heading{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .fin-tabs{display:inline-flex;gap:4px;padding:4px;border-radius:12px;background:var(--f-sand-2)}
+  .fin-tab{height:32px;padding:0 14px;border:0;border-radius:9px;background:transparent;color:var(--f-ink-3);font:700 12.5px/1 Inter,sans-serif;cursor:pointer}
+  .fin-tab:hover{color:var(--f-ink)}
+  .fin-tab[aria-selected="true"]{background:var(--f-paper);color:var(--f-accent);box-shadow:0 1px 2px rgba(28,18,18,.08)}
+  .fin-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .fin-step{width:38px;height:38px;border:1px solid var(--f-line-2);background:var(--f-paper);border-radius:11px;color:var(--f-ink-2);cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .fin-step:hover{border-color:var(--f-accent);color:var(--f-accent)}
+  .fin-period{min-width:150px;text-align:center;font:800 14px/1 Inter,sans-serif}
+  .fin-saved{display:inline-flex;align-items:center;gap:8px;margin-left:6px;font:600 12px/1 Inter,sans-serif;color:var(--f-ink-3)}
+  .fin-saved i{width:7px;height:7px;border-radius:50%;background:var(--f-gain);flex:0 0 auto}
+  .fin-saved.is-busy i{background:var(--f-band-cost)}
+  .fin-saved.is-error i{background:var(--f-loss)}
+
+  .fin-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px}
+  .fin-card{background:var(--f-paper);border:1px solid var(--f-line);border-radius:15px;padding:15px 16px 13px;display:flex;flex-direction:column;gap:8px;min-height:120px;box-shadow:var(--f-shadow);overflow:hidden}
+  .fin-card-label{font:600 10.5px/1 Inter,sans-serif;letter-spacing:.11em;text-transform:uppercase;color:var(--f-ink-4)}
+  .fin-card-value{font:800 clamp(26px,2.2vw,34px)/1 'Alumni Sans',Inter,sans-serif;letter-spacing:.01em;font-variant-numeric:tabular-nums;margin-top:auto;white-space:nowrap}
+  .fin-card-value.is-loss{color:var(--f-loss)}
+  .fin-card-value.is-gain{color:var(--f-gain)}
+  .fin-card-note{font:600 11px/1.3 Inter,sans-serif;color:var(--f-ink-4);min-height:30px;display:flex;align-items:center}
+  .fin-chip{display:inline-block;padding:3px 9px;border-radius:99px;background:var(--f-accent-soft);color:var(--f-accent);font:800 10.5px/1.35 Inter,sans-serif;letter-spacing:.03em}
+  .fin-spark{width:100%;height:30px;display:block;overflow:visible}
+
+  .fin-sheet{background:var(--f-paper);border:1px solid var(--f-line);border-radius:17px;box-shadow:var(--f-shadow);overflow:hidden}
+  .fin-sheet-bar{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:14px 18px;border-bottom:1px solid var(--f-line)}
+  .fin-sheet-title{font:800 15px/1 Inter,sans-serif}
+  .fin-hints{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font:400 11.5px/1 Inter,sans-serif;color:var(--f-ink-4)}
+  .fin-key{display:inline-block;margin-right:5px;padding:3px 7px;border-radius:6px;border:1px solid var(--f-line-2);background:var(--f-sand);color:var(--f-ink-2);font:600 10.5px/1 Inter,sans-serif}
+  .fin-scroll{overflow:auto;max-height:none;overscroll-behavior-x:contain}
+  .fin-sheet-foot{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 18px;border-top:1px solid var(--f-line);background:var(--f-sand)}
+  .fin-count{font:600 11.5px/1 Inter,sans-serif;color:var(--f-ink-4)}
+  .fin-btn{display:inline-flex;align-items:center;gap:8px;cursor:pointer;border-radius:10px;padding:9px 15px;font:700 12.5px/1 Inter,sans-serif;background:var(--f-paper);border:1px solid var(--f-line-2);color:var(--f-ink-2)}
+  .fin-btn:hover{border-color:var(--f-accent);color:var(--f-accent);background:var(--f-accent-soft)}
+  .fin-btn[disabled]{opacity:.45;cursor:not-allowed;border-color:var(--f-line-2);color:var(--f-ink-4);background:var(--f-paper)}
+
+  .fin-grid{border-collapse:separate;border-spacing:0;width:max-content;min-width:calc(100% - 8px);margin:0 8px 8px 0;font-variant-numeric:tabular-nums}
+  .fin-grid th,.fin-grid td{border-right:1px solid var(--f-line);border-bottom:1px solid var(--f-line);background:var(--f-paper);padding:0}
+  /* Белый отступ рисуется поверх закреплённой колонки. Маска перекрывает
+     также границы строк, поэтому слева остаётся цельная пустая полоса. */
+  .fin-grid .fin-c-name{position:sticky;left:0;z-index:3;width:250px;min-width:250px;text-align:left;padding:9px 14px 9px 22px;border-right:1px solid var(--f-line-2)}
+  .fin-grid .fin-c-sum{position:sticky;left:250px;z-index:3;width:104px;min-width:104px;text-align:right;padding:9px 13px;font-weight:800;border-right:2px solid var(--f-line-2)}
+  .fin-grid thead th{position:sticky;top:0;z-index:4;background:var(--f-sand-2)}
+  .fin-grid thead .fin-c-name,.fin-grid thead .fin-c-sum{z-index:6;background:var(--f-sand-3)}
+  .fin-h-lab{font:600 10px/1 Inter,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:var(--f-ink-4)}
+  .fin-grid thead .fin-day{width:60px;min-width:60px;padding:7px 0 6px;text-align:center}
+  .fin-day-n{display:block;font:800 13.5px/1 Inter,sans-serif;color:var(--f-ink-2)}
+  .fin-day-w{display:block;margin-top:3px;font:600 9px/1 Inter,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--f-ink-4)}
+  .fin-grid thead .fin-day.is-today .fin-day-n{color:var(--f-accent)}
+  .fin-grid thead .fin-day.is-today::after{content:"";position:absolute;left:9px;right:9px;bottom:0;height:2px;background:var(--f-accent)}
+
+  .fin-grid tr.fin-band td{padding:10px 14px;background:var(--f-head,var(--f-sand));font:800 12px/1 Inter,sans-serif;letter-spacing:.11em;text-transform:uppercase;color:var(--f-tint,var(--f-ink-3));border-color:var(--f-sec-line,var(--f-line-2));border-bottom-width:1px}
+  .fin-grid tr.fin-band .fin-band-label{position:sticky;left:0;z-index:5;width:354px;min-width:354px;padding-left:22px;border-right:2px solid var(--f-line-2)}
+  .fin-grid .fin-c-name::before,
+  .fin-grid tr.fin-band .fin-band-label::before{content:"";position:absolute;z-index:2;left:0;top:-1px;bottom:-1px;width:8px;background:var(--f-paper);pointer-events:none}
+  .fin-grid tr.fin-band .fin-band-fill{padding:0}
+  .fin-grid tr.fin-band .fin-band-inner{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .fin-grid tr.fin-band td span.fin-band-text{display:inline-block}
+
+  /* Белая отбивка создаёт три самостоятельных блока внутри одной рабочей
+     таблицы и не влияет на горизонтальную прокрутку или sticky-колонки. */
+  .fin-grid tr.fin-band--cost td{border-top:6px solid var(--f-paper)}
+  .fin-grid tr.fin-band--offer td,
+  .fin-grid tr.fin-band--result td{border-top:9px solid var(--f-paper)}
+  .fin-grid tr.fin-band .fin-band-label{border-top-left-radius:11px}
+  .fin-grid tr.fin-band .fin-band-fill{border-top-right-radius:11px}
+
+  /* Область = цвет. Тон живёт на строке, поэтому его наследуют и залипшие
+     колонки слева, и дневные ячейки. */
+  .fin-grid tr.fin-band--cost,.fin-grid tr.fin-sec--cost{--f-tint:var(--f-band-cost);--f-head:var(--f-head-cost);--f-sec:var(--f-sec-cost);--f-sec-2:var(--f-sec-cost-2);--f-sec-line:var(--f-line-cost);--f-sec-hot:var(--f-hot-cost)}
+  .fin-grid tr.fin-band--offer,.fin-grid tr.fin-sec--offer{--f-tint:var(--f-band-offer);--f-head:var(--f-head-offer);--f-sec:var(--f-sec-offer);--f-sec-2:var(--f-sec-offer-2);--f-sec-line:var(--f-line-offer);--f-sec-hot:var(--f-hot-offer)}
+  .fin-grid tr.fin-band--result,.fin-grid tr.fin-sec--result{--f-tint:var(--f-band-result);--f-head:var(--f-head-result);--f-sec:var(--f-sec-result);--f-sec-2:var(--f-sec-result-2);--f-sec-line:var(--f-line-result);--f-sec-hot:var(--f-hot-result)}
+  .fin-grid tr[class*="fin-sec--"] td{background-color:var(--f-sec);border-right-color:var(--f-sec-line);border-bottom-color:var(--f-sec-line)}
+  .fin-grid tr[class*="fin-sec--"] .fin-c-name,
+  .fin-grid tr[class*="fin-sec--"] .fin-c-sum{background-color:var(--f-sec)}
+  /* Итоговые строки области — тот же цвет, но плотнее. */
+  .fin-grid tr.fin-total[class*="fin-sec--"] .fin-c-name,
+  .fin-grid tr.fin-total[class*="fin-sec--"] .fin-c-sum,
+  .fin-grid tr.fin-total[class*="fin-sec--"] td{background-color:var(--f-sec)}
+  .fin-grid tr.fin-calc[class*="fin-sec--"] td{background-color:var(--f-sec)}
+
+  .fin-r-lab{font:650 14px/1.2 Inter,sans-serif;color:var(--f-ink-2)}
+  .fin-r-hint{display:block;margin-top:3px;font:400 11px/1.2 Inter,sans-serif;color:var(--f-ink-4)}
+  .fin-grid td.fin-num{width:60px;min-width:60px;text-align:right}
+  .fin-grid td.fin-num .fin-v{display:block;padding:9px;font:600 12.5px/1 Inter,sans-serif;color:var(--f-ink-3)}
+  .fin-grid td.fin-num .fin-v.is-zero{color:var(--f-ink-4);opacity:.5}
+
+  .fin-grid td.fin-in{background:var(--f-sec,var(--f-fill));box-shadow:none}
+  .fin-grid td.fin-in input{display:block;width:100%;border:0;background:transparent;padding:9px;text-align:right;color:var(--f-ink);font:600 12.5px/1 Inter,sans-serif;font-variant-numeric:tabular-nums;-moz-appearance:textfield}
+  .fin-grid td.fin-in input::-webkit-outer-spin-button,
+  .fin-grid td.fin-in input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  .fin-grid td.fin-in input:focus{outline:0}
+  .fin-grid td.fin-in:hover{background:var(--f-sec-hot,var(--f-fill-hot))}
+  .fin-grid td.fin-in:focus-within{background:var(--f-fill-hot);box-shadow:inset 0 0 0 2px var(--f-accent)}
+
+  .fin-grid tr.fin-calc td{background:var(--f-sec,var(--f-sand))}
+  .fin-grid tr.fin-calc .fin-c-name,.fin-grid tr.fin-calc .fin-c-sum{background:var(--f-sec,var(--f-sand-2))}
+  .fin-grid tr.fin-calc .fin-r-lab{color:var(--f-ink-2);font-weight:800}
+  .fin-grid tr.fin-calc td.fin-num .fin-v{color:var(--f-ink-2);font-weight:700}
+  .fin-grid tr.fin-total td{background:var(--f-sec,var(--f-sand-2))}
+  .fin-grid tr.fin-total .fin-c-name,.fin-grid tr.fin-total .fin-c-sum{background:var(--f-sec,var(--f-sand-3))}
+  .fin-grid tr.fin-total .fin-r-lab{font-weight:800;color:var(--f-ink)}
+  .fin-grid tr.fin-total td.fin-num .fin-v,.fin-grid tr.fin-total .fin-c-sum{font-weight:800;color:var(--f-ink)}
+  .fin-pos{color:var(--f-gain) !important}
+  .fin-neg{color:var(--f-loss) !important}
+
+  .fin-grid td.is-off{background-image:none}
+  .fin-grid td.is-hot{background-image:linear-gradient(var(--f-wash-hot),var(--f-wash-hot))}
+
+  /* Каждый оффер остаётся самостоятельной мини-группой внутри голубой области:
+     тонкие границы того же оттенка отделяют соседние офферы друг от друга. */
+  .fin-grid tr.fin-offer-head td{background:var(--f-sec-offer-2);border-bottom:1px solid var(--f-line-offer);border-top:1px solid var(--f-line-offer)}
+  .fin-grid tr.fin-offer-head .fin-c-name{background:var(--f-sec-offer-2)}
+  .fin-grid tr.fin-offer-head .fin-c-sum{background:var(--f-sec-offer-2);box-shadow:none}
+  /* Доход закрывает группу оффера, не выбиваясь белой строкой из общей зоны. */
+  .fin-grid tr.fin-calc.fin-offer-income td,
+  .fin-grid tr.fin-calc.fin-offer-income .fin-c-name,
+  .fin-grid tr.fin-calc.fin-offer-income .fin-c-sum{background:var(--f-sec-offer);border-bottom:1px solid var(--f-line-offer)}
+  .fin-grid tr.fin-calc.fin-offer-income .fin-r-lab{color:var(--f-ink-3);font-weight:700}
+  .fin-grid tr.fin-calc.fin-offer-income td.fin-num .fin-v{color:var(--f-ink-2);font-weight:700}
+  .fin-o-wrap{display:flex;align-items:center;gap:9px}
+  .fin-o-dot{width:9px;height:9px;border-radius:3px;flex:0 0 auto;background:var(--f-band-offer)}
+  .fin-o-name{border:0;background:transparent;padding:2px 4px;border-radius:6px;color:var(--f-ink);font:800 14px/1.2 Inter,sans-serif;width:100%;min-width:0}
+  .fin-o-name:hover{background:var(--f-paper)}
+  .fin-o-name:focus{outline:2px solid var(--f-accent);background:var(--f-paper)}
+  .fin-grid tr.fin-offer-head .fin-o-meta-cell{height:43px;padding:0;text-align:left;overflow:visible;z-index:5}
+  .fin-grid tr.fin-offer-head .fin-o-days{padding:0}
+  .fin-o-meta{position:absolute;left:0;top:50%;transform:translateY(-50%);display:flex;align-items:center;gap:8px;width:max-content;padding:0 13px}
+  /* Партнёрка — список справочника, поэтому поле выглядит как соседнее гео:
+     та же высота, своя стрелка вместо системной. */
+  .fin-o-partner{height:25px;border:1px solid var(--f-line-2);background:var(--f-paper);border-radius:8px;padding:0 22px 0 8px;color:var(--f-ink-2);font:700 10.5px/1 Inter,sans-serif;max-width:150px}
+  .fin-o-geo{height:25px;border:1px solid var(--f-line-2);background:var(--f-paper);border-radius:8px;padding:0 22px 0 8px;color:var(--f-ink-2);font:700 10.5px/1 Inter,sans-serif;max-width:190px}
+  .fin-o-rate{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--f-fill-line);background:var(--f-fill);border-radius:8px;padding:3px 8px;color:var(--f-ink);font:800 11.5px/1 Inter,sans-serif}
+  .fin-o-rate span{color:var(--f-ink-4);font-weight:600}
+  .fin-o-rate input{border:0;background:transparent;width:46px;text-align:right;color:var(--f-ink);font:800 11.5px/1 Inter,sans-serif;font-variant-numeric:tabular-nums;-moz-appearance:textfield}
+  .fin-o-rate input::-webkit-outer-spin-button,
+  .fin-o-rate input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  /* Подсвечивается вся плашка ставки, а не поле внутри неё: две вложенные
+     рамки читались как ошибка ввода. */
+  .fin-o-rate:focus-within{border-color:var(--f-accent);box-shadow:0 0 0 2px rgba(185,20,20,.16)}
+  .fin-o-rate input:focus,.fin-o-rate input:focus-visible{outline:0}
+  .fin-o-del{border:0;background:transparent;cursor:pointer;color:var(--f-ink-4);padding:4px;border-radius:7px;line-height:0;margin-left:auto;flex:0 0 auto}
+  .fin-tag-add{border:1px dashed var(--f-line-2);background:transparent;border-radius:8px;padding:4px 10px;color:var(--f-ink-3);cursor:pointer;font:700 10.5px/1 Inter,sans-serif;letter-spacing:.03em}
+  .fin-tag-add:hover{border-color:var(--f-accent);color:var(--f-accent);border-style:solid}
+  .fin-tag-wrap{display:flex;align-items:center;gap:6px}
+  .fin-tag-name{border:0;background:transparent;padding:3px 5px;border-radius:6px;color:var(--f-ink-2);font:600 12.5px/1.2 Inter,sans-serif;width:100%;min-width:0}
+  .fin-tag-name:hover{background:var(--f-sand-2)}
+  .fin-tag-name:focus{outline:2px solid var(--f-accent);background:var(--f-paper)}
+  .fin-tag-name::placeholder{color:var(--f-ink-4)}
+  /* Пока тег без имени — поле само просит его заполнить. */
+  .fin-tag-name.is-empty{border:1px dashed var(--f-fill-line);background:var(--f-fill)}
+  .fin-tag-name.is-empty::placeholder{color:#9A7A28;font-weight:600}
+  .fin-tag-del{border:0;background:transparent;cursor:pointer;color:var(--f-ink-4);padding:3px;border-radius:6px;line-height:0;flex:0 0 auto;opacity:0;transition:opacity .14s}
+  .fin-grid tr:hover .fin-tag-del,.fin-tag-del:focus-visible{opacity:1}
+  .fin-tag-del:hover{color:var(--f-loss);background:var(--f-loss-soft)}
+  .fin-o-del:hover{color:var(--f-loss);background:var(--f-loss-soft)}
+
+  .fin-empty{padding:48px 24px;text-align:center;font:600 13px/1.6 Inter,sans-serif;color:var(--f-ink-4)}
+
+  /* Кнопка живёт в самой полосе «Офферы»: добавлять оффер логично там, где они
+     перечислены, а не под таблицей на тридцать столбцов ниже. */
+  .fin-band-add{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--f-band-offer);background:var(--f-paper);color:var(--f-band-offer);border-radius:8px;padding:4px 10px;cursor:pointer;font:800 10px/1 Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase}
+  .fin-band-add:hover{background:var(--f-band-offer);color:var(--f-paper)}
+  .fin-band-add[disabled]{opacity:.45;cursor:not-allowed;background:var(--f-paper);color:var(--f-band-offer)}
+
+
+  /* Курс месяца: книга всегда в долларах, евровые ставки переводятся по нему. */
+  .fin-rate{display:inline-flex;align-items:center;gap:8px;padding:5px 11px;border:1px solid var(--f-line-2);border-radius:9px;background:var(--f-sand)}
+  .fin-rate span{font:600 11px/1 Inter,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--f-ink-4)}
+  .fin-rate input{border:0;background:transparent;width:64px;text-align:right;color:var(--f-ink);font:800 12.5px/1 Inter,sans-serif;font-variant-numeric:tabular-nums;-moz-appearance:textfield}
+  .fin-rate input::-webkit-outer-spin-button,.fin-rate input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  .fin-rate input:focus,.fin-rate input:focus-visible{outline:0}
+  .fin-rate:focus-within{border-color:var(--f-accent);box-shadow:0 0 0 2px rgba(185,20,20,.16)}
+
+  /* Валюта ставки живёт у самого оффера — переключатель прямо в плашке. */
+  .fin-o-cur{border:0;background:transparent;padding:0 2px;margin-right:2px;cursor:pointer;color:var(--f-ink-4);font:800 11.5px/1 Inter,sans-serif;border-radius:5px}
+  .fin-o-cur:hover{background:var(--f-paper);color:var(--f-accent)}
+  .fin-o-cur.is-eur{color:#2F6BB5}
+  .fin-o-cur[disabled]{cursor:not-allowed}
+  .fin-o-usd{margin-left:6px;font:600 10px/1 Inter,sans-serif;color:var(--f-ink-4);white-space:nowrap}
+
+  .fin-ladder{background:var(--f-paper);border:1px solid var(--f-line);border-radius:17px;box-shadow:var(--f-shadow);padding:20px;display:flex;flex-direction:column;gap:16px}
+  .fin-ladder-head h2{font:800 24px/1 'Alumni Sans',Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em}
+  .fin-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:8px;list-style:none;margin:0;padding:0}
+  .fin-steps li{border:1px solid var(--f-line);border-radius:12px;padding:11px 13px;background:var(--f-sand);display:flex;flex-direction:column;gap:5px}
+  .fin-steps li.is-on{border-color:var(--f-accent);background:var(--f-accent-soft);box-shadow:inset 0 0 0 1px var(--f-accent)}
+  .fin-st-pct{font:800 22px/1 'Alumni Sans',Inter,sans-serif;color:var(--f-ink)}
+  .fin-steps li.is-on .fin-st-pct{color:var(--f-accent)}
+  .fin-st-range{font:600 10.5px/1.3 Inter,sans-serif;color:var(--f-ink-4);font-variant-numeric:tabular-nums}
+  .fin-payout-row{display:flex;flex-wrap:wrap;gap:10px;padding-top:14px;border-top:1px solid var(--f-line)}
+  .fin-payout{flex:1 1 180px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:11px 14px;border-radius:12px;background:var(--f-sand);border:1px solid var(--f-line)}
+  .fin-payout span{font:600 11px/1 Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--f-ink-4)}
+  .fin-payout b{font:800 24px/1 'Alumni Sans',Inter,sans-serif;font-variant-numeric:tabular-nums}
+  .fin-payout--carry{background:var(--f-loss-soft);border-color:#E9C7C3}
+  .fin-payout--carry b{color:var(--f-loss)}
+  .fin-payout--carry b.is-zero{color:var(--f-ink-4)}
+  .fin-payout--total{background:var(--f-ink);border-color:var(--f-ink)}
+  .fin-payout--total span{color:var(--f-sand-3);opacity:.75}
+  .fin-payout--total b{color:var(--f-paper)}
+
+  .fin-summary[hidden],.fin-book-part[hidden],.fin-card[hidden],.fin-saved[hidden]{display:none}
+  .fin-summary{display:flex;flex-direction:column;gap:16px}
+  .fin-summary-block{background:var(--f-paper);border:1px solid var(--f-line);border-radius:17px;box-shadow:var(--f-shadow);overflow:hidden}
+  .fin-summary-block[hidden]{display:none}
+  .fin-summary-head{padding:16px 18px;border-bottom:1px solid var(--f-line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .fin-summary-head h2{font:800 22px/1 'Alumni Sans',Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em}
+  .fin-summary-scroll{overflow:auto}
+  .fin-summary-grid{width:100%;min-width:720px;margin:0;border-spacing:0}
+  .fin-summary-grid th,.fin-summary-grid td{position:static!important;padding:12px 14px;border-right:0;border-bottom:1px solid var(--f-line);text-align:right;font:600 12.5px/1.2 Inter,sans-serif;background:var(--f-paper)}
+  .fin-summary-grid th{color:var(--f-ink-4);background:var(--f-sand);font-size:10px;letter-spacing:.09em;text-transform:uppercase}
+  .fin-summary-grid th:first-child,.fin-summary-grid td:first-child{text-align:left}
+  .fin-summary-grid tbody tr:last-child td{border-bottom:0}
+  .fin-summary-grid tr.fin-summary-total td{font-weight:800;background:var(--f-sand-2);color:var(--f-ink)}
+  /* Дни в сводке — та же сетка, что и в книге: липкие «Показатель» и «За
+     месяц» наследуются от .fin-grid, своего здесь только вид ячейки-числа. */
+  .fin-summary-days td.fin-cell{padding:0 10px;text-align:right;white-space:nowrap;font:600 12.5px/38px Inter,sans-serif;color:var(--f-ink);border-right:1px solid var(--f-line);border-bottom:1px solid var(--f-line)}
+  .fin-summary-days td.fin-cell.is-zero{color:var(--f-ink-4)}
+  .fin-summary-days td.fin-cell.fin-neg{color:var(--f-loss)}
+  .fin-summary-days td.fin-cell.fin-pos{color:var(--f-gain)}
+  .fin-salary-fund{display:flex;align-items:baseline;justify-content:space-between;gap:16px;padding:18px;background:var(--f-ink);color:var(--f-paper)}
+  .fin-salary-fund span{font:700 11px/1 Inter,sans-serif;letter-spacing:.12em;text-transform:uppercase;opacity:.7}
+  .fin-salary-fund b{font:800 34px/1 'Alumni Sans',Inter,sans-serif}
+  /* Роли и тиры — как в исходной таблице команды: колонка на роль, строка на
+     тир. СМО тира не имеет, поэтому его сумма идёт одной ячейкой на всю
+     колонку. */
+  /* Роли по тирам — таблицей, роль без тира — карточкой рядом. Это две разные
+     величины, а не столбцы одной разбивки, поэтому они разведены отступом и
+     каждая живёт в своей рамке. Заголовки у них одинаковые: разное оформление
+     намекало бы на разный смысл. */
+  .fin-roles{display:flex;align-items:stretch;gap:14px;padding:14px;background:var(--f-sand)}
+  @media(max-width:820px){.fin-roles{flex-direction:column}}
+  .fin-roles__main,.fin-roles__side{background:var(--f-paper);border:1px solid var(--f-line);border-radius:14px;overflow:hidden}
+  .fin-roles__main{flex:1;min-width:0}
+  .fin-roles__side{flex:0 0 230px}
+  @media(max-width:820px){.fin-roles__side{flex:auto}}
+  .fin-roles__grid th.fin-role-side,.fin-roles__grid td.fin-role-side{text-align:left;width:120px}
+  .fin-role-card{display:flex;flex-direction:column;height:100%}
+  .fin-role-card span{display:flex;align-items:center;padding:16px 18px;border-bottom:1px solid var(--f-line);font:800 22px/1 'Alumni Sans',Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em}
+  .fin-role-card b{display:flex;flex:1;align-items:center;justify-content:flex-end;padding:14px 18px;font:800 20px/1.1 Inter,sans-serif;letter-spacing:-.01em;color:var(--f-ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .fin-salary-group span{display:block;font:600 10.5px/1.3 Inter,sans-serif;color:var(--f-ink-4)}
+  .fin-salary-group b{display:block;margin-top:7px;font:800 22px/1 'Alumni Sans',Inter,sans-serif}
+
+  @media (max-width:900px){
+    .fin-hints{display:none}
+    .fin-card-value{font-size:28px}
+  }
 </style>
 </head>
 <body>
-<div style="display:flex;min-height:100vh;background:#EEF0F6">
+<div style="display:flex;min-height:100vh;background:#F4F1F1">
 
   <!-- SIDEBAR -->
-  <aside style="width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #ECEEF3;display:flex;flex-direction:column;position:sticky;top:0;height:100vh">
+  <aside style="width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #EBE6E6;display:flex;flex-direction:column;position:sticky;top:0;height:100vh">
     <div style="padding:26px 24px 22px;display:flex;align-items:center;gap:11px">
-      <div style="width:36px;height:36px;border-radius:10px;background:#5A5FE0;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(90,95,224,.35)">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M12 12v10M12 12 3 7M12 12l9-5" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
-      </div>
+      <div style="width:38px;height:38px;border-radius:11px;background:#070505;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(7,5,5,.26)"><img src="/assets/logo-mark-white.png" alt="Celestial Group" style="width:23px;height:auto;display:block"></div>
       <div>
-        <div style="font-family:'Space Grotesk';font-weight:700;font-size:16px;letter-spacing:-.3px">Celestial</div>
-        <div style="font-size:10px;color:#A2A7B5;font-weight:600;letter-spacing:1px;text-transform:uppercase">Traffic CRM</div>
+        <div style="font-family:'Alumni Sans';font-weight:700;font-size:24px;line-height:.95;letter-spacing:.4px;text-transform:uppercase">Celestial</div>
+        <div style="font-size:9.5px;color:#9B9292;font-weight:600;letter-spacing:1.3px;text-transform:uppercase">Group · Traffic CRM</div>
       </div>
     </div>
 
     <nav style="flex:1;padding:6px 14px;overflow-y:auto">
-      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#B4B8C6;padding:10px 12px 8px">Основное</div>
-
-      <a href="Dashboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="#A2A7B5" stroke-width="2"/></svg>
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:10px 12px 8px">Основное</div>
+      <a href="Dashboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>
         Dashboard
       </a>
-      <a href="Mediaboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#A2A7B5" stroke-width="2"/><path d="M3 9h18M8 4v16" stroke="#A2A7B5" stroke-width="2"/></svg>
+      <a href="Mediaboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#9B9292" stroke-width="2"/><path d="M3 9h18M8 4v16" stroke="#9B9292" stroke-width="2"/></svg>
         Медиаборд
       </a>
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3 2 8l10 5 10-5-10-5Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M2 16l10 5 10-5M2 12l10 5 10-5" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/></svg>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3 2 8l10 5 10-5-10-5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M2 16l10 5 10-5M2 12l10 5 10-5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/></svg>
         Meta Ads
       </div>
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;background:#5A5FE0;color:#fff;font-weight:600;font-size:14px;box-shadow:0 8px 18px rgba(90,95,224,.28)">
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;background:#B91414;color:#fff;font-weight:600;font-size:14px;box-shadow:0 8px 18px rgba(185,20,20,.28)">
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2.5" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#fff" stroke-width="2"/><path d="M6 9v6M18 9v6" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
         Финансы
       </div>
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h10" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
-        Партнёрки
-      </div>
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20.6 8.5 12 4 3.4 8.5 12 13l8.6-4.5Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M3.4 15.5 12 20l8.6-4.5" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/></svg>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20.6 8.5 12 4 3.4 8.5 12 13l8.6-4.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M3.4 15.5 12 20l8.6-4.5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/></svg>
         Оффера
       </div>
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:16px 12px 8px">Рабочее</div>
 
-      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#B4B8C6;padding:16px 12px 8px">Рабочее</div>
-
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#A2A7B5" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#9B9292" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
         Команда
       </div>
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#A2A7B5" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#A2A7B5" stroke-width="2"/></svg>
-        Workspace
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>
+        Задачи
       </div>
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" stroke="#A2A7B5" stroke-width="2"/></svg>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v14H6.5A2.5 2.5 0 0 0 4 19.5V5.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M8 7.5h7M8 11h5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
+        База знаний
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" stroke="#9B9292" stroke-width="2"/></svg>
         Утилиты
       </div>
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#A2A7B5" stroke-width="2"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 3h-4l-.4 2.2a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 21h4l.4-2.2a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" stroke="#A2A7B5" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#9B9292" stroke-width="2"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 3h-4l-.4 2.2a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 21h4l.4-2.2a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" stroke="#9B9292" stroke-width="1.6" stroke-linejoin="round"/></svg>
         Настройки
-      </div>
-      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6B7180;font-weight:500;font-size:14px;cursor:pointer">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M5 4h11l3 3v13H5V4Z" stroke="#A2A7B5" stroke-width="2" stroke-linejoin="round"/><path d="M8 10h8M8 14h8M8 18h5" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round"/></svg>
-        Логи
       </div>
     </nav>
 
-    <div style="margin:14px;padding:16px;border-radius:16px;background:linear-gradient(150deg,#6D5FF5,#5A5FE0 55%,#4B7BF0)">
+    <div style="margin:14px;padding:16px;border-radius:16px;background:linear-gradient(150deg,#231212,#070505 75%)">
       <div style="color:#fff;font-weight:700;font-size:13px;line-height:1.4">Синхронизация Keitaro</div>
       <div style="color:rgba(255,255,255,.8);font-size:11.5px;margin-top:4px;line-height:1.5">Данные обновлены 3 мин назад</div>
       <div style="margin-top:12px;display:flex;align-items:center;gap:7px">
@@ -92,148 +377,161 @@
       </div>
     </div>
 
-    <div style="padding:12px 16px 18px;border-top:1px solid #ECEEF3;display:flex;align-items:center;gap:11px">
-      <div style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#5A5FE0,#8E8BF0);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">ЕВ</div>
+    <div style="padding:12px 16px 18px;border-top:1px solid #EBE6E6;display:flex;align-items:center;gap:11px">
+      <div style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#070505,#B91414);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">ЕВ</div>
       <div style="flex:1;min-width:0">
         <div style="font-weight:700;font-size:13.5px">Evano</div>
-        <div style="font-size:11.5px;color:#A2A7B5">Team Lead</div>
+        <div style="font-size:11.5px;color:#9B9292">Team Lead</div>
       </div>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="#A2A7B5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="#9B9292" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </div>
   </aside>
 
   <!-- MAIN -->
-  <main style="flex:1;min-width:0;padding:26px 34px 40px;display:flex;flex-direction:column">
+  <main class="fin" style="flex:1;min-width:0;padding:26px 34px 40px;display:flex;flex-direction:column;gap:20px">
 
-    <!-- TOP BAR -->
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:22px">
+    <header class="fin-top">
       <div>
-        <div style="font-size:13px;color:#A2A7B5;font-weight:600">Финансовый учёт · Отдельные записи</div>
-        <h1 style="font-family:'Space Grotesk','Manrope',sans-serif;font-size:27px;font-weight:700;letter-spacing:-.6px;margin-top:3px">Финансы</h1>
+        <div class="fin-eyebrow" id="finEyebrow">Финансы · листы месяца</div>
+        <div class="fin-heading">
+          <div class="fin-name">
+            <button class="fin-buyer" id="finBuyerBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span id="finBuyerName">Выберите баера</span>
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <ul class="fin-buyer-menu" id="finBuyerMenu" role="listbox" hidden></ul>
+          </div>
+          <div class="fin-tabs" id="finBookTabs" role="tablist" hidden>
+            <button type="button" class="fin-tab" data-book-tab="overview" role="tab">Общая сводка</button>
+            <button type="button" class="fin-tab" data-book-tab="T1" role="tab">Tier1</button>
+            <button type="button" class="fin-tab" data-book-tab="T23" role="tab">Tier2/3</button>
+          </div>
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px">
-        <input id="financeImportFile" type="file" accept=".csv,.xlsx" style="display:none">
-        <button id="financeImportBtn" style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:12px;padding:0 15px;height:44px;font-weight:700;font-size:13px;color:#6B7180;cursor:pointer;font-family:inherit">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 21V9M8 13l4-4 4 4M4 4h16" stroke="#6B7180" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Импорт
+      <div class="fin-controls">
+        <button class="fin-step" id="finPrevMonth" type="button" aria-label="Предыдущий месяц">
+          <svg viewBox="0 0 24 24" width="17" height="17"><path d="m14 6-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button id="financeExportCsv" style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:12px;padding:0 15px;height:44px;font-weight:700;font-size:13px;color:#6B7180;cursor:pointer;font-family:inherit">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v12M8 11l4 4 4-4M4 20h16" stroke="#6B7180" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          CSV
+        <div class="fin-period" id="finPeriod">—</div>
+        <button class="fin-step" id="finNextMonth" type="button" aria-label="Следующий месяц">
+          <svg viewBox="0 0 24 24" width="17" height="17"><path d="m10 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button id="financeExportXlsx" style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:12px;padding:0 15px;height:44px;font-weight:700;font-size:13px;color:#6B7180;cursor:pointer;font-family:inherit">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v12M8 11l4 4 4-4M4 20h16" stroke="#6B7180" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          XLSX
-        </button>
-        <button id="financeEditBtn" style="display:flex;align-items:center;gap:8px;background:#5A5FE0;color:#fff;border:none;border-radius:12px;padding:0 18px;height:44px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;box-shadow:0 8px 18px rgba(90,95,224,.28)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v18M3 12h18" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>
-          Добавить запись
-        </button>
+        <div class="fin-saved" id="finSaved" aria-live="polite"><i></i><span>Сохранено</span></div>
       </div>
-    </div>
+    </header>
 
-    <!-- SUMMARY STRIP -->
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px">
-      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:18px">
-        <div style="font-size:12.5px;color:#6B7180;font-weight:600">Revenue</div>
-        <div id="financeKpiRevenue" style="font-family:Space Grotesk;font-size:24px;font-weight:700;letter-spacing:-.5px;margin-top:7px">—</div>
-      </div>
-      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:18px">
-        <div style="font-size:12.5px;color:#6B7180;font-weight:600">Затраты</div>
-        <div id="financeKpiCosts" style="font-family:Space Grotesk;font-size:24px;font-weight:700;letter-spacing:-.5px;margin-top:7px">—</div>
-      </div>
-      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:18px">
-        <div style="font-size:12.5px;color:#6B7180;font-weight:600">Profit</div>
-        <div id="financeKpiProfit" style="font-family:Space Grotesk;font-size:24px;font-weight:700;letter-spacing:-.5px;margin-top:7px;color:#16B57F">—</div>
-      </div>
-      <div style="background:#fff;border:1px solid #ECEEF3;border-radius:16px;padding:18px">
-        <div style="font-size:12.5px;color:#6B7180;font-weight:600">ROI</div>
-        <div id="financeKpiRoi" style="font-family:Space Grotesk;font-size:24px;font-weight:700;letter-spacing:-.5px;margin-top:7px;color:#16B57F">—</div>
-      </div>
-    </div>
+    <section class="fin-cards" aria-label="Итоги месяца">
+      <article class="fin-card">
+        <div class="fin-card-label">Доход</div>
+        <div class="fin-card-value" id="finCardIncome">—</div>
+        <svg class="fin-spark" id="finSparkIncome" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </article>
+      <article class="fin-card">
+        <div class="fin-card-label">Спенд</div>
+        <div class="fin-card-value" id="finCardSpend">—</div>
+        <svg class="fin-spark" id="finSparkSpend" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </article>
+      <article class="fin-card">
+        <div class="fin-card-label">Costs</div>
+        <div class="fin-card-value" id="finCardCosts">—</div>
+        <div class="fin-card-note">комиссии, сервисы, прочее</div>
+      </article>
+      <article class="fin-card">
+        <div class="fin-card-label">Профит</div>
+        <div class="fin-card-value" id="finCardProfit">—</div>
+        <svg class="fin-spark" id="finSparkProfit" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </article>
+      <article class="fin-card">
+        <div class="fin-card-label">ROI</div>
+        <div class="fin-card-value" id="finCardRoi">—</div>
+        <div class="fin-card-note">от спенда и costs</div>
+      </article>
+      <article class="fin-card">
+        <div class="fin-card-label">Зарплата</div>
+        <div class="fin-card-value" id="finCardSalary">—</div>
+        <div class="fin-card-note"><span class="fin-chip" id="finCardStep">ступень —</span></div>
+      </article>
+    </section>
 
-    <!-- FILTERS (4.2) -->
-    <div id="financeFilters" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px">
-      <label style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:6px 13px">
-        <span style="font-size:12.5px;color:#6B7180;font-weight:500">Баер:</span>
-        <select id="financeFilterBuyer" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none;cursor:pointer"><option value="">Все</option></select>
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:6px 13px">
-        <span style="font-size:12.5px;color:#6B7180;font-weight:500">С:</span>
-        <input id="financeFilterDateFrom" type="date" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none">
-        <span style="font-size:12.5px;color:#6B7180;font-weight:500">по:</span>
-        <input id="financeFilterDateTo" type="date" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none">
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:6px 13px">
-        <span style="font-size:12.5px;color:#6B7180;font-weight:500">GEO:</span>
-        <select id="financeFilterGeo" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none;cursor:pointer"><option value="">Все</option></select>
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:6px 13px">
-        <span style="font-size:12.5px;color:#6B7180;font-weight:500">Партнёрка:</span>
-        <select id="financeFilterPartner" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none;cursor:pointer"><option value="">Все</option></select>
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:6px 13px">
-        <span style="font-size:12.5px;color:#6B7180;font-weight:500">Оффер:</span>
-        <select id="financeFilterOffer" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none;cursor:pointer;max-width:200px"><option value="">Все</option></select>
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ECEEF3;border-radius:11px;padding:6px 13px">
-        <span style="font-size:12.5px;color:#6B7180;font-weight:500">Ссылка:</span>
-        <input id="financeFilterLink" type="text" placeholder="Поиск…" style="border:none;background:transparent;font:700 12.5px Manrope,sans-serif;color:#171A26;outline:none;width:120px">
-      </label>
-      <div style="flex:1"></div>
-      <button id="financeFilterReset" style="display:flex;align-items:center;gap:7px;background:transparent;border:1px dashed #C7CAD6;border-radius:11px;padding:9px 13px;font-weight:600;font-size:12.5px;color:#8A8FA3;cursor:pointer;font-family:inherit">
-        Сбросить
-      </button>
-    </div>
+    <section class="fin-summary" id="finSummaryView" aria-label="Финансовая сводка" hidden>
+      <section class="fin-summary-block" id="finSummaryTiersBlock" hidden>
+        <div class="fin-summary-head"><h2>По тирам</h2></div>
+        <div class="fin-summary-scroll" id="finSummaryTiers"></div>
+      </section>
+      <section class="fin-summary-block" id="finSummaryBuyersBlock" hidden>
+        <div class="fin-summary-head"><h2 id="finSummaryBuyersTitle">По баерам</h2></div>
+        <div class="fin-summary-scroll" id="finSummaryBuyers"></div>
+      </section>
+      <section class="fin-summary-block" id="finSummaryDailyBlock">
+        <div class="fin-summary-head"><h2>По дням</h2></div>
+        <div class="fin-summary-scroll" id="finSummaryDaily"></div>
+      </section>
+      <section class="fin-summary-block" id="finSummarySalaryBlock" hidden>
+        <div class="fin-salary-fund">
+          <span id="finSalaryFundLabel">Фонд ЗП компании</span><b id="finSalaryFund">—</b>
+        </div>
+        <div class="fin-roles">
+          <div class="fin-roles__main">
+            <div class="fin-summary-head"><h2>ЗП по тирам</h2></div>
+            <div class="fin-summary-scroll" id="finSalaryRoles"></div>
+          </div>
+          <!-- СМО стоит над командами: его ЗП тира не имеет и в разбивку не
+               встаёт, поэтому идёт своей колонкой со своим заголовком. -->
+          <div class="fin-roles__side" id="finSalaryApart" hidden></div>
+        </div>
+      </section>
+      <section class="fin-summary-block" id="finSalaryTiersBlock" hidden>
+        <div class="fin-summary-head"><h2>Общая ЗП по тирам</h2></div>
+        <div class="fin-summary-scroll" id="finSalaryTiers"></div>
+      </section>
+      <section class="fin-summary-block" id="finSummaryPeopleBlock" hidden>
+        <div class="fin-summary-head"><h2>ЗП по людям</h2></div>
+        <div class="fin-summary-scroll" id="finSummaryPeople"></div>
+      </section>
+    </section>
 
-    <!-- CONFIGURABLE STRUCTURE (4.3) -->
-    <div style="display:flex;align-items:center;gap:14px;background:#fff;border:1px solid #ECEEF3;border-radius:14px;padding:14px 18px;margin-bottom:16px">
-      <span style="font-size:12px;font-weight:700;color:#A2A7B5;text-transform:uppercase;letter-spacing:.6px">Структура</span>
-      <div id="financeStructureBar" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"></div>
-      <div style="flex:1"></div>
-      <span style="font-size:12px;color:#A2A7B5;font-weight:600">Перетаскивайте уровни, чтобы менять порядок · клик включает или скрывает</span>
-    </div>
-
-    <!-- TABLE -->
-    <div style="background:#fff;border:1px solid #ECEEF3;border-radius:18px;overflow:hidden;flex:1;display:flex;flex-direction:column">
-      <div style="overflow-x:auto;overflow-y:auto">
-        <table style="border-collapse:collapse;width:100%;min-width:1400px">
-          <thead id="financeTableHead">
-            <tr>
-              <th rowspan="2" style="position:sticky;left:0;top:0;z-index:5;background:#F8F9FC;text-align:left;padding:14px 16px;min-width:290px;width:290px;border-bottom:1px solid #E7E9F1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;text-transform:uppercase;letter-spacing:.6px">Структура</th>
-              <th colspan="4" style="position:sticky;top:0;z-index:4;background:#F1F2FF;text-align:center;padding:11px;border-bottom:1px solid #E1E3F5;border-right:1px solid #E7E9F1;font-size:11px;font-weight:800;color:#5A5FE0;text-transform:uppercase;letter-spacing:.7px">Сервисы</th>
-              <th colspan="3" style="position:sticky;top:0;z-index:4;background:#FFF6E9;text-align:center;padding:11px;border-bottom:1px solid #F2E5CC;border-right:1px solid #E7E9F1;font-size:11px;font-weight:800;color:#C9821F;text-transform:uppercase;letter-spacing:.7px">Агенты и платёжки</th>
-              <th colspan="1" style="position:sticky;top:0;z-index:4;background:#E9F8F1;text-align:center;padding:11px;border-bottom:1px solid #D2EEE1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:800;color:#16B57F;text-transform:uppercase;letter-spacing:.7px">ПП (QUAL)</th>
-              <th colspan="2" style="position:sticky;top:0;z-index:4;background:#F4F5F9;text-align:center;padding:11px;border-bottom:1px solid #E4E6EF;border-right:1px solid #E7E9F1;font-size:11px;font-weight:800;color:#6B7180;text-transform:uppercase;letter-spacing:.7px">Затраты</th>
-              <th colspan="4" style="position:sticky;top:0;z-index:4;background:#1F2231;text-align:center;padding:11px;border-bottom:1px solid #1F2231;font-size:11px;font-weight:800;color:#fff;text-transform:uppercase;letter-spacing:.7px">Результат</th>
-            </tr>
-            <tr>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;border-left:1px solid #EEF0F7;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">PWA</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">SKAK</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">ZM</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">HEROES</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">BRO</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">MT</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">SPX</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#F4FBF7;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#16B57F;font-family:Space Grotesk">QUAL</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">RENT</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">SPEND</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">Revenue</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">Profit</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">ROI</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;padding:9px 14px 9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;font-family:Space Grotesk">ЗП</th>
-            </tr>
-          </thead>
-<tbody id="financeTableBody">
-          </tbody>
+    <section class="fin-sheet fin-book-part" id="finBookSheet" aria-label="Ввод по дням">
+      <div class="fin-sheet-bar">
+        <div class="fin-sheet-title" id="finSheetTitle">Месяц по дням</div>
+        <label class="fin-rate" title="Курс, по которому евровые ставки переводятся в доллары">
+          <span>Курс € → $</span>
+          <input id="finEurRate" type="number" step="0.0001" min="0.0001" inputmode="decimal" value="1">
+        </label>
+        <div class="fin-hints">
+          <span class="fin-key">Enter</span> вниз
+          <span class="fin-key">Tab</span> вправо
+          <span class="fin-key">⌘V</span> вставка диапазона из Excel
+        </div>
+      </div>
+      <div class="fin-scroll" id="finScroll">
+        <table class="fin-grid" id="finGrid">
+          <thead id="finGridHead"></thead>
+          <tbody id="finGridBody"></tbody>
         </table>
       </div>
-    </div>
+      <div class="fin-sheet-foot">
+        <div class="fin-count" id="finOfferCount"></div>
+      </div>
+    </section>
 
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px">
-      <span style="font-size:12.5px;color:#8A8FA3;font-weight:600">Отдельные финансовые записи · Revenue и QUAL вводятся вручную · ЗП по сетке ролей</span>
-      <span id="financeResultCount" style="font-size:12.5px;color:#8A8FA3;font-weight:600"></span>
-    </div>
+    <section class="fin-ladder fin-book-part" id="finBookSalary" aria-label="Шкала зарплаты">
+      <div class="fin-ladder-head">
+        <h2>Шкала зарплаты</h2>
+        <div id="finLadderRule" style="display:none;font-size:11.5px;color:#9B9292;font-weight:600;margin-top:5px"></div>
+      </div>
+      <ol class="fin-steps" id="finLadderSteps"></ol>
+      <div class="fin-payout-row">
+        <div class="fin-payout">
+          <span>Зарплата</span>
+          <b id="finPaySalary">—</b>
+        </div>
+        <div class="fin-payout fin-payout--total">
+          <span>К выплате</span>
+          <b id="finPayTotal">—</b>
+        </div>
+      </div>
+    </section>
+
   </main>
 </div>
 </body>

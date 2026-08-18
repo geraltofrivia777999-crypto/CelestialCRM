@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
@@ -14,6 +14,7 @@ from app.core.security import decrypt_secret
 from app.models import (
     IntegrationConnection,
     KeitaroCampaign,
+    KeitaroConversion,
     KeitaroGroup,
     KeitaroStatDaily,
     MediaRecord,
@@ -24,6 +25,7 @@ from app.models import (
     SyncStatus,
     User,
 )
+from app.services.geo import normalize_geo
 from app.services.keitaro import (
     KeitaroClient,
     decimal_value,
@@ -98,6 +100,12 @@ class KeitaroSyncEngine:
                         "days_total": days,
                     }
                     await db.commit()
+
+            # Журнал конверсий — отдельным шагом и в самом конце: он нужен
+            # только уведомлениям о депозитах, и его отказ не должен рушить
+            # уже собранную статистику.
+            conversions = await self._sync_conversions(config, client, start, end)
+            total_rows += conversions
 
             now = datetime.now(UTC)
             async with self.session_factory() as db:
@@ -179,6 +187,41 @@ class KeitaroSyncEngine:
             "offers": len(offers),
             "campaigns": len(campaigns),
         }
+
+    async def _sync_conversions(
+        self, config: dict, client: KeitaroClient, start: date, end: date
+    ) -> int:
+        """Журнал конверсий за окно синхронизации.
+
+        Ошибку глотаем намеренно: журнал есть не во всех сборках трекера и
+        требует своих прав, а из-за него не должна падать вся синхронизация —
+        Медиаборд и Финансы живут на дневном отчёте и без него.
+
+        Окно берём не длиннее недели: журнал построчный, и backfill за девяносто
+        дней вытянул бы сотни тысяч строк ради уведомлений, которые всё равно
+        относятся к сегодняшнему дню.
+        """
+        first = max(start, end - timedelta(days=6))
+        try:
+            rows = await client.conversions(first, end, timezone=config["timezone"])
+        except Exception:
+            return 0
+        if not rows:
+            return 0
+        async with self.session_factory() as db:
+            campaigns = {
+                row.external_id: row
+                for row in (
+                    await db.execute(
+                        select(KeitaroCampaign).where(
+                            KeitaroCampaign.connection_id == config["id"]
+                        )
+                    )
+                ).scalars()
+            }
+            saved = await _upsert_conversions(db, config, rows, campaigns)
+            await db.commit()
+        return saved
 
     async def _sync_day(
         self,
@@ -417,17 +460,16 @@ async def _upsert_offers(
             )
             db.add(item)
             by_external[external_id] = item
-        partner_id = str(row.get("affiliate_network_id") or "")
         group_id = str(row.get("group_id") or "")
         item.name = str(row.get("name") or f"Offer {external_id}")
-        item.partner_id = partners[partner_id].id if partner_id in partners else None
+        item.partner_id = await _resolve_offer_partner(db, config, row, partners)
         item.group_name = groups.get(group_id)
-        item.geo = _offer_geo(row)
-        if not item.status_overridden:
-            item.status = _status(row.get("state"))
+        item.geo = normalize_geo(_offer_country(row))
+        # `status` is our own workflow column and Keitaro never touches it.
+        item.keitaro_state = _status(row.get("state"))
     for external_id, item in by_external.items():
-        if external_id not in seen and not item.status_overridden:
-            item.status = Status.inactive
+        if external_id not in seen:
+            item.keitaro_state = Status.inactive
 
 
 async def _upsert_campaigns(
@@ -545,12 +587,64 @@ def _resolve_buyer(
     return None
 
 
-def _offer_geo(row: dict) -> str | None:
-    country = row.get("country") or row.get("geo")
-    if isinstance(country, list):
-        country = country[0] if country else None
-    value = str(country or "").strip().upper()
-    return value[:12] or None
+def _offer_country(row: dict) -> object:
+    return row.get("country") or row.get("geo") or row.get("country_code")
+
+
+def _network_external_id(row: dict) -> str:
+    nested = row.get("affiliate_network")
+    if isinstance(nested, dict):
+        return str(nested.get("id") or "")
+    return str(row.get("affiliate_network_id") or "")
+
+
+def _network_name(row: dict) -> str:
+    nested = row.get("affiliate_network")
+    if isinstance(nested, dict):
+        candidate = nested.get("name")
+    elif isinstance(nested, str):
+        candidate = nested
+    else:
+        candidate = row.get("affiliate_network_name") or row.get("network_name")
+    return " ".join(str(candidate or "").split())[:200]
+
+
+async def _resolve_offer_partner(
+    db: AsyncSession,
+    config: dict,
+    row: dict,
+    partners: dict[str, Partner],
+) -> uuid.UUID | None:
+    """Find the affiliate network a Keitaro offer belongs to.
+
+    The tracker exposes it in more than one shape depending on version and on
+    what the API key may read, so an offer can name its network without that
+    network appearing in `/affiliate_networks`. Falling back to the name keeps
+    the Партнёрка column filled instead of showing a dash.
+    """
+    external_id = _network_external_id(row)
+    if external_id and external_id in partners:
+        return partners[external_id].id
+    name = _network_name(row)
+    if not name:
+        return None
+    partner = await db.scalar(
+        select(Partner).where(
+            Partner.connection_id == config["id"],
+            func.lower(Partner.name) == name.lower(),
+        )
+    )
+    if not partner:
+        partner = Partner(
+            workspace_id=config["workspace_id"],
+            connection_id=config["id"],
+            external_id=f"name:{name.lower()[:94]}",
+            name=name,
+        )
+        db.add(partner)
+        await db.flush()
+        partners[partner.external_id] = partner
+    return partner.id
 
 
 def _status(value: object) -> Status:
@@ -570,3 +664,79 @@ async def _invalidate_dashboard_cache(workspace_id: uuid.UUID) -> None:
         await redis.aclose()
     except Exception:
         return
+
+
+def _conversion_time(value: object) -> datetime | None:
+    """Время из журнала конверсий.
+
+    Трекер отдаёт его строкой без зоны — он уже пересчитал её в ту, что мы
+    попросили. Считаем такое время UTC-aware: наивные и aware даты нельзя
+    сравнивать, а сравнивать их придётся при каждом прогоне правила.
+    """
+    if not value:
+        return None
+    text = str(value).strip().replace(" ", "T").replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+async def _upsert_conversions(
+    db: AsyncSession, config: dict, rows: list[dict], campaigns: dict
+) -> int:
+    """Сохранить новые конверсии, уже известные — пропустить.
+
+    Обновлять существующие незачем: уведомление о депозите уходит один раз, и
+    перезапись только сдвинула бы `seen_at`, из-за чего то же самое ушло бы в
+    чат ещё раз.
+    """
+    known = set(
+        (
+            await db.execute(
+                select(KeitaroConversion.external_id).where(
+                    KeitaroConversion.connection_id == config["id"]
+                )
+            )
+        ).scalars()
+    )
+    saved = 0
+    for row in rows:
+        external_id = str(
+            row.get("conversion_id") or row.get("id") or row.get("subid") or ""
+        ).strip()
+        if not external_id or external_id in known:
+            continue
+        known.add(external_id)
+        campaign_id = str(row.get("campaign_id") or "").strip() or None
+        campaign = campaigns.get(campaign_id) if campaign_id else None
+        db.add(
+            KeitaroConversion(
+                workspace_id=config["workspace_id"],
+                connection_id=config["id"],
+                external_id=external_id[:120],
+                status=str(row.get("status") or "").strip().lower()[:30],
+                conversion_at=_conversion_time(
+                    row.get("postback_datetime") or row.get("conversion_datetime")
+                ),
+                click_at=_conversion_time(row.get("click_datetime")),
+                campaign_external_id=campaign_id,
+                campaign_name=(
+                    str(row.get("campaign") or (campaign.name if campaign else "")) or None
+                ),
+                campaign_group_id=campaign.group_external_id if campaign else None,
+                campaign_group_name=campaign.group_name if campaign else None,
+                offer_external_id=str(row.get("offer_id") or "").strip() or None,
+                offer_name=str(row.get("offer") or "") or None,
+                country_code=normalize_geo(row.get("country")),
+                revenue=decimal_value(row.get("revenue")),
+                payout=decimal_value(row.get("payout")),
+                sub_values={
+                    f"sub_id_{index}": str(row.get(f"sub_id_{index}") or "")
+                    for index in range(1, 11)
+                },
+            )
+        )
+        saved += 1
+    return saved

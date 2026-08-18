@@ -17,6 +17,7 @@ from app.models import (
     KeitaroStatDaily,
     MediaRecord,
     Offer,
+    OfferStatus,
     Partner,
     Status,
     SyncRun,
@@ -221,7 +222,7 @@ async def test_manual_catalog_status_survives_sync(database) -> None:
         assert login.status_code == 200
         offer_update = client.patch(
             f"/api/v1/offers/{offer_id}/status",
-            json={"status": "inactive"},
+            json={"status": "hold"},
         )
         partner_update = client.patch(
             f"/api/v1/partners/{partner_id}/status",
@@ -229,7 +230,7 @@ async def test_manual_catalog_status_survives_sync(database) -> None:
         )
         assert offer_update.status_code == 200
         assert partner_update.status_code == 200
-        assert offer_update.json()["status_overridden"] is True
+        assert offer_update.json()["status"] == "hold"
         assert partner_update.json()["status_overridden"] is True
 
     async with SessionLocal() as db:
@@ -247,9 +248,10 @@ async def test_manual_catalog_status_survives_sync(database) -> None:
         partner = await db.get(Partner, uuid.UUID(partner_id))
         assert offer is not None
         assert partner is not None
-        assert offer.status == Status.inactive
+        # The workflow status is ours; Keitaro only ever writes `keitaro_state`.
+        assert offer.status == OfferStatus.hold
+        assert offer.keitaro_state == Status.active
         assert partner.status == Status.inactive
-        assert offer.status_overridden is True
         assert partner.status_overridden is True
 
 

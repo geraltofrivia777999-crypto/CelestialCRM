@@ -57,7 +57,7 @@
     return money(value);
   }
 
-  var DASH = '<span style="color:#C7CAD6">–</span>';
+  var DASH = '<span style="color:#C9BFBF">–</span>';
 
   /* Returns the cell text plus the exact value for a tooltip, whenever the two differ. */
   function formatCell(kind, value, compact) {
@@ -83,9 +83,9 @@
     element.textContent = message;
     element.style.cssText =
       "position:fixed;right:24px;bottom:24px;z-index:99999;max-width:420px;" +
-      "padding:13px 17px;border-radius:11px;color:#fff;font:700 12px Manrope,sans-serif;" +
-      "box-shadow:0 14px 38px rgba(31,34,49,.22);background:" +
-      (kind === "error" ? "#D94B61" : kind === "info" ? "#5A5FE0" : "#16B57F");
+      "padding:13px 17px;border-radius:11px;color:#fff;font:700 12px Inter,sans-serif;" +
+      "box-shadow:0 14px 38px rgba(23,17,17,.22);background:" +
+      (kind === "error" ? "#FF0000" : kind === "info" ? "#B91414" : "#16B57F");
     document.body.appendChild(element);
     window.setTimeout(function () { element.remove(); }, 5000);
   }
@@ -103,53 +103,53 @@
     style.id = "mediaEditModalStyles";
     style.textContent =
       ".board-edit-overlay--media{align-items:center!important;padding:24px!important;" +
-      "overflow:hidden!important;font-family:'Manrope',-apple-system,'Helvetica Neue',sans-serif}" +
+      "overflow:hidden!important;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif}" +
       ".board-edit-overlay--media .board-edit-card{width:min(880px,calc(100vw - 48px))!important;" +
       "max-width:none!important;max-height:calc(100vh - 48px);padding:0!important;overflow:hidden;" +
       "display:flex;flex-direction:column;border:1px solid rgba(225,228,237,.82);" +
-      "box-shadow:0 28px 80px rgba(23,26,38,.28)!important}" +
+      "box-shadow:0 28px 80px rgba(18,12,12,.28)!important}" +
       ".board-edit-overlay--media .board-edit-card:focus{outline:none}" +
       ".board-edit-overlay--media .board-edit-header{padding:21px 24px 18px!important;" +
-      "margin:0!important;border-bottom:1px solid #ECEEF3;flex-shrink:0}" +
-      ".board-edit-overlay--media .board-edit-title{font-family:'Space Grotesk','Manrope',sans-serif!important;" +
+      "margin:0!important;border-bottom:1px solid #EBE6E6;flex-shrink:0}" +
+      ".board-edit-overlay--media .board-edit-title{font-family:'Alumni Sans','Inter',sans-serif!important;" +
       "font-size:20px!important;line-height:1.2;letter-spacing:-.25px}" +
-      ".board-edit-overlay--media .board-edit-subtitle{display:block!important;color:#A2A7B5;" +
+      ".board-edit-overlay--media .board-edit-subtitle{display:block!important;color:#9B9292;" +
       "font-size:11px;font-weight:600;line-height:1.45;margin-top:5px}" +
       ".board-edit-overlay--media .board-edit-close{display:flex;align-items:center;justify-content:center;" +
-      "flex-shrink:0;color:#8A8FA3!important;transition:background .18s,color .18s}" +
-      ".board-edit-overlay--media .board-edit-close:hover{background:#ECEEF5!important;color:#555B6D!important}" +
+      "flex-shrink:0;color:#857D7D!important;transition:background .18s,color .18s}" +
+      ".board-edit-overlay--media .board-edit-close:hover{background:#EBE6E6!important;color:#5A5050!important}" +
       ".board-edit-overlay--media .board-edit-body{padding:20px 24px 22px!important;overflow-y:auto;" +
       "overscroll-behavior:contain;scrollbar-gutter:stable}" +
-      ".board-edit-overlay--media .board-edit-context{padding:14px;background:#F8F9FC;" +
-      "border:1px solid #ECEEF3;border-radius:14px}" +
+      ".board-edit-overlay--media .board-edit-context{padding:14px;background:#F8F5F5;" +
+      "border:1px solid #EBE6E6;border-radius:14px}" +
       ".board-edit-overlay--media .board-edit-main-grid{grid-template-columns:150px 190px minmax(0,1fr)!important;" +
       "gap:12px!important;margin:0!important}" +
       ".board-edit-overlay--media .board-edit-field{min-width:0;gap:6px!important;" +
-      "font-size:10.5px!important;color:#6B7180!important}" +
+      "font-size:10.5px!important;color:#6A6161!important}" +
       ".board-edit-overlay--media .board-edit-input,.board-edit-overlay--media .board-edit-select{" +
-      "display:block;width:100%;min-width:0;height:42px;border:1px solid #DFE2EB!important;" +
-      "border-radius:10px!important;padding:0 12px!important;background:#fff;color:#292D3B!important;" +
-      "font-family:'Manrope',sans-serif!important;font-size:12.5px!important;font-weight:600!important;" +
+      "display:block;width:100%;min-width:0;height:42px;border:1px solid #E5DFDF!important;" +
+      "border-radius:10px!important;padding:0 12px!important;background:#fff;color:#2A2020!important;" +
+      "font-family:'Inter',sans-serif!important;font-size:12.5px!important;font-weight:600!important;" +
       "outline:none;text-overflow:ellipsis;transition:border-color .18s,box-shadow .18s}" +
       ".board-edit-overlay--media .board-edit-input:focus,.board-edit-overlay--media .board-edit-select:focus{" +
-      "border-color:#8589E9!important;box-shadow:0 0 0 3px rgba(90,95,224,.09)}" +
+      "border-color:#D06060!important;box-shadow:0 0 0 3px rgba(185,20,20,.09)}" +
       ".board-edit-overlay--media .board-edit-section{margin-top:14px;padding:14px;" +
-      "border:1px solid #ECEEF3;border-radius:14px;background:#fff}" +
+      "border:1px solid #EBE6E6;border-radius:14px;background:#fff}" +
       ".board-edit-overlay--media .board-edit-section-heading{display:flex;align-items:center;" +
       "justify-content:space-between;gap:12px;margin:0 0 11px!important}" +
-      ".board-edit-overlay--media .board-edit-section-title{font-family:'Space Grotesk','Manrope',sans-serif;" +
+      ".board-edit-overlay--media .board-edit-section-title{font-family:'Alumni Sans','Inter',sans-serif;" +
       "font-size:11px;font-weight:700!important;letter-spacing:.25px!important;text-transform:none!important;" +
-      "color:#4D5263!important}" +
-      ".board-edit-overlay--media .board-edit-section--services .board-edit-section-title{color:#5A5FE0!important}" +
+      "color:#4A3E3E!important}" +
+      ".board-edit-overlay--media .board-edit-section--services .board-edit-section-title{color:#B91414!important}" +
       ".board-edit-overlay--media .board-edit-section--providers .board-edit-section-title{color:#C9821F!important}" +
-      ".board-edit-overlay--media .board-edit-section-note{color:#A2A7B5;font-size:10px;font-weight:600}" +
+      ".board-edit-overlay--media .board-edit-section-note{color:#9B9292;font-size:10px;font-weight:600}" +
       ".board-edit-overlay--media .board-edit-grid{display:grid!important;" +
       "grid-template-columns:repeat(auto-fit,minmax(145px,1fr))!important;gap:10px!important}" +
       ".board-edit-overlay--media .board-edit-footer{display:flex;align-items:center;" +
       "justify-content:flex-end;gap:10px;margin:0!important;padding:15px 24px 18px!important;" +
-      "border-top:1px solid #ECEEF3;background:#fff;flex-shrink:0}" +
+      "border-top:1px solid #EBE6E6;background:#fff;flex-shrink:0}" +
       ".board-edit-overlay--media .board-edit-button{height:42px;padding:0 18px!important;" +
-      "border-radius:10px!important;font-family:'Manrope',sans-serif!important;font-size:12px!important}" +
+      "border-radius:10px!important;font-family:'Inter',sans-serif!important;font-size:12px!important}" +
       ".board-edit-overlay--media .board-edit-save:disabled{cursor:wait;opacity:.68}" +
       "@media(max-width:760px){" +
       ".board-edit-overlay--media{padding:14px!important}" +
@@ -198,25 +198,25 @@
     style.textContent =
       ".cs-slot{display:inline-flex;align-items:center;gap:8px;flex-shrink:0}" +
       ".cs-slot:first-child > .cs-sep{display:none}" +
-      ".cs-sep{display:inline-flex;align-items:center;color:#C7CAD6;flex-shrink:0}" +
+      ".cs-sep{display:inline-flex;align-items:center;color:#C9BFBF;flex-shrink:0}" +
       // touch-action:none lets a finger drag the chip instead of scrolling the page.
       ".cs-chip{display:inline-flex;align-items:center;gap:7px;border:1px solid transparent;" +
-      "border-radius:10px;padding:6px 11px 6px 8px;font:700 12.5px 'Manrope',sans-serif;" +
-      "background:#EEF0FF;color:#5A5FE0;cursor:grab;user-select:none;touch-action:none;" +
+      "border-radius:10px;padding:6px 11px 6px 8px;font:700 12.5px 'Inter',sans-serif;" +
+      "background:#FCF1F1;color:#B91414;cursor:grab;user-select:none;touch-action:none;" +
       "transition:background .18s,color .18s,border-color .18s,box-shadow .18s,transform .12s}" +
-      '.cs-chip[data-on="0"]{background:#F4F5F9;color:#A2A7B5}' +
-      ".cs-chip:hover{border-color:rgba(90,95,224,.28)}" +
-      '.cs-chip[data-on="0"]:hover{border-color:#DDE0EA}' +
-      ".cs-chip:focus-visible{outline:none;border-color:#8589E9;box-shadow:0 0 0 3px rgba(90,95,224,.16)}" +
+      '.cs-chip[data-on="0"]{background:#F7F4F4;color:#9B9292}' +
+      ".cs-chip:hover{border-color:rgba(185,20,20,.28)}" +
+      '.cs-chip[data-on="0"]:hover{border-color:#E3DBDB}' +
+      ".cs-chip:focus-visible{outline:none;border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.16)}" +
       ".cs-grip{display:inline-flex;flex-shrink:0;opacity:.5;transition:opacity .18s}" +
       ".cs-chip:hover .cs-grip{opacity:.95}" +
       // Pressing feedback: the chip dips a touch before it lifts off.
       ".cs-chip--pressed{transform:scale(.96)}" +
       // What stays behind in the row while the clone follows the pointer.
-      ".cs-chip--ghost{background:#F1F2F7;border:1px dashed #C9CDDB;color:transparent;box-shadow:none}" +
+      ".cs-chip--ghost{background:#F1F2F7;border:1px dashed #C9BFBF;color:transparent;box-shadow:none}" +
       ".cs-chip--ghost .cs-grip{visibility:hidden}" +
       ".cs-chip--flying{position:fixed;z-index:10060;margin:0;pointer-events:none;cursor:grabbing;" +
-      "border-color:rgba(90,95,224,.4);box-shadow:0 18px 38px rgba(31,34,49,.24);" +
+      "border-color:rgba(185,20,20,.4);box-shadow:0 18px 38px rgba(23,17,17,.24);" +
       "transform:scale(1.06) rotate(-1.5deg)}" +
       "body.cs-dragging{cursor:grabbing}" +
       "body.cs-dragging .cs-chip{cursor:grabbing}" +
@@ -258,28 +258,36 @@
     }
   };
 
-  var TH_SUB = 'style="position:sticky;top:41px;z-index:4;background:#FBFBFD;text-align:right;' +
-    'padding:9px 12px;border-bottom:1px solid #E7E9F1;font-size:11px;font-weight:700;' +
-    'color:#8A8FA3;font-family:Space Grotesk;white-space:nowrap{extra}"';
-
-  function subTh(label, extra) {
-    return '<th title="' + escapeHtml(label) + '" ' +
-      TH_SUB.replace("{extra}", extra || "") + ">" + escapeHtml(label) + "</th>";
+  function subTh(label, extra, background, color, drag) {
+    return '<th title="' + escapeHtml(label) + '" draggable="true"' +
+      (drag ? ' data-col-drag="' + escapeHtml(drag.group) + '" data-col-label="' +
+        escapeHtml(label) + '"' : "") +
+      ' style="position:sticky;top:41px;z-index:4;cursor:grab;background:' + (background || "#FBF9F9") +
+      ';text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;font-size:11px;' +
+      'font-weight:700;color:' + (color || "#857D7D") +
+      ';font-family:Inter;white-space:nowrap;' + (extra || "") + '">' +
+      escapeHtml(label) + "</th>";
   }
 
-  function groupTh(label, colspan, background, color, borderColor) {
+  /* Последний блок доводит заливку до края карточки: правая граница там лишняя,
+   * её роль играет рамка самой карточки. */
+  function groupTh(label, colspan, background, color, borderColor, divider, last, key) {
     if (!colspan) return "";
-    return '<th colspan="' + colspan + '" style="position:sticky;top:0;z-index:4;background:' + background +
-      ';text-align:center;padding:11px;border-bottom:1px solid ' + (borderColor || "#E7E9F1") +
-      ';border-right:1px solid #E7E9F1;font-size:11px;font-weight:800;color:' + color +
+    return '<th colspan="' + colspan + '" draggable="true"' +
+      (key ? ' data-group-drag="' + escapeHtml(key) + '"' : "") +
+      ' style="position:sticky;top:0;z-index:4;cursor:grab;background:' + background +
+      ';text-align:center;padding:11px;border-bottom:1px solid ' + (borderColor || "#E8E2E2") +
+      ';border-left:2px solid ' + (divider || "#E8E2E2") +
+      (last ? ";border-right:0" : ";border-right:1px solid #E8E2E2") +
+      ';font-size:11px;font-weight:800;color:' + color +
       ';text-transform:uppercase;letter-spacing:.7px">' + escapeHtml(label) + "</th>";
   }
 
   function td(content, opts) {
     opts = opts || {};
     return "<td" + (opts.title ? ' title="' + escapeHtml(opts.title) + '"' : "") +
-      ' class="cs-cell" style="text-align:right;padding:12px;font-family:Space Grotesk;font-size:12.5px;' +
-      "font-weight:" + (opts.bold ? "800" : "600") + ";border-bottom:1px solid #F2F3F8;white-space:nowrap;" +
+      ' class="cs-cell" style="text-align:right;padding:12px;font-family:Inter;font-size:12.5px;' +
+      "font-weight:" + (opts.bold ? "800" : "600") + ";border-bottom:1px solid #F2EEEE;white-space:nowrap;" +
       (opts.color ? "color:" + opts.color + ";" : "") + (opts.extra || "") + '">' + content + "</td>";
   }
 
@@ -289,24 +297,54 @@
 
   // Column groups in board order. `services` and `providers` are filled from the
   // workspace catalog; the rest come from each board's `metricColumns`.
+  // `divider` is the line that opens the group and runs down the whole table, so it
+  // has to read against white cells — a shade darker than the header's own `border`.
   var COLUMN_GROUPS = [
-    { key: "services", label: "Сервисы", background: "#F1F2FF", color: "#5A5FE0", border: "#E1E3F5" },
-    { key: "providers", label: "Агенты и платёжки", background: "#FFF6E9", color: "#C9821F", border: "#F2E5CC" },
-    { key: "funnel", label: null, background: "#E9F8F1", color: "#16B57F", border: "#D2EEE1" },
-    { key: "costs", label: "Затраты", background: "#F4F5F9", color: "#6B7180", border: "#E4E6EF" },
-    { key: "result", label: "Результат", background: "#1F2231", color: "#fff", border: "#1F2231" }
+    {
+      key: "services", label: "Сервисы",
+      background: "#EAF3FA", subBackground: "#F3F8FC",
+      cellBackground: "#FAFCFE", rootBackground: "#EDF6FA",
+      color: "#4E78A0", border: "#D5E5F1", divider: "#9FC1DB"
+    },
+    {
+      key: "providers", label: "Агенты и платёжки",
+      background: "#FDF4EA", subBackground: "#FFF9F2",
+      cellBackground: "#FFFCF8", rootBackground: "#FAF5EC",
+      color: "#A66A32", border: "#F0DECA", divider: "#D8AE7C"
+    },
+    {
+      key: "funnel", label: null,
+      background: "#F4F9FA", subBackground: "#F8FAFC",
+      cellBackground: "#FCFDFE", rootBackground: "#EDF3F7",
+      color: "#5F7582", border: "#DEE8ED", divider: "#AFC5D0"
+    },
+    {
+      key: "costs", label: "Затраты",
+      background: "#FCEEEE", subBackground: "#FFF6F7",
+      cellBackground: "#FFFBFC", rootBackground: "#F8F0F2",
+      color: "#C3536E", border: "#F2D9DF", divider: "#DF9FB0"
+    },
+    {
+      key: "result", label: "Результат",
+      background: "#E6FAF1", subBackground: "#F1FCF7",
+      cellBackground: "#F9FDFB", rootBackground: "#E9F8F1",
+      color: "#25835E", border: "#D1EDDF", divider: "#84CBAA"
+    }
   ];
 
   function defaultDisplay() {
     return {
       compact: true,
       dense: false,
-      groups: { services: true, providers: true, funnel: true, costs: true, result: true }
+      groups: { services: true, providers: true, funnel: true, costs: true, result: true },
+      // Порядок блоков и колонок внутри них — перетаскивается за заголовок.
+      groupOrder: [],
+      columnOrder: {}
     };
   }
 
   function signTone(value) {
-    return value >= 0 ? "#16B57F" : "#D94B61";
+    return value >= 0 ? "#16B57F" : "#FF0000";
   }
 
   function amount(value) {
@@ -319,32 +357,32 @@
     style.id = "celestialViewStyles";
     style.textContent =
       ".cs-view{position:relative;flex-shrink:0}" +
-      ".cs-view-button{display:inline-flex;align-items:center;gap:7px;border:1px solid #E1E4ED;" +
-      "background:#fff;border-radius:11px;padding:8px 14px;font:700 12.5px 'Manrope',sans-serif;" +
-      "color:#5A5FE0;cursor:pointer;transition:border-color .18s,background .18s}" +
-      ".cs-view-button:hover{border-color:#BFC3F0;background:#F8F9FF}" +
-      '.cs-view-button[aria-expanded="true"]{border-color:#8589E9;background:#F1F2FF}' +
+      ".cs-view-button{display:inline-flex;align-items:center;gap:7px;border:1px solid #E5DFDF;" +
+      "background:#fff;border-radius:11px;padding:8px 14px;font:700 12.5px 'Inter',sans-serif;" +
+      "color:#B91414;cursor:pointer;transition:border-color .18s,background .18s}" +
+      ".cs-view-button:hover{border-color:#EDD5D5;background:#FCF9F9}" +
+      '.cs-view-button[aria-expanded="true"]{border-color:#D06060;background:#FCF1F1}' +
       // Anchored to the button's right edge, which is itself right-aligned in the card —
       // that keeps the panel on screen at every width without flipping sides.
       ".cs-view-panel{position:absolute;top:calc(100% + 8px);right:0;z-index:10050;" +
       "width:min(290px,calc(100vw - 32px));" +
-      "background:#fff;border:1px solid #E7E9F1;border-radius:14px;padding:14px;" +
-      "box-shadow:0 18px 44px rgba(31,34,49,.18)}" +
+      "background:#fff;border:1px solid #E8E2E2;border-radius:14px;padding:14px;" +
+      "box-shadow:0 18px 44px rgba(23,17,17,.18)}" +
       ".cs-view-panel[hidden]{display:none}" +
       ".cs-view-row{display:flex;align-items:center;justify-content:space-between;gap:10px;" +
       "margin-bottom:11px}" +
       ".cs-view-row--stack{display:block;margin-bottom:0}" +
-      ".cs-view-label{font:700 11px 'Manrope',sans-serif;color:#8A8FA3;text-transform:uppercase;" +
+      ".cs-view-label{font:700 11px 'Inter',sans-serif;color:#857D7D;text-transform:uppercase;" +
       "letter-spacing:.5px}" +
-      ".cs-seg{display:inline-flex;background:#F4F5F9;border-radius:9px;padding:2px}" +
+      ".cs-seg{display:inline-flex;background:#F7F4F4;border-radius:9px;padding:2px}" +
       ".cs-seg-button{border:none;background:transparent;border-radius:7px;padding:6px 11px;" +
-      "font:700 11.5px 'Manrope',sans-serif;color:#8A8FA3;cursor:pointer;transition:background .16s,color .16s}" +
-      '.cs-seg-button[aria-pressed="true"]{background:#fff;color:#171A26;' +
-      "box-shadow:0 1px 3px rgba(31,34,49,.12)}" +
+      "font:700 11.5px 'Inter',sans-serif;color:#857D7D;cursor:pointer;transition:background .16s,color .16s}" +
+      '.cs-seg-button[aria-pressed="true"]{background:#fff;color:#070505;' +
+      "box-shadow:0 1px 3px rgba(23,17,17,.12)}" +
       ".cs-view-groups{display:grid;gap:7px;margin-top:9px}" +
-      ".cs-view-check{display:flex;align-items:center;gap:9px;font:600 12.5px 'Manrope',sans-serif;" +
-      "color:#3A3F4F;cursor:pointer}" +
-      ".cs-view-check input{width:15px;height:15px;accent-color:#5A5FE0;cursor:pointer}";
+      ".cs-view-check{display:flex;align-items:center;gap:9px;font:600 12.5px 'Inter',sans-serif;" +
+      "color:#3A3030;cursor:pointer}" +
+      ".cs-view-check input{width:15px;height:15px;accent-color:#B91414;cursor:pointer}";
     document.head.appendChild(style);
   }
 
@@ -357,7 +395,11 @@
     style.textContent =
       ".cs-row--hidden{display:none}" +
       ".cs-arrow{transition:transform .15s}" +
-      'tr[data-open="0"] > td .cs-arrow{transform:rotate(-90deg)}';
+      'tr[data-open="0"] > td .cs-arrow{transform:rotate(-90deg)}' +
+      // A rule per cell pair, so the divider follows the columns however the
+      // catalog and the visible groups change.
+      ".cs-table--dividers thead th + th{border-left:1px solid #E4DDDD}" +
+      ".cs-table--dividers tbody td + td{border-left:1px solid #EFE9E9}";
     document.head.appendChild(style);
   }
 
@@ -452,13 +494,20 @@
       ["FilterBuyer", "FilterDateFrom", "FilterDateTo", "FilterGeo", "FilterPartner", "FilterOffer"]
         .forEach(function (id) {
           var element = el(id);
-          if (element) element.addEventListener("change", function () { loadRecords().catch(fail); });
+          if (!element) return;
+          element.addEventListener("change", function () {
+            // Смена баера меняет и список его офферов — иначе в фильтре остались
+            // бы чужие.
+            if (id === "FilterBuyer") fillOfferFilter();
+            loadRecords().catch(fail);
+          });
         });
       var reset = el("FilterReset");
       if (reset) reset.addEventListener("click", function () {
         ["FilterBuyer", "FilterDateFrom", "FilterDateTo", "FilterGeo", "FilterPartner", "FilterOffer"]
           .forEach(function (id) { var element = el(id); if (element) element.value = ""; });
         if (config.resetExtraFilters) config.resetExtraFilters();
+        fillOfferFilter();
         loadRecords().catch(fail);
       });
     }
@@ -742,7 +791,9 @@
     }
 
     function renderViewPanel(panel) {
-      var groups = COLUMN_GROUPS.map(function (group) {
+      var groups = COLUMN_GROUPS.filter(function (group) {
+        return !(config.hideServices && group.key === "services");
+      }).map(function (group) {
         var on = state.display.groups[group.key] !== false;
         return '<label class="cs-view-check"><input type="checkbox" data-group="' + group.key +
           '"' + (on ? " checked" : "") + '><span>' +
@@ -841,21 +892,86 @@
         byGroup[column.group].push(column);
       });
       var catalog = {
-        services: state.services.map(function (service) {
-          return { label: service.name, kind: "num", bucket: "services", id: service.id };
-        }),
-        providers: state.providers.map(function (provider) {
-          return { label: provider.name, kind: "money", bucket: "providers", id: provider.id };
-        })
+        // В Медиаборде нет ни блока сервисов, ни колонки агентов: разбивка по
+        // агентам живёт в модалке записи, а в таблице она занимала место, не
+        // отвечая ни на один вопрос — расход и так виден в SPEND.
+        services: config.hideServices
+          ? []
+          : state.services.map(function (service) {
+              return { label: service.name, kind: "num", bucket: "services", id: service.id };
+            }),
+        providers: config.hideProviders
+          ? []
+          : state.providers.map(function (provider) {
+              return { label: provider.name, kind: "money", bucket: "providers", id: provider.id };
+            })
       };
-      layout = COLUMN_GROUPS.map(function (group) {
+      layout = orderedGroups().map(function (group) {
+        var columns = catalog[group.key] || byGroup[group.key] || [];
         return Object.assign({}, group, {
           label: group.label || config.funnelTitle,
-          columns: catalog[group.key] || byGroup[group.key] || []
+          columns: orderColumns(group.key, columns)
         });
       }).filter(function (group) {
         return state.display.groups[group.key] !== false && group.columns.length;
       });
+    }
+
+    /* Порядок блоков и колонок внутри них — дело вкуса и задачи: кто-то смотрит
+       сначала затраты, кто-то воронку. Поэтому он не зашит, а перетаскивается
+       за заголовок и запоминается вместе с остальным видом доски. */
+    function orderedGroups() {
+      var saved = state.display.groupOrder || [];
+      var known = {};
+      COLUMN_GROUPS.forEach(function (group) { known[group.key] = group; });
+      var result = [];
+      saved.forEach(function (key) {
+        if (known[key] && result.indexOf(known[key]) < 0) result.push(known[key]);
+      });
+      COLUMN_GROUPS.forEach(function (group) {
+        if (result.indexOf(group) < 0) result.push(group);
+      });
+      return result;
+    }
+
+    function orderColumns(groupKey, columns) {
+      var saved = (state.display.columnOrder || {})[groupKey];
+      if (!saved || !saved.length) return columns;
+      var byLabel = {};
+      columns.forEach(function (column) { byLabel[column.label] = column; });
+      var result = [];
+      saved.forEach(function (label) {
+        // Колонка могла исчезнуть — например, агента удалили из справочника.
+        if (byLabel[label] && result.indexOf(byLabel[label]) < 0) result.push(byLabel[label]);
+      });
+      columns.forEach(function (column) {
+        if (result.indexOf(column) < 0) result.push(column);
+      });
+      return result;
+    }
+
+    function saveColumnOrder(groupKey, labels) {
+      state.display.columnOrder = state.display.columnOrder || {};
+      state.display.columnOrder[groupKey] = labels;
+      persistDisplay();
+    }
+
+    /* The trailing column exists only to hold the pencil button. Where a click on the
+     * row already opens the modal the button is redundant, and the column stays empty
+     * on every group row — so the whole column goes instead. */
+    function hasActionColumn() {
+      return state.canManage && !config.rowOpensModal;
+    }
+
+    /* The line that opens a block of columns. On a board with dividers it carries the
+     * block's own colour and runs the full height of the table, so Платёжки, Воронка,
+     * Затраты and Результат read as separate blocks instead of one wall of numbers.
+     * Elsewhere only the very first metric column keeps its old hairline. */
+    function columnOpener(group, groupIndex, index) {
+      if (config.columnDividers) {
+        return index === 0 ? "border-left:2px solid " + group.divider + ";" : "";
+      }
+      return index === 0 && groupIndex === 0 ? "border-left:1px solid #F0EBEB;" : "";
     }
 
     function renderHead() {
@@ -863,36 +979,144 @@
       if (!head) return;
       buildLayout();
       var row1 = "<tr>" +
-        '<th rowspan="2" class="cs-head-structure" style="position:sticky;left:0;top:0;z-index:5;background:#F8F9FC;text-align:left;padding:14px 16px;border-bottom:1px solid #E7E9F1;border-right:1px solid #E7E9F1;font-size:11px;font-weight:700;color:#8A8FA3;text-transform:uppercase;letter-spacing:.6px">Структура</th>' +
-        layout.map(function (group) {
-          return groupTh(group.label, group.columns.length, group.background, group.color, group.border);
+        '<th rowspan="2" class="cs-head-structure" style="position:sticky;left:0;top:0;z-index:5;background:#F8F5F5;text-align:left;padding:14px 16px;border-bottom:1px solid #E8E2E2;border-right:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#857D7D;text-transform:uppercase;letter-spacing:.6px">Структура</th>' +
+        layout.map(function (group, groupIndex) {
+          return groupTh(
+            group.label, group.columns.length,
+            group.background, group.color, group.border,
+            config.columnDividers ? group.divider : null,
+            !hasActionColumn() && groupIndex === layout.length - 1,
+            group.key
+          );
         }).join("") +
-        (state.canManage ? '<th rowspan="2" style="position:sticky;top:0;z-index:4;background:#F8F9FC;border-bottom:1px solid #E7E9F1;width:44px"></th>' : "") +
+        (hasActionColumn() ? '<th rowspan="2" style="position:sticky;top:0;z-index:4;background:#F8F5F5;border-bottom:1px solid #E8E2E2;width:44px"></th>' : "") +
         "</tr>";
       var row2 = "<tr>" +
         layout.map(function (group, groupIndex) {
           return group.columns.map(function (column, index) {
-            return subTh(column.label,
-              index === 0 && groupIndex === 0 ? ";border-left:1px solid #EEF0F7" : "");
+            var opener = columnOpener(group, groupIndex, index);
+            return subTh(
+              column.label,
+              opener,
+              group.subBackground,
+              group.color,
+              { group: group.key }
+            );
           }).join("");
         }).join("") +
         "</tr>";
       head.innerHTML = row1 + row2;
+      bindHeadDrag(head);
+    }
+
+    /* Перетаскивание заголовков: за верхний ряд переставляются блоки целиком,
+       за нижний — колонки внутри своего блока. Между блоками колонка не
+       переезжает: «Revenue» в «Затратах» означала бы не то, что написано. */
+    function bindHeadDrag(head) {
+      // Заголовок перерисовывается на каждый чих, а слушатели висят на самом
+      // `thead` и переживают смену его содержимого. Без этой отметки после
+      // первого же перетаскивания их становилось два, и второй обработчик
+      // двигал колонку ещё раз — уже от нового порядка.
+      if (head.getAttribute("data-drag-bound") === "1") return;
+      head.setAttribute("data-drag-bound", "1");
+      var dragged = null;
+      head.addEventListener("dragstart", function (event) {
+        var cell = event.target.closest
+          ? event.target.closest("[data-group-drag],[data-col-drag]")
+          : null;
+        if (!cell) return;
+        dragged = cell;
+        cell.style.opacity = ".45";
+        event.dataTransfer.effectAllowed = "move";
+        // Safari не начинает перетаскивание без данных в буфере.
+        event.dataTransfer.setData("text/plain", cell.textContent);
+      });
+      head.addEventListener("dragend", function () {
+        if (dragged) dragged.style.opacity = "";
+        dragged = null;
+      });
+      head.addEventListener("dragover", function (event) {
+        if (!dragged) return;
+        var target = event.target.closest
+          ? event.target.closest("[data-group-drag],[data-col-drag]")
+          : null;
+        if (!target || target === dragged) return;
+        var sameKind = dragged.hasAttribute("data-group-drag") ===
+          target.hasAttribute("data-group-drag");
+        var sameGroup = !dragged.hasAttribute("data-col-drag") ||
+          dragged.getAttribute("data-col-drag") === target.getAttribute("data-col-drag");
+        if (!sameKind || !sameGroup) return;
+        event.preventDefault();
+      });
+      head.addEventListener("drop", function (event) {
+        if (!dragged) return;
+        var target = event.target.closest
+          ? event.target.closest("[data-group-drag],[data-col-drag]")
+          : null;
+        if (!target || target === dragged) return;
+        event.preventDefault();
+        if (dragged.hasAttribute("data-group-drag")) {
+          return moveGroup(
+            dragged.getAttribute("data-group-drag"),
+            target.getAttribute("data-group-drag")
+          );
+        }
+        moveColumn(
+          dragged.getAttribute("data-col-drag"),
+          dragged.getAttribute("data-col-label"),
+          target.getAttribute("data-col-label")
+        );
+      });
+    }
+
+    function reorder(list, from, to) {
+      var source = list.indexOf(from);
+      var destination = list.indexOf(to);
+      if (source < 0 || destination < 0) return list;
+      list.splice(destination, 0, list.splice(source, 1)[0]);
+      return list;
+    }
+
+    function moveGroup(from, to) {
+      var order = layout.map(function (group) { return group.key; });
+      state.display.groupOrder = reorder(order, from, to);
+      persistDisplay();
+      renderHead();
+      renderTable();
+    }
+
+    function moveColumn(groupKey, from, to) {
+      var group = layout.filter(function (item) { return item.key === groupKey; })[0];
+      if (!group) return;
+      var labels = group.columns.map(function (column) { return column.label; });
+      saveColumnOrder(groupKey, reorder(labels, from, to));
+      renderHead();
+      renderTable();
     }
 
     function columnCount() {
       return layout.reduce(function (total, group) {
         return total + group.columns.length;
-      }, 1) + (state.canManage ? 1 : 0);
+      }, 1) + (hasActionColumn() ? 1 : 0);
     }
 
     /* ----- aggregation ----- */
 
     function newAggregate() {
       return {
-        services: {}, providers: {},
+        services: {}, providers: {}, providersTotal: 0,
         sums: {}, count: 0, records: 0
       };
+    }
+
+    /* Every agent/payment on the record, not just the ones still in the catalog —
+     * a deactivated provider keeps counting towards SPEND on the server, so the
+     * "Агенты и платёжки" total has to include it too. */
+    function providersSum(record) {
+      var values = record.providers || {};
+      return Object.keys(values).reduce(function (total, key) {
+        return total + Number((values[key] || {}).amount || 0);
+      }, 0);
     }
 
     function accumulate(aggregate, record) {
@@ -913,6 +1137,7 @@
             (aggregate.providers[provider.id] || 0) + Number(value.amount || 0);
         }
       });
+      aggregate.providersTotal += providersSum(record);
       config.sumFields.forEach(function (field) {
         var value = record[field];
         if (value != null) aggregate.sums[field] = (aggregate.sums[field] || 0) + Number(value);
@@ -956,16 +1181,20 @@
       var cells = "";
       layout.forEach(function (group, groupIndex) {
         group.columns.forEach(function (column, index) {
-          var value = column.bucket
-            ? source[column.bucket][column.id]
-            : column.get(source.sums);
+          var value = column.pick
+            ? column.pick(source)
+            : column.bucket
+              ? source[column.bucket][column.id]
+              : column.get(source.sums);
           var formatted = formatCell(column.kind, value, compact);
           var numeric = value == null ? null : Number(value);
           cells += td(formatted.text, {
             bold: opts.bold || column.bold,
             title: formatted.title,
             color: column.tone && numeric != null ? column.tone(numeric) : undefined,
-            extra: index === 0 && groupIndex === 0 ? "border-left:1px solid #F0F1F7;" : ""
+            extra: "background:" +
+              (opts.root ? group.rootBackground : group.cellBackground) + ";" +
+              columnOpener(group, groupIndex, index)
           });
         });
       });
@@ -977,8 +1206,8 @@
     function noticeRow(depth, owner, content) {
       return '<tr data-owner="' + escapeHtml(owner) + '" style="background:#fff">' +
         '<td colspan="' + columnCount() + '" style="padding:10px 16px 10px ' +
-        (16 + depth * 22) + 'px;border-bottom:1px solid #F2F3F8;font-size:11.5px;' +
-        'font-weight:700;color:#8A8FA3">' + content + "</td></tr>";
+        (16 + depth * 22) + 'px;border-bottom:1px solid #F2EEEE;font-size:11.5px;' +
+        'font-weight:700;color:#857D7D">' + content + "</td></tr>";
     }
 
     function renderNodeRows(node, depth, path, output) {
@@ -988,16 +1217,17 @@
       var isOpen = isLeafLevel ? !!state.leavesOpen[path] : !state.collapsed[path];
       var arrow = '<svg class="cs-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none">' +
         '<path d="m6 9 6 6 6-6" stroke="' +
-        (depth === 0 ? "#5A5FE0" : "#8A8FA3") + '" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-      var background = depth === 0 ? "#F5F6FF" : "#fff";
+        (depth === 0 ? "#B91414" : "#857D7D") + '" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      var background = depth === 0 ? "#FCF1F1" : "#fff";
+      // Уровень строки и так виден по отступу и по панели структуры — эта подпись
+      // рядом с названием только шумела. Счётчик записей остаётся: по нему видно,
+      // сколько строк раскроется.
       var count = node.aggregate.records;
       var label = '<div style="display:flex;align-items:center;gap:9px">' + arrow +
         '<span style="font-weight:' + (depth === 0 ? "800" : "700") + ';font-size:' +
         (depth === 0 ? "13.5px" : "12.5px") + '">' + escapeHtml(node.name) + "</span>" +
-        '<span style="font-size:10.5px;font-weight:700;color:#A2A7B5">' +
-        escapeHtml(LEVELS[node.level].label) + "</span>" +
         (isLeafLevel
-          ? '<span style="font-size:10.5px;font-weight:700;color:#C7CAD6">' +
+          ? '<span style="font-size:10.5px;font-weight:700;color:#C9BFBF">' +
             num(count) + " " + recordWord(count) + "</span>"
           : "") +
         "</div>";
@@ -1007,9 +1237,14 @@
         '" style="background:' + background + ';cursor:pointer">' +
         '<td style="position:sticky;left:0;z-index:2;background:' + background +
         ';padding:12px 16px 12px ' + (16 + depth * 22) +
-        'px;border-bottom:1px solid #EDEFF6;border-right:1px solid #E7E9F1">' + label + "</td>" +
-        metricCells({ services: node.aggregate.services, providers: node.aggregate.providers, sums: node.aggregate.sums }, { bold: depth === 0 }) +
-        (state.canManage ? td("", {}) : "") +
+        'px;border-bottom:1px solid #EDE8E8;border-right:1px solid #E8E2E2">' + label + "</td>" +
+        metricCells({
+          services: node.aggregate.services,
+          providers: node.aggregate.providers,
+          providersTotal: node.aggregate.providersTotal,
+          sums: node.aggregate.sums
+        }, { bold: depth === 0, root: depth === 0 }) +
+        (hasActionColumn() ? td("", {}) : "") +
         "</tr>");
       // Descendants are always emitted — collapsing hides them, so reopening a branch
       // never costs a rebuild. Only records that have not been fetched are missing.
@@ -1040,7 +1275,7 @@
         return;
       }
       if (leaf.error) {
-        output.push(noticeRow(depth, path, '<span style="color:#D94B61">' +
+        output.push(noticeRow(depth, path, '<span style="color:#FF0000">' +
           escapeHtml(leaf.error) + "</span>"));
         return;
       }
@@ -1054,8 +1289,8 @@
       if (!leaf.done) {
         output.push(noticeRow(depth, path,
           '<button type="button" data-more="' + escapeHtml(path) + '" ' +
-          'style="border:1px solid #E1E4ED;background:#F8F9FC;border-radius:9px;padding:6px 13px;' +
-          "font:700 11.5px Manrope,sans-serif;color:#5A5FE0;cursor:pointer\">Показать ещё · " +
+          'style="border:1px solid #E5DFDF;background:#F8F5F5;border-radius:9px;padding:6px 13px;' +
+          "font:700 11.5px Inter,sans-serif;color:#B91414;cursor:pointer\">Показать ещё · " +
           num(leaf.items.length) + " из " + num(node.aggregate.records) + "</button>"));
       } else if (!leaf.items.length) {
         output.push(noticeRow(depth, path, "Записей нет"));
@@ -1078,17 +1313,26 @@
         sums[field] = record[field] == null ? null : Number(record[field]);
       });
       var label = '<div style="display:flex;align-items:center;gap:8px">' +
-        '<span style="width:6px;height:6px;border-radius:50%;background:#C7CAD6;flex-shrink:0"></span>' +
-        '<span style="font-size:12px;font-weight:600;color:#6B7180">' + escapeHtml(record.record_date) + "</span>" +
-        '<span style="font-size:11px;color:#A2A7B5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px">' +
+        '<span style="width:6px;height:6px;border-radius:50%;background:#C9BFBF;flex-shrink:0"></span>' +
+        '<span style="font-size:12px;font-weight:600;color:#6A6161">' + escapeHtml(record.record_date) + "</span>" +
+        '<span style="font-size:11px;color:#9B9292;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px">' +
         escapeHtml(config.leafLabel(record)) + "</span></div>";
-      return '<tr data-owner="' + escapeHtml(owner || "") + '" style="background:#fff">' +
+      // The whole record row opens the modal when editing is allowed (ТЗ 5).
+      var clickable = state.canManage && config.rowOpensModal;
+      return '<tr data-owner="' + escapeHtml(owner || "") + '"' +
+        (clickable ? ' data-record="' + escapeHtml(record.id) + '"' : "") +
+        ' style="background:#fff' + (clickable ? ";cursor:pointer" : "") + '">' +
         '<td style="position:sticky;left:0;z-index:2;background:#fff;padding:10px 16px 10px ' +
-        (16 + depth * 22) + 'px;border-bottom:1px solid #F2F3F8;border-right:1px solid #E7E9F1">' + label + "</td>" +
-        metricCells({ services: recordServices, providers: recordProviders, sums: sums }, { bold: false, leaf: true, record: record }) +
-        (state.canManage
+        (16 + depth * 22) + 'px;border-bottom:1px solid #F2EEEE;border-right:1px solid #E8E2E2">' + label + "</td>" +
+        metricCells({
+          services: recordServices,
+          providers: recordProviders,
+          providersTotal: providersSum(record),
+          sums: sums
+        }, { bold: false, leaf: true, record: record }) +
+        (hasActionColumn()
           ? td('<button data-edit="' + escapeHtml(record.id) + '" title="Изменить данные" style="border:none;background:transparent;cursor:pointer;padding:2px">' +
-              '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z" stroke="#8A8FA3" stroke-width="2" stroke-linejoin="round"/></svg></button>', {})
+              '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z" stroke="#857D7D" stroke-width="2" stroke-linejoin="round"/></svg></button>', {})
           : "") +
         "</tr>";
     }
@@ -1119,7 +1363,7 @@
       if (!state.groups.length) {
         currentTree = null;
         body.innerHTML = '<tr><td colspan="' + columnCount() +
-          '" style="padding:44px 24px;text-align:center;color:#A2A7B5;font-size:13px">' +
+          '" style="padding:44px 24px;text-align:center;color:#9B9292;font-size:13px">' +
           escapeHtml(config.emptyMessage) + "</td></tr>";
         return;
       }
@@ -1183,6 +1427,11 @@
           openEditModal(findLoadedRecord(edit.getAttribute("data-edit")));
           return;
         }
+        var recordRow = event.target.closest("[data-record]");
+        if (recordRow) {
+          openEditModal(findLoadedRecord(recordRow.getAttribute("data-record")));
+          return;
+        }
         var row = event.target.closest("[data-node]");
         if (!row) return;
         var path = row.getAttribute("data-node");
@@ -1228,7 +1477,7 @@
         api.getAll("/services"),
         api.getAll("/spend-providers"),
         api.get("/users/options"),
-        api.getAll("/offers"),
+        api.getAll("/offers" + (config.offersQuery || "")),
         api.getAll("/partners"),
         api.get("/me/preferences/" + config.preferenceKey),
         api.get("/me/preferences/" + config.displayPreferenceKey)
@@ -1249,21 +1498,61 @@
       });
       fillSelect("FilterBuyer", state.buyers, "id", "name");
       fillSelect("FilterPartner", state.partners, "id", "name");
-      fillSelect("FilterOffer", state.offers, "id", "name");
+      fillOfferFilter();
+    }
+
+    /* Офферы выбранного баера: его группа Keitaro плюс то, что назначено лично ему.
+     * Без выбранного баера остаётся весь список, который сервер и так сузил до
+     * видимой ветки — баер видит свои офферы, тимлид — офферы своих баеров. */
+    function offersForBuyer(buyerId) {
+      if (!buyerId) return state.offers;
+      var buyer = state.buyers.find(function (item) { return item.id === buyerId; });
+      if (!buyer) return state.offers;
+      var group = (buyer.keitaro_offer_group || "").trim().toLowerCase();
+      var scoped = state.offers.filter(function (offer) {
+        var assigned = (offer.buyers || []).some(function (item) { return item.id === buyerId; });
+        return assigned || (group && (offer.group_name || "").trim().toLowerCase() === group);
+      });
+      // У баера без группы и без назначений сузить не по чему — прячем весь
+      // список только тогда, когда сужение действительно что-то нашло.
+      return scoped.length || group ? scoped : state.offers;
+    }
+
+    function fillOfferFilter() {
+      var offers = offersForBuyer(el("FilterBuyer") ? el("FilterBuyer").value : "");
+      var selector = el("FilterOffer");
+      // Оффер, которого в новом списке нет, молча оставлять нельзя: фильтр
+      // продолжил бы резать выдачу по невидимому значению.
+      if (selector && selector.value && !offers.some(function (offer) {
+        return offer.id === selector.value;
+      })) {
+        selector.value = "";
+      }
+      fillSelect("FilterOffer", offers, "id", "name");
       var geos = [];
-      state.offers.forEach(function (offer) {
+      offers.forEach(function (offer) {
         if (offer.geo && geos.indexOf(offer.geo) < 0) geos.push(offer.geo);
       });
       geos.sort();
+      var geoSelector = el("FilterGeo");
+      if (geoSelector && geoSelector.value && geos.indexOf(geoSelector.value) < 0) {
+        geoSelector.value = "";
+      }
       fillSelect("FilterGeo", geos.map(function (geo) { return { id: geo, name: geo }; }), "id", "name");
     }
 
-    async function loadRecords() {
-      // One request for the whole board: the server returns rows already summed per
-      // buyer × offer, which is every grouping the structure bar can ask for. The raw
-      // records stay on the server until a branch is opened.
+    /* One request for the whole board: the server returns rows already summed per
+     * buyer × offer, which is every grouping the structure bar can ask for. The raw
+     * records stay on the server until a branch is opened. */
+    function fetchGroups() {
       var query = queryString(filterParams());
-      var data = await api.get(config.groupsEndpoint + (query ? "?" + query : ""));
+      return api.get(config.groupsEndpoint + (query ? "?" + query : ""));
+    }
+
+    async function loadRecords(pending) {
+      // On the first load the request is already in flight next to the references —
+      // waiting for those first would cost another round trip on every navigation.
+      var data = await (pending || fetchGroups());
       state.groups = data.groups || [];
       state.recordCount = data.record_count || 0;
       state.truncated = !!data.truncated;
@@ -1345,11 +1634,11 @@
       var inputType = type || "text";
       var inputMode = inputType === "number" ? ' inputmode="decimal"' : "";
       var fieldClass = id === "financeEditLink" ? " board-edit-field--wide" : "";
-      return '<label class="board-edit-field' + fieldClass + '" for="' + id + '" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6B7180">' +
+      return '<label class="board-edit-field' + fieldClass + '" for="' + id + '" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6A6161">' +
         escapeHtml(label) +
         '<input class="board-edit-input" id="' + id + '" type="' + inputType + '" value="' +
         escapeHtml(value == null ? "" : value) + '"' + inputMode + " " + (attrs || "") +
-        ' autocomplete="off" style="border:1px solid #ECEEF3;border-radius:9px;padding:9px 11px;font:600 13px Manrope,sans-serif;outline:none;color:#171A26">' +
+        ' autocomplete="off" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;font:600 13px Inter,sans-serif;outline:none;color:#070505">' +
         "</label>";
     }
 
@@ -1373,7 +1662,7 @@
       overlay.id = p + "EditModal";
       overlay.className = "board-edit-overlay board-edit-overlay--" + p;
       overlay.style.cssText =
-        "position:fixed;inset:0;z-index:9999;background:rgba(23,26,38,.45);display:flex;" +
+        "position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);display:flex;" +
         "align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto";
       var buyersOptions = state.buyers.map(function (buyer) {
         return '<option value="' + escapeHtml(buyer.id) + '"' +
@@ -1397,17 +1686,17 @@
       }).join("");
       overlay.innerHTML =
         '<div class="board-edit-card" role="dialog" aria-modal="true" tabindex="-1" aria-labelledby="' + p +
-        'EditTitle" style="background:#fff;border-radius:18px;max-width:720px;width:100%;padding:26px 28px;box-shadow:0 24px 70px rgba(23,26,38,.3)">' +
+        'EditTitle" style="background:#fff;border-radius:18px;max-width:720px;width:100%;padding:26px 28px;box-shadow:0 24px 70px rgba(18,12,12,.3)">' +
         '<div class="board-edit-header" style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:18px;gap:18px">' +
         '<div><h2 class="board-edit-title" id="' + p +
-        'EditTitle" style="font-family:\'Space Grotesk\',\'Manrope\',sans-serif;font-size:19px;font-weight:700">' +
+        'EditTitle" style="font-family:\'Alumni Sans\',\'Inter\',sans-serif;font-size:19px;font-weight:700">' +
         (record ? "Изменить данные" : "Добавить данные") + "</h2>" +
         '<span class="board-edit-subtitle" style="display:none">' +
         (p === "finance" ? "Финансовые показатели и распределение затрат" :
           "Ручные показатели и распределение затрат") +
         "</span></div>" +
         '<button class="board-edit-close" id="' + p +
-        'EditClose" type="button" aria-label="Закрыть" style="border:none;background:#F4F5F9;border-radius:9px;width:32px;height:32px;cursor:pointer;font-size:15px;font-weight:700;color:#6B7180">' +
+        'EditClose" type="button" aria-label="Закрыть" style="border:none;background:#F7F4F4;border-radius:9px;width:32px;height:32px;cursor:pointer;font-size:15px;font-weight:700;color:#6A6161">' +
         '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>' +
         "</button></div>" +
         '<div class="board-edit-body" style="min-width:0">' +
@@ -1415,19 +1704,19 @@
         '<div class="board-edit-main-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">' +
         modalInput("Дата", p + "EditDate", "date", record ? record.record_date : new Date().toISOString().slice(0, 10)) +
         '<label class="board-edit-field" for="' + p +
-        'EditBuyer" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6B7180">Баер' +
+        'EditBuyer" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6A6161">Баер' +
         '<select class="board-edit-select" id="' + p +
-        'EditBuyer" style="border:1px solid #ECEEF3;border-radius:9px;padding:9px 11px;font:600 13px Manrope,sans-serif;outline:none">' +
+        'EditBuyer" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;font:600 13px Inter,sans-serif;outline:none">' +
         buyersOptions + "</select></label>" +
         '<label class="board-edit-field board-edit-offer-field" for="' + p +
-        'EditOffer" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6B7180">Оффер' +
+        'EditOffer" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6A6161">Оффер' +
         '<select class="board-edit-select" id="' + p +
-        'EditOffer" style="border:1px solid #ECEEF3;border-radius:9px;padding:9px 11px;font:600 13px Manrope,sans-serif;outline:none;max-width:100%">' +
+        'EditOffer" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;font:600 13px Inter,sans-serif;outline:none;max-width:100%">' +
         offersOptions + "</select></label>" +
         "</div></div>" +
-        (state.services.length
+        (!config.hideServices && state.services.length
           ? '<section class="board-edit-section board-edit-section--services">' +
-            '<div class="board-edit-section-heading" style="font-size:11px;font-weight:800;color:#5A5FE0;text-transform:uppercase;letter-spacing:.6px;margin:14px 0 8px">' +
+            '<div class="board-edit-section-heading" style="font-size:11px;font-weight:800;color:#B91414;text-transform:uppercase;letter-spacing:.6px;margin:14px 0 8px">' +
             '<span class="board-edit-section-title">Сервисы</span><span class="board-edit-section-note">Количество инсталлов</span></div>' +
             '<div class="board-edit-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
             servicesInputs + "</div></section>"
@@ -1439,17 +1728,19 @@
             '<div class="board-edit-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
             providersInputs + "</div></section>"
           : "") +
-        '<section class="board-edit-section board-edit-section--metrics">' +
-        '<div class="board-edit-section-heading" style="font-size:11px;font-weight:800;color:#6B7180;text-transform:uppercase;letter-spacing:.6px;margin:14px 0 8px">' +
-        '<span class="board-edit-section-title">Показатели</span><span class="board-edit-section-note">Ручные значения и override</span></div>' +
-        '<div class="board-edit-grid board-edit-grid--metrics" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
-        config.modalMetricInputs(record, modalInput) +
-        "</div></section></div>" +
+        (config.modalMetricInputs
+          ? '<section class="board-edit-section board-edit-section--metrics">' +
+            '<div class="board-edit-section-heading" style="font-size:11px;font-weight:800;color:#6A6161;text-transform:uppercase;letter-spacing:.6px;margin:14px 0 8px">' +
+            '<span class="board-edit-section-title">Показатели</span><span class="board-edit-section-note">Ручные значения и override</span></div>' +
+            '<div class="board-edit-grid board-edit-grid--metrics" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
+            config.modalMetricInputs(record, modalInput) +
+            "</div></section>"
+          : "") + "</div>" +
         '<div class="board-edit-footer" style="display:flex;justify-content:flex-end;gap:10px;margin-top:22px">' +
         '<button class="board-edit-button board-edit-cancel" id="' + p +
-        'EditCancel" type="button" style="border:1px solid #ECEEF3;background:#fff;border-radius:11px;padding:11px 18px;font:700 13px Manrope,sans-serif;color:#6B7180;cursor:pointer">Отмена</button>' +
+        'EditCancel" type="button" style="border:1px solid #EBE6E6;background:#fff;border-radius:11px;padding:11px 18px;font:700 13px Inter,sans-serif;color:#6A6161;cursor:pointer">Отмена</button>' +
         '<button class="board-edit-button board-edit-save" id="' + p +
-        'EditSave" type="button" style="border:none;background:#5A5FE0;color:#fff;border-radius:11px;padding:11px 22px;font:700 13px Manrope,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(90,95,224,.28)">Сохранить</button>' +
+        'EditSave" type="button" style="border:none;background:#B91414;color:#fff;border-radius:11px;padding:11px 22px;font:700 13px Inter,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.28)">Сохранить</button>' +
         "</div></div>";
       document.body.appendChild(overlay);
       document.body.style.overflow = "hidden";
@@ -1484,13 +1775,18 @@
         toast("Заполните дату, баера и оффер", "error");
         return;
       }
-      var services = [];
-      state.services.forEach(function (service) {
-        var value = numberValue(p + "EditService_" + service.id);
-        if (value != null && value > 0) {
-          services.push({ service_id: service.id, quantity: value });
-        }
-      });
+      // `null` (not `[]`) when the modal has no services block: the API then leaves
+      // the record's existing service values alone instead of deleting them.
+      var services = null;
+      if (!config.hideServices) {
+        services = [];
+        state.services.forEach(function (service) {
+          var value = numberValue(p + "EditService_" + service.id);
+          if (value != null && value > 0) {
+            services.push({ service_id: service.id, quantity: value });
+          }
+        });
+      }
       var providers = [];
       state.providers.forEach(function (provider) {
         var value = numberValue(p + "EditProvider_" + provider.id);
@@ -1534,6 +1830,7 @@
       var table = tableHead && tableHead.closest("table");
       if (table) {
         table.classList.add("celestial-board-table");
+        if (config.columnDividers) table.classList.add("cs-table--dividers");
         if (table.parentElement) {
           table.parentElement.classList.add("celestial-board-scroll");
         }
@@ -1546,6 +1843,11 @@
           editButton.style.display = "none";
         }
       }
+      // Both requests leave together: the board data does not depend on the catalog,
+      // and running them back to back added a whole round trip to every navigation.
+      var pendingGroups = fetchGroups();
+      // A rejection handled later still counts as unhandled until then.
+      pendingGroups.catch(function () { /* surfaced by loadRecords below */ });
       await loadRefs();
       renderStructureBar();
       bindViewControls();
@@ -1556,7 +1858,7 @@
       bindFilters();
       bindTableEvents();
       if (config.afterInit) config.afterInit(state, { loadRecords: loadRecords, fail: fail, filterQuery: filterQuery });
-      await loadRecords();
+      await loadRecords(pendingGroups);
     }
 
     return { init: init, state: state, openEditModal: openEditModal };
@@ -1572,11 +1874,20 @@
     displayPreferenceKey: "mediaboard.display",
     managePermission: "media.manage",
     funnelTitle: "Воронка",
+    // Медиаборд only: no services anywhere, agents and payments as one column in
+    // the table (the split stays in the modal), no funnel metrics in the modal,
+    // column dividers, and a click anywhere on a record opens the modal.
+    hideServices: true,
+    // Группа «Оффера» — витрина одноимённого модуля, в Медиаборде её нет; сам
+    // список сервер сужает до офферов видимой ветки.
+    offersQuery: "?exclude_offers_group=true&scope_offers=true",
+    hideProviders: true,
+    columnDividers: true,
+    rowOpensModal: true,
     metricColumns: [
       { group: "funnel", label: "INST", kind: "num", get: function (s) { return s.installs; } },
       { group: "funnel", label: "REG", kind: "num", get: function (s) { return s.registrations; } },
       { group: "funnel", label: "FTD", kind: "num", get: function (s) { return s.ftd; } },
-      { group: "costs", label: "RENT", kind: "money", get: function (s) { return s.rent; } },
       { group: "costs", label: "SPEND", kind: "money", get: function (s) { return s.spend; } },
       { group: "result", label: "Revenue", kind: "money", get: function (s) { return s.revenue; } },
       {
@@ -1598,206 +1909,30 @@
         }
       }
     ],
-    sumFields: ["installs", "registrations", "ftd", "rent", "spend", "revenue"],
+    sumFields: ["installs", "registrations", "ftd", "spend", "revenue"],
     emptyMessage: "Данные появятся после первой синхронизации Keitaro или ручного ввода",
     leafLabel: function (record) { return record.offer || ""; },
-    modalMetricInputs: function (record, modalInput) {
-      return modalInput("INST (инсталлы)", "mediaEditInstalls", "number",
-          record && record.installs != null ? record.installs : "", 'step="1" min="0"') +
-        modalInput("REG", "mediaEditRegistrations", "number",
-          record && record.registrations != null ? record.registrations : "", 'step="1" min="0"') +
-        modalInput("FTD", "mediaEditFtd", "number",
-          record && record.ftd != null ? record.ftd : "", 'step="1" min="0"') +
-        modalInput("Revenue, USD", "mediaEditRevenue", "number",
-          record && record.revenue != null ? Number(record.revenue) : "", 'step="any" min="0"') +
-        modalInput("SPEND вручную (override)", "mediaEditSpendOverride", "number",
-          record && record.spend_override != null ? Number(record.spend_override) : "", 'step="any" min="0"');
-    },
+    // No `modalMetricInputs`: the modal no longer edits INST/REG/FTD/Revenue/SPEND.
     save: async function (form) {
-      var payload = {
+      /* The modal owns the record's identity and its agents/payments split, nothing
+       * else. INST/REG/FTD/Revenue and the SPEND override are left out of the
+       * payload on purpose, so what Keitaro synced survives a manual save, and
+       * `services` is absent so the record keeps its service values. */
+      var saved = await api.post("/media-records", {
         record_date: form.record_date,
         buyer_id: form.buyer_id,
         offer_id: form.offer_id,
-        installs: form.numberValue("mediaEditInstalls"),
-        registrations: form.numberValue("mediaEditRegistrations"),
-        ftd: form.numberValue("mediaEditFtd"),
-        revenue: form.numberValue("mediaEditRevenue"),
-        spend_override: form.numberValue("mediaEditSpendOverride"),
         source: "manual"
-      };
-      var saved = await api.post("/media-records", payload);
+      });
       await api.put("/media-records/" + saved.id + "/values", {
-        services: form.services,
         spend_providers: form.providers
       });
     }
   });
 
-  /* ---------- Finance config ---------- */
-
-  var financeBoard = createBoard({
-    prefix: "finance",
-    endpoint: "/finance-records",
-    groupsEndpoint: "/finance-records/groups",
-    preferenceKey: "finance.structure",
-    displayPreferenceKey: "finance.display",
-    managePermission: "finance.manage",
-    funnelTitle: "ПП",
-    metricColumns: [
-      { group: "funnel", label: "QUAL", kind: "money", get: function (s) { return s.qual; } },
-      { group: "costs", label: "RENT", kind: "money", get: function (s) { return s.rent; } },
-      { group: "costs", label: "SPEND", kind: "money", get: function (s) { return s.spend; } },
-      { group: "result", label: "Revenue", kind: "money", get: function (s) { return s.revenue; } },
-      {
-        group: "result", label: "Profit", kind: "money", bold: true, tone: signTone,
-        get: function (s) {
-          return amount(s.revenue) - (amount(s.rent) + amount(s.spend));
-        }
-      },
-      {
-        group: "result", label: "ROI", kind: "percent", bold: true, tone: signTone,
-        get: function (s) {
-          var costs = amount(s.rent) + amount(s.spend);
-          return costs > 0 ? (amount(s.revenue) - costs) / costs * 100 : null;
-        }
-      },
-      { group: "result", label: "ЗП", kind: "money", get: function (s) { return s.salary; } }
-    ],
-    sumFields: ["qual", "rent", "spend", "revenue", "salary"],
-    emptyMessage: "Финансовых записей пока нет — добавьте вручную или импортируйте файл",
-    leafLabel: function (record) { return record.link || record.offer || ""; },
-    extraFilters: function (params) {
-      var element = byId("financeFilterLink");
-      if (element && element.value) params.push("link=" + encodeURIComponent(element.value));
-    },
-    resetExtraFilters: function () {
-      var element = byId("financeFilterLink");
-      if (element) element.value = "";
-    },
-    modalMetricInputs: function (record, modalInput) {
-      return modalInput("QUAL (доход ПП), USD", "financeEditQual", "number",
-          record && record.qual != null ? Number(record.qual) : "", 'step="any" min="0"') +
-        modalInput("Revenue, USD", "financeEditRevenue", "number",
-          record && record.revenue != null ? Number(record.revenue) : "", 'step="any" min="0"') +
-        modalInput("ЗП, USD", "financeEditSalary", "number",
-          record && record.salary != null ? Number(record.salary) : "", 'step="any" min="0"') +
-        modalInput("SPEND вручную (override)", "financeEditSpendOverride", "number",
-          record && record.spend_override != null ? Number(record.spend_override) : "", 'step="any" min="0"') +
-        modalInput("Ссылка", "financeEditLink", "text",
-          record && record.link ? record.link : "");
-    },
-    save: async function (form) {
-      var linkElement = byId("financeEditLink");
-      var payload = {
-        record_date: form.record_date,
-        buyer_id: form.buyer_id,
-        offer_id: form.offer_id,
-        link: linkElement && linkElement.value ? linkElement.value : null,
-        rent: form.record ? Number(form.record.rent || 0) : 0,
-        spend: form.record ? Number(form.record.spend || 0) : 0,
-        qual: form.numberValue("financeEditQual") || 0,
-        revenue: form.numberValue("financeEditRevenue") || 0,
-        salary: form.numberValue("financeEditSalary") || 0,
-        spend_override: form.numberValue("financeEditSpendOverride"),
-        source: "manual"
-      };
-      var saved = await api.post("/finance-records", payload);
-      await api.put("/finance-records/" + saved.id + "/values", {
-        services: form.services,
-        spend_providers: form.providers,
-        qual: payload.qual,
-        spend_override: payload.spend_override
-      });
-    },
-    afterInit: function (state, board) {
-      bindFinanceImportExport(state, board);
-    },
-    onData: function (state, tree) {
-      // The root aggregate already covers every matching record, group by group.
-      var sums = tree ? tree.aggregate.sums : {};
-      var revenue = Number(sums.revenue || 0);
-      var costs = Number(sums.rent || 0) + Number(sums.spend || 0);
-      var profit = revenue - costs;
-      var kpi = {
-        financeKpiRevenue: money(revenue),
-        financeKpiCosts: money(costs),
-        financeKpiProfit: money(profit),
-        financeKpiRoi: costs > 0 ? percent(profit / costs * 100) : "–"
-      };
-      Object.keys(kpi).forEach(function (id) {
-        var element = byId(id);
-        if (element) element.textContent = kpi[id];
-      });
-      var profitElement = byId("financeKpiProfit");
-      if (profitElement) profitElement.style.color = profit >= 0 ? "#16B57F" : "#D94B61";
-    }
-  });
-
-  /* ---------- Finance import/export ---------- */
-
-  function bindFinanceImportExport(state, board) {
-    var exportCsv = byId("financeExportCsv");
-    var exportXlsx = byId("financeExportXlsx");
-    var canExport = hasPermission(state.user, "finance.export");
-    if (!canExport) {
-      if (exportCsv) exportCsv.style.display = "none";
-      if (exportXlsx) exportXlsx.style.display = "none";
-      exportCsv = exportXlsx = null;
-    }
-    if (!state.canManage) {
-      var hiddenImport = byId("financeImportBtn");
-      if (hiddenImport) hiddenImport.style.display = "none";
-    }
-    function exportUrl(format) {
-      return "/api/v1/exports/finance?format=" + format + board.filterQuery();
-    }
-    if (exportCsv) exportCsv.addEventListener("click", function () {
-      window.location.href = exportUrl("csv");
-    });
-    if (exportXlsx) exportXlsx.addEventListener("click", function () {
-      window.location.href = exportUrl("xlsx");
-    });
-    var importButton = byId("financeImportBtn");
-    var importInput = byId("financeImportFile");
-    if (!importButton || !importInput) return;
-    importButton.addEventListener("click", function () { importInput.click(); });
-    importInput.addEventListener("change", async function () {
-      var file = importInput.files && importInput.files[0];
-      importInput.value = "";
-      if (!file) return;
-      try {
-        var formData = new FormData();
-        formData.append("file", file);
-        var preview = await api.request("/imports/finance/preview", {
-          method: "POST", body: formData
-        });
-        var errorsText = preview.errors && preview.errors.length
-          ? "\nОшибки в строках: " + preview.errors.map(function (e) { return e.row; }).slice(0, 15).join(", ")
-          : "";
-        var proceed = window.confirm(
-          "Файл: " + file.name + "\nВсего строк: " + preview.total_rows +
-          "\nВалидных: " + preview.valid_rows + errorsText +
-          "\n\nИмпортировать валидные строки?");
-        if (!proceed || !preview.valid_rows) return;
-        var confirmData = new FormData();
-        confirmData.append("file", file);
-        var idempotencyKey = "finimp-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
-        var result = await api.request("/imports/finance", {
-          method: "POST",
-          body: confirmData,
-          headers: { "Idempotency-Key": idempotencyKey }
-        });
-        toast("Импорт: создано " + result.created + ", обновлено " + result.updated +
-          (result.errors && result.errors.length ? ", ошибок " + result.errors.length : ""));
-        await board.loadRecords();
-      } catch (error) {
-        board.fail(error);
-      }
-    });
-  }
-
+  // Финансы переехали в собственный модуль (finance-ui.js) — там книга баера по
+  // дням, а не построчные записи, и общей с Медиабордом механики уже нет.
   window.CelestialBoard = {
-    initMedia: function (user) { return mediaBoard.init(user); },
-    initFinance: function (user) { return financeBoard.init(user); }
+    initMedia: function (user) { return mediaBoard.init(user); }
   };
 })();

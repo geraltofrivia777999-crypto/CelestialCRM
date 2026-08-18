@@ -38,6 +38,11 @@
     }
 
     if (!response.ok) {
+      // A dead session must not leave a cached user behind: the next page would treat
+      // the tab as signed in and render the shell before the redirect to /login.
+      if (response.status === 401 && window.CelestialSession) {
+        window.CelestialSession.clear();
+      }
       var fields = payload && payload.error && payload.error.details
         ? payload.error.details.fields
         : null;
@@ -76,6 +81,40 @@
     return { items: items, total: total, limit: items.length, offset: 0 };
   }
 
+  /*
+   * The pages are separate documents, so every in-app navigation re-runs the whole
+   * start-up: `/auth/me`, then the shell, then the module. Keeping the signed-in user
+   * for the tab lets a second page render its chrome and fire its data request straight
+   * away, with `/auth/me` revalidating in the background. Only identity and permissions
+   * live here — never numbers, and the server still authorises every request.
+   */
+  var SESSION_KEY = "celestial.session.user";
+
+  var session = {
+    read: function () {
+      try {
+        var raw = window.sessionStorage.getItem(SESSION_KEY);
+        if (!raw) return null;
+        var parsed = JSON.parse(raw);
+        return parsed && parsed.role ? parsed : null;
+      } catch (error) {
+        return null;
+      }
+    },
+    write: function (user) {
+      try {
+        if (user) window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
+      } catch (error) { /* private mode, or storage is full */ }
+    },
+    clear: function () {
+      try {
+        window.sessionStorage.removeItem(SESSION_KEY);
+      } catch (error) { /* nothing cached to drop */ }
+    }
+  };
+
+  window.CelestialSession = session;
+
   window.CelestialAPI = {
     get: function (path) {
       return request(path);
@@ -104,6 +143,10 @@
     },
     delete: function (path) {
       return request(path, { method: "DELETE" });
+    },
+    // Multipart: браузер сам проставит boundary, поэтому Content-Type задавать нельзя.
+    upload: function (path, formData) {
+      return request(path, { method: "POST", headers: {}, body: formData });
     },
     request: request
   };

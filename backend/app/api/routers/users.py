@@ -2,14 +2,39 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.routers.analytics import invalidate_dashboard_cache
 from app.core.database import get_db
 from app.core.deps import accessible_user_ids, get_current_user, require_permission
 from app.core.security import hash_password
-from app.models import Permission, Role, Status, User, UserParent, UserPreference
+from app.models import (
+    AuditEvent,
+    FinanceBook,
+    FinanceBookDay,
+    FinanceBookOffer,
+    FinanceOfferTag,
+    FinanceRecord,
+    FinanceServiceValue,
+    FinanceSpendValue,
+    FinanceTagDay,
+    MediaRecord,
+    MediaServiceValue,
+    MediaSpendValue,
+    Offer,
+    OfferBuyer,
+    OfferLead,
+    OfferStatus,
+    Permission,
+    Role,
+    Status,
+    User,
+    UserParent,
+    UserPreference,
+)
+from app.models import Session as SessionModel
 from app.schemas import (
     Page,
     PreferenceIn,
@@ -35,7 +60,7 @@ async def user_options(
     visible_users = await accessible_user_ids(db, current)
     rows = (
         await db.execute(
-            select(User.id, User.name, User.login)
+            select(User.id, User.name, User.login, User.keitaro_offer_group)
             .where(
                 User.workspace_id == current.workspace_id,
                 User.id.in_(visible_users),
@@ -44,7 +69,16 @@ async def user_options(
             .order_by(User.name)
         )
     ).all()
-    return [{"id": str(user_id), "name": name, "login": login} for user_id, name, login in rows]
+    return [
+        {
+            "id": str(user_id),
+            "name": name,
+            "login": login,
+            # Медиаборд сужает список офферов по этой группе, когда выбран баер.
+            "keitaro_offer_group": offer_group,
+        }
+        for user_id, name, login, offer_group in rows
+    ]
 
 
 @router.get("/users", response_model=Page)
@@ -117,6 +151,7 @@ async def create_user(
         status=payload.status,
         keitaro_company_group=_optional_text(payload.keitaro_company_group),
         keitaro_offer_group=_optional_text(payload.keitaro_offer_group),
+        team_name=_optional_text(payload.team_name),
     )
     db.add(user)
     await db.flush()
@@ -167,6 +202,8 @@ async def update_user(
         user.keitaro_company_group = _optional_text(changes["keitaro_company_group"])
     if "keitaro_offer_group" in changes:
         user.keitaro_offer_group = _optional_text(changes["keitaro_offer_group"])
+    if "team_name" in changes:
+        user.team_name = _optional_text(changes["team_name"])
     if "parent_ids" in changes:
         parent_ids = set(changes["parent_ids"] or [])
         await _validate_parents(db, current, user.id, parent_ids)
@@ -214,6 +251,186 @@ async def set_user_status(
     user = await _load_user(db, user.id)
     parents = await _parents_by_user(db, [user.id])
     return _user_payload(user, parents.get(user.id, []))
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: uuid.UUID,
+    request: Request,
+    purge: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("team.manage")),
+) -> Response:
+    """Удаляет пустой аккаунт или полностью очищает его данные при ``purge``."""
+    user = await _managed_user(db, current, user_id)
+    if user.id == current.id:
+        raise HTTPException(status_code=422, detail="You cannot delete your own account")
+
+    # Не даём параллельному запросу дописать данные между проверкой и удалением.
+    await db.execute(select(User.id).where(User.id == user.id).with_for_update())
+
+    blockers = []
+    subordinates = await db.scalar(
+        select(func.count()).select_from(UserParent).where(UserParent.parent_id == user.id)
+    )
+    if subordinates:
+        blockers.append(f"подчинённых — {subordinates}")
+    media = await db.scalar(
+        select(func.count()).select_from(MediaRecord).where(MediaRecord.buyer_id == user.id)
+    )
+    if media:
+        blockers.append(f"записей в Медиаборде — {media}")
+    finance = await db.scalar(
+        select(func.count()).select_from(FinanceRecord).where(FinanceRecord.buyer_id == user.id)
+    )
+    if finance:
+        blockers.append(f"строк в Финансах — {finance}")
+    books = await db.scalar(
+        select(func.count()).select_from(FinanceBook).where(FinanceBook.buyer_id == user.id)
+    )
+    if books:
+        blockers.append(f"финансовых книг — {books}")
+    if blockers and not purge:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "На этом пользователе держатся данные: "
+                + ", ".join(blockers)
+                + ". Для полного удаления подтвердите очистку всех данных пользователя."
+            ),
+        )
+
+    login = user.login
+    assigned_offer_ids = list(
+        (
+            await db.execute(
+                select(OfferBuyer.offer_id).where(OfferBuyer.user_id == user.id)
+            )
+        ).scalars()
+    )
+    led_offer_ids = list(
+        (
+            await db.execute(
+                select(OfferLead.offer_id).where(OfferLead.user_id == user.id)
+            )
+        ).scalars()
+    )
+    # История действий переживает своего автора: событие остаётся, ссылка на
+    # пользователя обнуляется.
+    await db.execute(
+        update(AuditEvent).where(AuditEvent.user_id == user.id).values(user_id=None)
+    )
+    # Связанное чистится явно и от самых глубоких дочерних таблиц к родителям.
+    # Так поведение одинаково в PostgreSQL и SQLite, где ON DELETE CASCADE в
+    # тестовом окружении не включён.
+    media_records = select(MediaRecord.id).where(MediaRecord.buyer_id == user.id)
+    await db.execute(
+        delete(MediaServiceValue).where(
+            MediaServiceValue.media_record_id.in_(media_records)
+        )
+    )
+    await db.execute(
+        delete(MediaSpendValue).where(MediaSpendValue.media_record_id.in_(media_records))
+    )
+    await db.execute(delete(MediaRecord).where(MediaRecord.buyer_id == user.id))
+
+    finance_records = select(FinanceRecord.id).where(FinanceRecord.buyer_id == user.id)
+    await db.execute(
+        delete(FinanceServiceValue).where(
+            FinanceServiceValue.finance_record_id.in_(finance_records)
+        )
+    )
+    await db.execute(
+        delete(FinanceSpendValue).where(
+            FinanceSpendValue.finance_record_id.in_(finance_records)
+        )
+    )
+    await db.execute(delete(FinanceRecord).where(FinanceRecord.buyer_id == user.id))
+
+    finance_books = select(FinanceBook.id).where(FinanceBook.buyer_id == user.id)
+    finance_offers = select(FinanceBookOffer.id).where(
+        FinanceBookOffer.book_id.in_(finance_books)
+    )
+    finance_tags = select(FinanceOfferTag.id).where(
+        FinanceOfferTag.offer_id.in_(finance_offers)
+    )
+    await db.execute(
+        delete(FinanceTagDay).where(FinanceTagDay.tag_id.in_(finance_tags))
+    )
+    await db.execute(
+        delete(FinanceOfferTag).where(FinanceOfferTag.offer_id.in_(finance_offers))
+    )
+    await db.execute(
+        delete(FinanceBookOffer).where(FinanceBookOffer.book_id.in_(finance_books))
+    )
+    await db.execute(
+        delete(FinanceBookDay).where(FinanceBookDay.book_id.in_(finance_books))
+    )
+    await db.execute(delete(FinanceBook).where(FinanceBook.buyer_id == user.id))
+
+    # Подчинённые аккаунты остаются в системе; удаляется только их связь с
+    # удаляемым руководителем.
+    await db.execute(
+        delete(UserParent).where(
+            (UserParent.user_id == user.id) | (UserParent.parent_id == user.id)
+        )
+    )
+    await db.execute(delete(UserPreference).where(UserPreference.user_id == user.id))
+    await db.execute(delete(OfferBuyer).where(OfferBuyer.user_id == user.id))
+    await db.execute(delete(OfferLead).where(OfferLead.user_id == user.id))
+    # Оффер, оставшийся без последнего баера, откатывается на ступень назад:
+    # к тимлиду, если тот ещё назначен, иначе в «Не занят».
+    if assigned_offer_ids:
+        await db.execute(
+            update(Offer)
+            .where(
+                Offer.id.in_(assigned_offer_ids),
+                Offer.status == OfferStatus.working,
+                Offer.id.notin_(select(OfferBuyer.offer_id)),
+                Offer.id.in_(select(OfferLead.offer_id)),
+            )
+            .values(status=OfferStatus.active)
+        )
+        await db.execute(
+            update(Offer)
+            .where(
+                Offer.id.in_(assigned_offer_ids),
+                Offer.status == OfferStatus.working,
+                Offer.id.notin_(select(OfferBuyer.offer_id)),
+            )
+            .values(status=OfferStatus.free)
+        )
+    if led_offer_ids:
+        await db.execute(
+            update(Offer)
+            .where(
+                Offer.id.in_(led_offer_ids),
+                Offer.status == OfferStatus.active,
+                Offer.id.notin_(select(OfferLead.offer_id)),
+            )
+            .values(status=OfferStatus.free)
+        )
+    await db.execute(delete(SessionModel).where(SessionModel.user_id == user.id))
+    await db.delete(user)
+    await audit(
+        db,
+        current,
+        "user.deleted",
+        f"Deleted user {login}",
+        request=request,
+        entity_type="user",
+        entity_id=str(user_id),
+        data={
+            "purged": purge,
+            "subordinates_detached": subordinates or 0,
+            "media_records_deleted": media or 0,
+            "finance_records_deleted": finance or 0,
+            "finance_books_deleted": books or 0,
+        },
+    )
+    await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
+    return Response(status_code=204)
 
 
 @router.post("/users/{user_id}/reset-password")
@@ -576,6 +793,7 @@ def _user_payload(user: User, parents: list[dict]) -> dict:
         "parents": parents,
         "keitaro_company_group": user.keitaro_company_group,
         "keitaro_offer_group": user.keitaro_offer_group,
+        "team_name": user.team_name,
     }
 
 

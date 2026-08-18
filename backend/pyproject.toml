@@ -47,3 +47,8 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["B008", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Переиспользованная фикстура: pytest требует, чтобы её имя было и в импорте, и
+# в аргументе теста, и ruff видит в этом переопределение.
+"tests/test_meta_bundle.py" = ["F811"]

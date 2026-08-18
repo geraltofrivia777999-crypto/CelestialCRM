@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Alumni+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;background:#F4F1F1;color:#070505;-webkit-font-smoothing:antialiased}
+  a{color:#B91414;text-decoration:none}
+  a:hover{color:#8A0F0F}
+  button,input,select{font:inherit}
+  button{cursor:pointer}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:#D8D0D0;border-radius:8px}
+  .meta-control{height:42px;border:1px solid #E8E2E2;background:#fff;border-radius:11px;color:#3A3030;font-size:12.5px;font-weight:600;outline:none;transition:border-color .2s,box-shadow .2s}
+  .meta-control:focus{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.10)}
+  .meta-select{appearance:none;padding:0 38px 0 13px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+  .meta-row{transition:background .18s}
+  .meta-row:hover{background:#FAF8F8}
+  .meta-cell{padding:13px 16px;font-size:12.5px;font-weight:600;text-align:right;white-space:nowrap}
+  .meta-th{padding:12px 16px;font-size:10.5px;font-weight:700;color:#9B9292;text-transform:uppercase;letter-spacing:.6px;text-align:right;white-space:nowrap}
+  .meta-th--left,.meta-cell--left{text-align:left}
+  .meta-chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:5px 10px;border-radius:8px}
+  .meta-dot{width:6px;height:6px;border-radius:50%}
+  .meta-account{background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px}
+  .meta-bar{height:6px;border-radius:6px;background:#F2EDED;overflow:hidden;margin-top:10px}
+  .meta-bar span{display:block;height:100%;border-radius:6px;background:#B91414}
+  .meta-level{flex-shrink:0;height:32px;padding:0 13px;border:1px solid #EBE6E6;border-radius:9px;background:#fff;color:#6A6161;font-size:12px;font-weight:700;display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .meta-level:hover{background:#FAF8F8;color:#3A3030}
+  .meta-level--active{border-color:#B91414;background:#FCF1F1;color:#B91414}
+  .meta-level__count{font-size:10.5px;font-weight:700;color:#9B9292}
+  .meta-level--active .meta-level__count{color:#B91414}
+  .meta-up-step{display:flex;align-items:center;gap:8px;flex-shrink:0}
+  .meta-up-dot{width:24px;height:24px;border-radius:50%;background:#F0EBEB;color:#9B9292;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .meta-up-step--active .meta-up-dot{background:#B91414;color:#fff}
+  .meta-up-step--done .meta-up-dot{background:#0F9D58;color:#fff}
+  .meta-up-label{font-size:12px;font-weight:700;color:#9B9292;white-space:nowrap}
+  .meta-up-step--active .meta-up-label,.meta-up-step--done .meta-up-label{color:#3A3030}
+  .meta-up-line{width:30px;height:1px;background:#EBE6E6;flex-shrink:0}
+  .meta-up-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  /* Первый шаг залива: слева настройки, справа — что именно заливаем. Панель
+     справа не украшение: связку выбирают из списка имён, и без сводки её
+     содержимое пришлось бы помнить наизусть. */
+  .meta-up-split{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+  .meta-up-col{display:grid;gap:16px;min-width:0}
+  @media(max-width:1100px){.meta-up-split{grid-template-columns:1fr}}
+  .meta-hour-bar{flex:1;min-width:0;border-radius:4px 4px 0 0;background:#B91414;transition:background .15s}
+  .meta-hour-bar:hover{background:#8A0F0F}
+  .meta-hour-bar--empty{background:#F0EBEB}
+  .meta-hour-tick{flex:1;min-width:0;text-align:center;font-size:9px;color:#9B9292;font-weight:700}
+  .meta-row--clickable{cursor:pointer}
+  .meta-condition{display:grid;grid-template-columns:1fr 90px 110px 34px;gap:8px;align-items:center}
+  .meta-pickcard{border:1px solid #EBE6E6;border-radius:13px;padding:12px 14px;display:flex;align-items:flex-start;gap:11px;cursor:pointer}
+  .meta-pickcard:hover{background:#FAF8F8}
+  .meta-pickcard--on{border-color:#B91414;background:#FCF1F1}
+  .meta-foot td{padding:13px 16px;font-size:12.5px;font-weight:800;background:#FAF8F8;border-top:1px solid #EBE6E6;text-align:right;white-space:nowrap}
+  .meta-foot td:first-child{text-align:left}
+  .meta-tab{flex-shrink:0;height:38px;padding:0 16px;border:0;border-radius:10px;background:transparent;color:#6A6161;font-size:13px;font-weight:600;display:flex;align-items:center}
+  .meta-tab:hover{background:#F7F4F4}
+  .meta-tab--active{background:#070505;color:#fff}
+  .meta-tab--active:hover{background:#070505}
+  .meta-bulk{height:36px;padding:0 14px;border:1px solid #E4D6AE;border-radius:10px;background:#fff;color:#6A5A28;font-size:12px;font-weight:700}
+  .meta-bulk:hover{background:#FFFDF6}
+  .meta-action{height:32px;padding:0 11px;border:1px solid #E8E2E2;border-radius:9px;background:#fff;color:#3A3030;font-size:11.5px;font-weight:700}
+  .meta-action:hover{background:#F7F4F4}
+  .meta-action--primary{border-color:#B91414;background:#B91414;color:#fff}
+  .meta-action--primary:hover{background:#A21212}
+  .meta-action--danger{border-color:#F1D9D9;color:#B91414}
+  .meta-step{display:flex;align-items:center;gap:9px;flex-shrink:0}
+  .meta-step-dot{width:24px;height:24px;border-radius:50%;background:#F0EBEB;color:#9B9292;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .meta-step--active .meta-step-dot{background:#B91414;color:#fff}
+  .meta-step--done .meta-step-dot{background:#0F9D58;color:#fff}
+  .meta-step-label{font-size:11.5px;font-weight:700;color:#9B9292;white-space:nowrap}
+  .meta-step--active .meta-step-label,.meta-step--done .meta-step-label{color:#3A3030}
+  .meta-step-line{flex:1;min-width:14px;height:1px;background:#EBE6E6}
+  .meta-note{background:#F7F4F4;border-radius:12px;padding:12px 14px;font-size:11.5px;color:#6A6161;font-weight:500;line-height:1.65}
+  /* Мастер связки. Каждый смысловой блок — своя карточка: полей три десятка,
+     и без карточек «Бюджет» сливался бы со «Стратегией ставок». */
+  .meta-card{background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:20px 22px}
+  .meta-card__title{font-family:'Alumni Sans','Inter',sans-serif;font-size:19px;font-weight:700;letter-spacing:-.2px;margin-bottom:16px}
+  .meta-card__sub{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#AFA6A6;margin-bottom:10px}
+  /* Цели строками, а не колонками: группа — это подпись, а не столбец, и
+     колонками «Узнаваемость» из одной плитки занимала треть блока впустую. */
+  .meta-goals{display:grid;gap:16px}
+  .meta-goal-row{display:flex;flex-wrap:wrap;gap:10px}
+  .meta-goal{flex:0 1 auto;text-align:left;border:0;border-radius:10px;background:#FBEDED;color:#B91414;font-size:12.5px;font-weight:600;padding:11px 16px;display:flex;align-items:center;gap:8px;line-height:1.35}
+  .meta-goal:hover{background:#F6E1E1}
+  .meta-goal--on{background:#B91414;color:#fff}
+  .meta-goal--on:hover{background:#A21212}
+  .meta-goal span{flex:1;min-width:0}
+  /* Тумблер: рисуем чекбокс, а не подключаем библиотеку — состояние читается
+     взглядом, и оно же есть в DOM для клавиатуры. */
+  .meta-switch{display:inline-flex;align-items:center;gap:11px;cursor:pointer;font-size:12.5px;font-weight:600;color:#3A3030;line-height:1.45}
+  .meta-switch input{position:absolute;opacity:0;width:0;height:0}
+  .meta-switch__box{flex-shrink:0;width:38px;height:21px;border-radius:20px;background:#DCD4D4;position:relative;transition:background .18s}
+  .meta-switch__box:after{content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.24);transition:transform .18s}
+  .meta-switch input:checked+.meta-switch__box{background:#B91414}
+  .meta-switch input:checked+.meta-switch__box:after{transform:translateX(17px)}
+  .meta-switch input:focus-visible+.meta-switch__box{box-shadow:0 0 0 3px rgba(185,20,20,.22)}
+  .meta-switch__hint{display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:3px;line-height:1.5}
+  /* Сегменты: «дневной / на весь срок» — выбор из двух-трёх, где список был бы
+     лишним кликом. */
+  .meta-seg{display:inline-flex;background:#F4F0F0;border-radius:9px;padding:3px;gap:2px}
+  .meta-seg button{height:30px;padding:0 13px;border:0;border-radius:7px;background:transparent;color:#6A6161;font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+  .meta-seg button:hover{color:#3A3030}
+  .meta-seg button.meta-seg--on{background:#fff;color:#B91414;box-shadow:0 1px 3px rgba(30,20,20,.12)}
+  .meta-line{display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px 16px;align-items:center}
+  .meta-line>span:first-child{font-size:12.5px;font-weight:600;color:#3A3030}
+  .meta-tags{display:flex;flex-wrap:wrap;gap:7px;padding:9px;border:1px solid #E8E2E2;border-radius:11px;background:#fff;min-height:44px}
+  .meta-tag{display:inline-flex;align-items:center;gap:6px;background:#F4F0F0;border-radius:8px;padding:5px 9px;font-size:11.5px;font-weight:700;color:#3A3030}
+  .meta-tag button{border:0;background:transparent;color:#9B9292;font-size:13px;line-height:1;padding:0}
+  .meta-tag button:hover{color:#B91414}
+  .meta-tags input{flex:1;min-width:120px;border:0;outline:0;font-size:12.5px;font-weight:600;background:transparent}
+  .meta-macros{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  /* Выпадающий список с поиском. Нужен там, где вариантов сотни и они живут в
+     Meta: интересы, языки, страны. */
+  .meta-combo{position:relative}
+  .meta-combo__list{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:30;background:#fff;border:1px solid #EBE6E6;border-radius:12px;box-shadow:0 18px 44px rgba(30,20,20,.16);max-height:280px;overflow:auto;padding:6px}
+  .meta-combo__option{display:block;width:100%;text-align:left;border:0;background:transparent;border-radius:9px;padding:8px 10px;font-size:12.5px;font-weight:600;color:#3A3030;line-height:1.4}
+  .meta-combo__option:hover{background:#F7F4F4}
+  .meta-combo__option span{display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:2px}
+  .meta-combo__empty{padding:10px;font-size:11.5px;color:#9B9292;font-weight:600}
+  /* Особая категория рекламы — чекбокс с описанием: по названию «Кредиты» не
+     понять, попадает ли под него оффер. */
+  .meta-choice{display:flex;align-items:flex-start;gap:11px;padding:11px 0;cursor:pointer}
+  .meta-choice+.meta-choice{border-top:1px solid #F4F0F0}
+  .meta-choice input{width:17px;height:17px;accent-color:#B91414;margin-top:2px;flex-shrink:0}
+  .meta-choice:has(input:checked) .meta-choice__title{color:#B91414}
+  .meta-choice__title{font-size:13.5px;font-weight:600;color:#3A3030}
+  .meta-choice__hint{display:block;font-size:12px;color:#6A6161;font-weight:500;line-height:1.5;margin-top:3px}
+  /* Окно макросов: поле сверху, под ним — список с расшифровками. */
+  .meta-macro-row{display:grid;grid-template-columns:230px minmax(0,1fr);gap:10px 14px;align-items:center;padding:5px 0}
+  .meta-macro-row button{width:100%;border:1px solid #E8E2E2;background:#fff;border-radius:9px;padding:7px 10px;font-size:11.5px;font-weight:700;color:#857D7D;letter-spacing:.04em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .meta-macro-row button:hover{border-color:#D06060;color:#B91414}
+  .meta-macro-row--on button{border-color:#B91414;color:#B91414;background:#FCF1F1}
+  .meta-macro-row span{font-size:12.5px;color:#3A3030;font-weight:500;line-height:1.45}
+  .meta-macro{border:1px solid #E8E2E2;background:#fff;border-radius:8px;padding:4px 9px;font-size:11px;font-weight:700;color:#6A6161}
+  .meta-macro:hover{border-color:#D06060;color:#B91414}
+  .meta-bundle-card{background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px;display:flex;flex-direction:column;gap:11px}
+  .meta-summary{display:grid;grid-template-columns:140px minmax(0,1fr);gap:9px 14px;font-size:12.5px;line-height:1.5}
+  .meta-summary dt{color:#9B9292;font-weight:600}
+  .meta-summary dd{font-weight:600;color:#3A3030;overflow-wrap:anywhere}
+  .spend-window{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end}
+  /* День и часы выбираются в фильтрах до того, как отмечают кампании: там же,
+     где человек смотрит на цифры. Здесь — только напоминание, что зафиксируем. */
+  .spend-window__value{display:flex;align-items:center;height:42px;padding:0 13px;border:1px solid #EBE6E6;border-radius:11px;background:#FAF8F8;font-size:13px;font-weight:700;color:#3A3030}
+  .spend-field{display:block;min-width:0}
+  .spend-field>span{display:block;font-size:11px;font-weight:700;color:#857D7D;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+  .spend-field .meta-control{width:100%;height:42px}
+  /* Оффер и агент — то, ради чего форму открыли: стоят сразу под окном, а не
+     на втором экране. Кампании к этому моменту уже выбраны в таблице. */
+  .spend-assign{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  @media(max-width:700px){.spend-assign{grid-template-columns:1fr}}
+  .spend-row{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid #EBE6E6;border-radius:12px;margin-bottom:8px;cursor:default}
+  .spend-row--taken{border-color:#F1D9D9;background:#FDF7F7}
+  .spend-row input{width:16px;height:16px;flex:0 0 16px;accent-color:#B91414}
+  /* Выбор кампаний в самой таблице: одна кампания может лить разные офферы в
+     разные часы, поэтому отмечают строки, а потом относят их на оффер. */
+  .meta-check{width:44px;text-align:center}
+  .meta-check input{width:16px;height:16px;accent-color:#B91414;cursor:pointer;vertical-align:middle}
+  .spend-row__name{display:block;min-width:0;font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .spend-row__meta{display:block;font-size:10.5px;color:#9B9292;font-weight:600;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .spend-row__money{display:block;font-size:13px;font-weight:800;text-align:right;white-space:nowrap}
+  .spend-row__day{display:block;font-size:10.5px;color:#9B9292;font-weight:600;text-align:right;white-space:nowrap}
+  .spend-commit{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid #F0EBEB;border-radius:11px;margin-bottom:7px;font-size:12px;font-weight:600}
+  .spend-commit b{font-weight:800}
+  .spend-drop{width:30px;height:30px;flex-shrink:0;border:1px solid #F1D9D9;border-radius:9px;background:#fff;color:#B91414;font-size:14px;line-height:1}
+  .spend-title{font-size:11px;font-weight:700;color:#9B9292;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+  @media(max-width:700px){.spend-window{grid-template-columns:1fr 1fr}.spend-window>button{grid-column:1/-1}}
+  /* Окно фиксации стоит рядом с фильтрами: расход относят на оффер по часам, и
+     день с отрезком выбирают до того, как отмечать кампании. Поля той же
+     высоты, что фильтры слева, — ряд читается одной строкой. */
+  .meta-window{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .meta-window .meta-control{height:42px;line-height:normal}
+  .meta-window input[type="date"]{width:158px;padding:0 12px;font-variant-numeric:tabular-nums}
+  .meta-window select{width:98px}
+  .meta-window__dash{color:#9B9292;font-weight:700}
+  .meta-note--info{background:#EFF5FE;color:#2C4E77}
+  .meta-note--warn{background:#FFF9E9;color:#6A5A28}
+  .meta-field{display:block}
+  .meta-field>span{display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px}
+  .meta-field input,.meta-field select,.meta-field textarea{width:100%;padding:0 13px}
+  .meta-field textarea{padding:11px 13px;height:auto;min-height:76px;resize:vertical;line-height:1.5}
+  .meta-pick{display:flex;align-items:flex-start;gap:11px;border:1px solid #EBE6E6;border-radius:13px;padding:13px 15px;cursor:pointer}
+  .meta-pick:hover{background:#FAF8F8}
+  @media(max-width:1100px){
+    .meta-sidebar{width:224px!important}
+    .meta-main{padding:24px!important}
+    .stat-grid{grid-template-columns:repeat(2,1fr)!important}
+    .meta-accounts-grid{grid-template-columns:repeat(2,1fr)!important}
+  }
+  @media(max-width:800px){
+    .meta-sidebar{display:none!important}
+    .meta-header{align-items:stretch!important;flex-direction:column}
+    .stat-grid{grid-template-columns:1fr!important}
+    .meta-search{width:100%!important}
+    .meta-up-grid{grid-template-columns:1fr}
+    /* Метрике нужна вся ширина: в четыре колонки её селект схлопывается. */
+    #metaHourTotals{grid-template-columns:repeat(2,1fr)!important}
+    .meta-condition{grid-template-columns:1fr 1fr 34px}
+    .meta-condition>:first-child{grid-column:1/-1}
+    .meta-accounts-grid{grid-template-columns:1fr!important}
+    .filter-grid{grid-template-columns:1fr!important}
+  }
+</style>
+</head>
+<body>
+<div style="display:flex;min-height:100vh;background:#F4F1F1">
+
+  <!-- SIDEBAR -->
+  <aside class="meta-sidebar" style="width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #EBE6E6;display:flex;flex-direction:column;position:sticky;top:0;height:100vh">
+    <div style="padding:26px 24px 22px;display:flex;align-items:center;gap:11px">
+      <div style="width:38px;height:38px;border-radius:11px;background:#070505;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(7,5,5,.26)"><img src="/assets/logo-mark-white.png" alt="Celestial Group" style="width:23px;height:auto;display:block"></div>
+      <div>
+        <div style="font-family:'Alumni Sans';font-weight:700;font-size:24px;line-height:.95;letter-spacing:.4px;text-transform:uppercase">Celestial</div>
+        <div style="font-size:9.5px;color:#9B9292;font-weight:600;letter-spacing:1.3px;text-transform:uppercase">Group · Traffic CRM</div>
+      </div>
+    </div>
+
+    <nav style="flex:1;padding:6px 14px;overflow-y:auto">
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:10px 12px 8px">Основное</div>
+      <a href="Dashboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>
+        Dashboard
+      </a>
+      <a href="Mediaboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#9B9292" stroke-width="2"/><path d="M3 9h18M8 4v16" stroke="#9B9292" stroke-width="2"/></svg>
+        Медиаборд
+      </a>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;background:#B91414;color:#fff;font-weight:600;font-size:14px;box-shadow:0 8px 18px rgba(185,20,20,.28)">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3 2 8l10 5 10-5-10-5Z" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M2 16l10 5 10-5M2 12l10 5 10-5" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
+        Meta Ads
+      </div>
+      <a href="Finance.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2.5" stroke="#9B9292" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#9B9292" stroke-width="2"/><path d="M6 9v6M18 9v6" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
+        Финансы
+      </a>
+      <a href="Offers.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20.6 8.5 12 4 3.4 8.5 12 13l8.6-4.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M3.4 15.5 12 20l8.6-4.5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/></svg>
+        Оффера
+      </a>
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:16px 12px 8px">Рабочее</div>
+
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#9B9292" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
+        Команда
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>
+        Задачи
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v14H6.5A2.5 2.5 0 0 0 4 19.5V5.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M8 7.5h7M8 11h5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
+        База знаний
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" stroke="#9B9292" stroke-width="2"/></svg>
+        Утилиты
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px;cursor:pointer">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#9B9292" stroke-width="2"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 3h-4l-.4 2.2a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 21h4l.4-2.2a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" stroke="#9B9292" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        Настройки
+      </div>
+    </nav>
+
+    <div style="padding:12px 16px 18px;border-top:1px solid #EBE6E6;display:flex;align-items:center;gap:11px">
+      <div style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#070505,#B91414);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">ЕВ</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:13.5px">Evano</div>
+        <div style="font-size:11.5px;color:#9B9292">Team Lead</div>
+      </div>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="#9B9292" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="meta-main" style="flex:1;min-width:0;padding:26px 34px 40px">
+
+    <!-- TOP BAR -->
+    <div class="meta-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:24px">
+      <div>
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="font-size:13px;color:#9B9292;font-weight:600">Реклама</span>
+          <span style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#1877F2;background:#EAF2FE;padding:3px 9px;border-radius:7px">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 0 1 14-5M20 12a8 8 0 0 1-14 5M18 3v4h-4M6 21v-4h4" stroke="#1877F2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Marketing API
+          </span>
+        </div>
+        <h1 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:27px;font-weight:700;letter-spacing:-.6px;margin-top:5px">Meta Ads</h1>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div id="metaSyncState" style="display:flex;align-items:center;gap:7px;background:#fff;border:1px solid #EBE6E6;border-radius:12px;height:44px;padding:0 14px">
+          <span style="width:7px;height:7px;border-radius:50%;background:#C9BFBF"></span>
+          <span style="font-size:12px;color:#6A6161;font-weight:700">—</span>
+        </div>
+        <button id="metaConnect" type="button" style="height:44px;padding:0 16px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Подключение</button>
+        <button id="metaSync" type="button" style="height:44px;padding:0 18px;border:0;border-radius:12px;background:#B91414;color:#fff;font-size:13px;font-weight:700;box-shadow:0 8px 18px rgba(185,20,20,.24)">Синхронизировать</button>
+      </div>
+    </div>
+
+    <!-- TABS -->
+    <div class="meta-tabs" style="display:flex;gap:6px;background:#fff;border:1px solid #EBE6E6;border-radius:14px;padding:5px;margin-bottom:20px;overflow-x:auto">
+      <button class="meta-tab meta-tab--active" type="button" data-tab="overview">Обзор</button>
+      <button class="meta-tab" type="button" data-tab="launches">Заливы</button>
+      <button class="meta-tab" type="button" data-tab="rules">Автоправила<span id="metaRulesBadge" style="display:none;margin-left:7px;background:#B91414;color:#fff;border-radius:20px;padding:1px 7px;font-size:10.5px">0</span></button>
+    </div>
+
+    <!-- TAB: OVERVIEW -->
+    <section id="metaTabOverview">
+
+    <!-- STAT STRIP -->
+    <div class="stat-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px">
+        <div style="font-size:11.5px;color:#6A6161;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Расход</div>
+        <div id="metaSpend" style="font-size:26px;font-weight:700;letter-spacing:-.5px;margin-top:8px">—</div>
+        <div id="metaSpendHint" style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">за период</div>
+      </div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px">
+        <div style="font-size:11.5px;color:#6A6161;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Клики · CTR</div>
+        <div id="metaClicks" style="font-size:26px;font-weight:700;letter-spacing:-.5px;margin-top:8px">—</div>
+        <div id="metaCtr" style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">—</div>
+      </div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px">
+        <div style="font-size:11.5px;color:#6A6161;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Лиды · CPL</div>
+        <div id="metaLeads" style="font-size:26px;font-weight:700;letter-spacing:-.5px;margin-top:8px">—</div>
+        <div id="metaCpl" style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">—</div>
+      </div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px">
+        <div style="font-size:11.5px;color:#6A6161;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Профит · ROI</div>
+        <div id="metaProfit" style="font-size:26px;font-weight:700;letter-spacing:-.5px;margin-top:8px">—</div>
+        <div id="metaRoi" style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">—</div>
+      </div>
+    </div>
+
+    <!-- ATTRIBUTION NOTICE -->
+    <div id="metaAttribution" style="display:none;margin-bottom:16px"></div>
+
+    <!-- FILTERS -->
+    <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:17px 20px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap">
+        <div class="filter-grid" style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:10px;flex:1">
+          <select id="metaPeriod" class="meta-control meta-select" aria-label="Период">
+            <option value="today">Сегодня</option>
+            <option value="yesterday">Вчера</option>
+            <option value="7" selected>7 дней</option>
+            <option value="30">30 дней</option>
+            <option value="month">Текущий месяц</option>
+            <option value="prev_month">Прошлый месяц</option>
+          </select>
+          <select id="metaAccountFilter" class="meta-control meta-select" aria-label="Фильтр по кабинету">
+            <option value="">Все кабинеты</option>
+          </select>
+          <select id="metaOwnerFilter" class="meta-control meta-select" aria-label="Фильтр по ответственному">
+            <option value="">Все ответственные</option>
+          </select>
+        </div>
+        <div class="meta-window" id="metaWindowBox" hidden>
+          <input id="metaWindowDate" class="meta-control" type="date" aria-label="День фиксации расхода">
+          <select id="metaWindowFrom" class="meta-control meta-select" aria-label="Начало окна"></select>
+          <span class="meta-window__dash">–</span>
+          <select id="metaWindowTo" class="meta-control meta-select" aria-label="Конец окна"></select>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEVELS -->
+    <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 24px 14px;flex-wrap:wrap">
+        <div>
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Структура</h3>
+          <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Аккаунт → БМ → кабинет → кампания. Реклама крутится от лица фан-пейджа</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button id="metaSpendOpen" class="meta-btn" type="button" style="display:none;height:40px;border:1px solid #E5DFDF;border-radius:11px;background:#fff;padding:0 15px;font-size:12.5px;font-weight:700;color:#3A3030">Фиксация расхода</button>
+        <label class="meta-search" style="display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #EBE6E6;border-radius:11px;padding:0 13px;height:40px;width:240px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="#9B9292" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
+          <input id="metaLevelSearch" type="search" placeholder="Поиск по названию" style="border:0;outline:0;background:transparent;min-width:0;width:100%;color:#3A3030;font-size:13px">
+        </label></div>
+      </div>
+      <div class="meta-levels" style="display:flex;gap:6px;padding:0 24px 14px;overflow-x:auto">
+        <button class="meta-level meta-level--active" type="button" data-level="users">Пользователи</button>
+        <button class="meta-level" type="button" data-level="socials">Аккаунты</button>
+        <button class="meta-level" type="button" data-level="fanpages">Фан-пейджи</button>
+        <button class="meta-level" type="button" data-level="businesses">БМы</button>
+        <button class="meta-level" type="button" data-level="accounts">Кабинеты</button>
+        <button class="meta-level" type="button" data-level="campaigns">Кампании</button>
+        <button class="meta-level" type="button" data-level="adsets">Адсеты</button>
+        <button class="meta-level" type="button" data-level="ads">Объявления</button>
+      </div>
+      <div id="metaLevelHint" class="meta-note" style="margin:0 24px 14px;display:none"></div>
+      <div style="overflow-x:auto">
+        <table style="border-collapse:collapse;width:100%;min-width:1180px">
+          <thead id="metaLevelHead"></thead>
+          <tbody id="metaTableBody"></tbody>
+          <tfoot id="metaLevelFoot"></tfoot>
+        </table>
+      </div>
+      <div style="display:flex;align-items:center;padding:16px 24px;border-top:1px solid #F0EBEB">
+        <span id="metaResultCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
+      </div>
+    </div>
+    </section>
+
+    <!-- TAB: LAUNCHES -->
+    <section id="metaTabLaunches" style="display:none">
+      <div class="meta-levels" style="display:flex;gap:6px;margin-bottom:16px;overflow-x:auto">
+        <button class="meta-level meta-level--active" type="button" data-launch-view="bundles">Связки</button>
+        <button class="meta-level" type="button" data-launch-view="wizard">Залить связку</button>
+        <button class="meta-level" type="button" data-launch-view="queue">Очередь заливки</button>
+      </div>
+
+      <!-- СВЯЗКИ -->
+      <div id="metaBundleList">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+          <div>
+            <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Связки</h3>
+            <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Кампания, адсет и объявление одной заготовкой — заливается на любой кабинет</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:8px;height:44px;padding:0 14px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;min-width:220px">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="#B4ABAB" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#B4ABAB" stroke-width="2" stroke-linecap="round"/></svg>
+              <input id="metaBundleSearch" type="search" placeholder="Поиск по названию" aria-label="Поиск связки" style="border:0;outline:0;background:transparent;min-width:0;width:100%;color:#3A3030;font-size:13px">
+            </div>
+            <button id="metaBundleCreate" type="button" style="height:44px;padding:0 18px;border:0;border-radius:12px;background:#B91414;color:#fff;font-size:13px;font-weight:700;box-shadow:0 8px 18px rgba(185,20,20,.24)">Создать связку</button>
+          </div>
+        </div>
+
+        <div id="metaBundleBulk" style="display:none;align-items:center;gap:12px;background:#FFF9E9;border:1px solid #F2E3B8;border-radius:14px;padding:12px 16px;margin-bottom:14px">
+          <span id="metaBundleBulkCount" style="font-size:12.5px;font-weight:700;color:#6A5A28"></span>
+          <div style="flex:1"></div>
+          <button class="meta-bulk" type="button" data-bundle-bulk="copy">Дублировать</button>
+          <button class="meta-bulk" type="button" data-bundle-bulk="drop">Удалить</button>
+        </div>
+
+        <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+          <div style="overflow-x:auto">
+            <table style="border-collapse:collapse;width:100%;min-width:1080px">
+              <thead>
+                <tr style="border-bottom:1px solid #F0EBEB">
+                  <th class="meta-th meta-th--left" style="padding-left:20px;width:36px"><input id="metaBundleAll" type="checkbox" aria-label="Выбрать все"></th>
+                  <th class="meta-th meta-th--left">Название</th>
+                  <th class="meta-th meta-th--left">Гео</th>
+                  <th class="meta-th meta-th--left">Язык</th>
+                  <th class="meta-th meta-th--left">Плейсменты</th>
+                  <th class="meta-th meta-th--left">Демография</th>
+                  <th class="meta-th meta-th--left">Устройства</th>
+                  <th class="meta-th meta-th--left" style="padding-right:20px">Действия</th>
+                </tr>
+              </thead>
+              <tbody id="metaBundlesGrid"></tbody>
+            </table>
+          </div>
+          <div style="display:flex;align-items:center;padding:16px 20px;border-top:1px solid #F0EBEB">
+            <span id="metaBundleCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="metaLaunchList" style="display:none;margin-bottom:26px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:22px 0 16px">
+        <div>
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Заливы</h3>
+          <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Кампания, группа и объявления создаются в Meta на паузе</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <select id="metaLaunchStatusFilter" class="meta-control meta-select" aria-label="Статус залива">
+            <option value="">Все статусы</option>
+            <option value="draft">Черновики</option>
+            <option value="active">Активные</option>
+            <option value="paused">На паузе</option>
+            <option value="failed">С ошибкой</option>
+            <option value="stopped">Остановленные</option>
+          </select>
+          <button id="metaLaunchCreate" type="button" style="height:44px;padding:0 18px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Новый залив</button>
+        </div>
+      </div>
+
+      <div id="metaBulkBar" style="display:none;align-items:center;gap:12px;background:#FFF9E9;border:1px solid #F2E3B8;border-radius:14px;padding:12px 16px;margin-bottom:14px">
+        <span id="metaBulkCount" style="font-size:12.5px;font-weight:700;color:#6A5A28"></span>
+        <div style="flex:1"></div>
+        <button class="meta-bulk" type="button" data-action="publish">Опубликовать</button>
+        <button class="meta-bulk" type="button" data-action="pause">Остановить</button>
+        <button class="meta-bulk" type="button" data-action="resume">Возобновить</button>
+      </div>
+
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+        <div style="overflow-x:auto">
+          <table style="border-collapse:collapse;width:100%;min-width:1080px">
+            <thead>
+              <tr style="border-bottom:1px solid #F0EBEB">
+                <th class="meta-th meta-th--left" style="padding-left:20px;width:36px"><input id="metaLaunchAll" type="checkbox" aria-label="Выбрать все"></th>
+                <th class="meta-th meta-th--left">Залив</th>
+                <th class="meta-th meta-th--left">Кабинет</th>
+                <th class="meta-th meta-th--left">GEO</th>
+                <th class="meta-th meta-th--left">Ответственный</th>
+                <th class="meta-th">Бюджет/день</th>
+                <th class="meta-th">Креативы</th>
+                <th class="meta-th meta-th--left">Статус</th>
+                <th class="meta-th meta-th--left" style="padding-right:20px">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="metaLaunchBody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;align-items:center;padding:16px 20px;border-top:1px solid #F0EBEB">
+          <span id="metaLaunchCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
+        </div>
+      </div>
+      </div>
+
+      <!-- ЗАЛИТЬ СВЯЗКУ -->
+      <div id="metaLaunchWizard" style="display:none">
+        <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;padding:22px 24px">
+          <div id="metaUpSteps" style="display:flex;align-items:center;gap:10px;margin-bottom:20px;overflow-x:auto"></div>
+          <div id="metaUpBody"></div>
+          <div id="metaUpError" class="meta-note meta-note--warn" style="display:none;margin-top:16px"></div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:20px;padding-top:18px;border-top:1px solid #F0EBEB">
+            <button id="metaUpBack" class="meta-action" type="button">Назад</button>
+            <span id="metaUpHint" style="flex:1;font-size:11.5px;color:#9B9292;font-weight:600"></span>
+            <button id="metaUpNext" class="meta-action meta-action--primary" type="button" style="height:40px;padding:0 20px">Далее</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ОЧЕРЕДЬ ЗАЛИВКИ -->
+      <div id="metaLaunchQueue" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+          <div>
+            <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Очередь заливки</h3>
+            <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Каждый вызов Graph API записывается до отправки — видно, на чём именно всё встало</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <select id="metaQueueStatus" class="meta-control meta-select" aria-label="Статус операции">
+              <option value="">Все статусы</option>
+              <option value="pending">В работе</option>
+              <option value="success">Успешно</option>
+              <option value="failed">С ошибкой</option>
+            </select>
+            <button id="metaQueueRefresh" class="meta-action" type="button">Обновить</button>
+          </div>
+        </div>
+        <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+          <div style="overflow-x:auto">
+            <table style="border-collapse:collapse;width:100%;min-width:1020px">
+              <thead>
+                <tr style="border-bottom:1px solid #F0EBEB">
+                  <th class="meta-th meta-th--left" style="padding-left:20px">Шаг</th>
+                  <th class="meta-th meta-th--left">Залив</th>
+                  <th class="meta-th meta-th--left">Кабинет</th>
+                  <th class="meta-th meta-th--left">Инфо</th>
+                  <th class="meta-th meta-th--left">Время</th>
+                  <th class="meta-th meta-th--left">Статус</th>
+                  <th class="meta-th meta-th--left" style="padding-right:20px">Действия</th>
+                </tr>
+              </thead>
+              <tbody id="metaQueueBody"></tbody>
+            </table>
+          </div>
+          <div style="display:flex;align-items:center;padding:16px 20px;border-top:1px solid #F0EBEB">
+            <span id="metaQueueCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: RULES -->
+    <section id="metaTabRules" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+        <div>
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Автоправила</h3>
+          <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Считаются по нашим числам: расход из Meta, доход из Keitaro</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button id="metaRulesRun" type="button" style="height:44px;padding:0 16px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Прогнать сейчас</button>
+          <button id="metaRuleCreate" type="button" style="height:44px;padding:0 18px;border:0;border-radius:12px;background:#B91414;color:#fff;font-size:13px;font-weight:700;box-shadow:0 8px 18px rgba(185,20,20,.24)">Новое правило</button>
+        </div>
+      </div>
+
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden;margin-bottom:20px">
+        <div style="overflow-x:auto">
+          <table style="border-collapse:collapse;width:100%;min-width:940px">
+            <thead>
+              <tr style="border-bottom:1px solid #F0EBEB">
+                <th class="meta-th meta-th--left" style="padding-left:20px">Правило</th>
+                <th class="meta-th meta-th--left">Данные</th>
+                <th class="meta-th meta-th--left">Условия</th>
+                <th class="meta-th">Частота</th>
+                <th class="meta-th">Мин. расход</th>
+                <th class="meta-th meta-th--left">Действие</th>
+                <th class="meta-th meta-th--left">Состояние</th>
+                <th class="meta-th meta-th--left" style="padding-right:20px">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="metaRulesBody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;align-items:center;padding:16px 20px;border-top:1px solid #F0EBEB">
+          <span id="metaRulesCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
+        </div>
+      </div>
+
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px 14px">
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:17px;font-weight:700;letter-spacing:-.3px">Срабатывания</h3>
+          <button id="metaEventsAck" type="button" style="height:36px;padding:0 14px;border:1px solid #E8E2E2;border-radius:10px;background:#fff;color:#3A3030;font-size:12px;font-weight:700">Отметить прочитанными</button>
+        </div>
+        <div id="metaEventsList" style="border-top:1px solid #F0EBEB"></div>
+      </div>
+    </section>
+  </main>
+  <!-- SPEND ПО ЧАСАМ -->
+  <!-- ФИКСАЦИЯ РАСХОДА ЗА ОТРЕЗОК ДНЯ (ТЗ 2.4.4) -->
+  <div id="metaSpendModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);align-items:center;justify-content:center;padding:24px">
+    <div role="dialog" aria-modal="true" aria-labelledby="metaSpendTitle" style="background:#fff;border-radius:18px;max-width:820px;width:100%;max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px 16px;border-bottom:1px solid #EBE6E6">
+        <div style="min-width:0">
+          <h2 id="metaSpendTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700;letter-spacing:-.3px">Фиксация расхода</h2>
+          <div id="metaSpendSubtitle" style="font-size:12px;color:#9B9292;font-weight:600;margin-top:4px">Расход выбранных кампаний за отрезок дня уходит на оффер вместе с процентом агента</div>
+        </div>
+        <button id="metaSpendClose" type="button" aria-label="Закрыть" style="width:34px;height:34px;flex-shrink:0;border:0;border-radius:10px;background:#F7F4F4;color:#6A6161;font-size:17px">×</button>
+      </div>
+      <div style="padding:18px 24px;overflow-y:auto">
+        <div class="spend-window">
+          <div class="spend-field"><span>Окно</span>
+            <div id="metaSpendWindowValue" class="spend-window__value">—</div>
+          </div>
+          <button id="metaSpendLoad" class="meta-btn" type="button" style="height:42px;border:1px solid #E5DFDF;border-radius:11px;background:#fff;padding:0 16px;font-size:12.5px;font-weight:700">Обновить</button>
+        </div>
+        <div id="metaSpendWindowHint" class="meta-note" style="margin-top:12px"></div>
+        <div id="metaSpendAssign" class="spend-assign" style="margin-top:14px"></div>
+        <div id="metaSpendRows" style="margin-top:14px"></div>
+        <div id="metaSpendCommits" style="margin-top:16px"></div>
+      </div>
+      <div id="metaSpendError" role="alert" style="display:none;margin:0 24px;background:#FCF1F1;border-radius:11px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 24px 20px;border-top:1px solid #EBE6E6;flex-wrap:wrap">
+        <div id="metaSpendTotal" style="font-size:12.5px;font-weight:700;color:#3A3030">Выбрано: 0 · $ 0,00</div>
+        <button id="metaSpendCommit" class="meta-btn meta-btn--primary" type="button" style="height:42px;border:0;border-radius:11px;background:#B91414;color:#fff;padding:0 18px;font-size:12.5px;font-weight:700" disabled>Зафиксировать расход</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="metaHourModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);align-items:center;justify-content:center;padding:24px">
+    <div role="dialog" aria-modal="true" aria-labelledby="metaHourTitle" style="background:#fff;border-radius:18px;max-width:760px;width:100%;max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px 16px;border-bottom:1px solid #EBE6E6">
+        <div style="min-width:0">
+          <h2 id="metaHourTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700;letter-spacing:-.3px">Расход по часам</h2>
+          <div id="metaHourSubtitle" style="font-size:12px;color:#9B9292;font-weight:600;margin-top:4px">—</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+          <button id="metaHourRefresh" class="meta-action" type="button">Обновить</button>
+          <button id="metaHourClose" type="button" aria-label="Закрыть" style="width:34px;height:34px;border:0;border-radius:10px;background:#F7F4F4;color:#6A6161;font-size:17px">×</button>
+        </div>
+      </div>
+      <div style="padding:18px 24px;overflow-y:auto">
+        <div id="metaHourTotals" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px"></div>
+        <div id="metaHourChart" style="display:flex;align-items:flex-end;gap:3px;height:150px;padding:0 2px;border-bottom:1px solid #EBE6E6"></div>
+        <div id="metaHourAxis" style="display:flex;gap:3px;padding:7px 2px 0"></div>
+        <div id="metaHourNote" class="meta-note" style="margin-top:16px"></div>
+        <div style="overflow-x:auto;margin-top:14px">
+          <table style="border-collapse:collapse;width:100%;min-width:460px">
+            <thead>
+              <tr style="border-top:1px solid #F0EBEB;border-bottom:1px solid #F0EBEB">
+                <th class="meta-th meta-th--left">Час</th>
+                <th class="meta-th">Расход</th>
+                <th class="meta-th">Показы</th>
+                <th class="meta-th">Клики по ссылке</th>
+              </tr>
+            </thead>
+            <tbody id="metaHourBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- CONNECTION WIZARD -->
+<div id="metaWizard" role="dialog" aria-modal="true" aria-labelledby="metaWizardTitle" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:760px;background:#fff;border-radius:20px;padding:26px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:92vh;overflow:auto">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px">
+      <h2 id="metaWizardTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">Подключение через своё приложение</h2>
+      <button id="metaWizardClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
+    </div>
+
+    <div id="metaWizardSteps" style="display:flex;align-items:center;gap:10px;margin-bottom:22px;overflow-x:auto;padding-bottom:4px"></div>
+
+    <!-- 1. Инструкции -->
+    <div class="meta-wizard-panel" data-step="1">
+      <div class="meta-note meta-note--info" style="margin-bottom:16px">
+        <b style="display:block;margin-bottom:6px">Что понадобится</b>
+        · аккаунт разработчика Facebook<br>
+        · права Admin или Employee в Business Manager<br>
+        · приложение, созданное на developers.facebook.com
+      </div>
+      <ol style="display:grid;gap:14px;padding-left:0;list-style:none;counter-reset:step">
+        <li style="display:flex;gap:12px">
+          <span style="flex-shrink:0;width:24px;height:24px;border-radius:50%;background:#F0EBEB;color:#6A6161;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center">1</span>
+          <div>
+            <div style="font-size:13px;font-weight:700">Создайте приложение в Facebook</div>
+            <div style="font-size:11.5px;color:#6A6161;font-weight:500;margin-top:4px;line-height:1.6">developers.facebook.com → My Apps → Create App. Тип приложения — <b>Business</b>.</div>
+            <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer" style="display:inline-block;font-size:11.5px;font-weight:700;margin-top:6px">Открыть Facebook Apps ↗</a>
+          </div>
+        </li>
+        <li style="display:flex;gap:12px">
+          <span style="flex-shrink:0;width:24px;height:24px;border-radius:50%;background:#F0EBEB;color:#6A6161;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center">2</span>
+          <div>
+            <div style="font-size:13px;font-weight:700">Привяжите приложение к Business Manager</div>
+            <div style="font-size:11.5px;color:#6A6161;font-weight:500;margin-top:4px;line-height:1.6">Настройки приложения → App Roles → Add Business Manager. Это даст приложению доступ к рекламным кабинетам вашего BM.</div>
+          </div>
+        </li>
+        <li style="display:flex;gap:12px">
+          <span style="flex-shrink:0;width:24px;height:24px;border-radius:50%;background:#F0EBEB;color:#6A6161;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center">3</span>
+          <div>
+            <div style="font-size:13px;font-weight:700">Выпустите токен системного пользователя</div>
+            <div style="font-size:11.5px;color:#6A6161;font-weight:500;margin-top:4px;line-height:1.6">Business Settings → System Users → Generate New Token → выберите приложение. Токен обычного пользователя живёт слишком мало и через пару месяцев отвалится.</div>
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <span style="font-size:11px;font-weight:700;background:#F0EBEB;border-radius:7px;padding:4px 9px">ads_read</span>
+              <span style="font-size:11px;font-weight:700;background:#F0EBEB;border-radius:7px;padding:4px 9px">ads_management</span>
+            </div>
+            <div style="font-size:11.5px;color:#9B9292;font-weight:500;margin-top:7px;line-height:1.6"><b>ads_read</b> достаточно для статистики. <b>ads_management</b> нужен только для запуска кампаний и автоправил с действиями — он даёт право тратить бюджет.</div>
+          </div>
+        </li>
+      </ol>
+    </div>
+
+    <!-- 2. Токен -->
+    <div class="meta-wizard-panel" data-step="2" style="display:none">
+      <div style="display:grid;gap:12px">
+        <label class="meta-field">
+          <span>Название подключения</span>
+          <input id="metaWizName" class="meta-control" type="text" placeholder="Celestial BM">
+        </label>
+        <label class="meta-field">
+          <span>EAA Token</span>
+          <input id="metaWizToken" class="meta-control" type="password" autocomplete="off" placeholder="EAAB...">
+          <span style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Хранится в зашифрованном виде и обратно через API не возвращается</span>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="meta-field">
+            <span>Business ID</span>
+            <input id="metaWizBusiness" class="meta-control" type="text" inputmode="numeric" placeholder="необязательно">
+          </label>
+          <label class="meta-field">
+            <span>sub_id с ID кампании</span>
+            <select id="metaWizSub" class="meta-control meta-select">
+              <option value="">не настроен</option>
+              <option value="1">sub_id_1</option>
+              <option value="2">sub_id_2</option>
+              <option value="3">sub_id_3</option>
+              <option value="4">sub_id_4</option>
+              <option value="5">sub_id_5</option>
+              <option value="6">sub_id_6</option>
+              <option value="7">sub_id_7</option>
+              <option value="8">sub_id_8</option>
+              <option value="9">sub_id_9</option>
+              <option value="10">sub_id_10</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="meta-field">
+            <span>Интервал синхронизации, мин</span>
+            <input id="metaWizInterval" class="meta-control" type="number" min="15" max="1440" value="30">
+          </label>
+          <label class="meta-field">
+            <span>Перечитывать дней назад</span>
+            <input id="metaWizLookback" class="meta-control" type="number" min="1" max="14" value="3">
+          </label>
+        </div>
+        <div class="meta-note">
+          Без Business ID берутся все кабинеты, доступные владельцу токена; с ним — только принадлежащие этому Business Manager.
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Проверка -->
+    <div class="meta-wizard-panel" data-step="3" style="display:none">
+      <div id="metaWizCheck"></div>
+    </div>
+
+    <!-- 4. Импорт -->
+    <div class="meta-wizard-panel" data-step="4" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+        <div style="font-size:12.5px;color:#6A6161;font-weight:600">Отметьте кабинеты, которые нужны команде</div>
+        <button id="metaWizPickAll" type="button" class="meta-action">Выбрать все</button>
+      </div>
+      <div id="metaWizAccounts" style="display:grid;gap:9px;max-height:320px;overflow:auto"></div>
+      <div class="meta-note" style="margin-top:14px">
+        Невыбранные кабинеты не пропадут — они появятся в списке выключенными, и синхронизация не будет тратить на них лимит запросов.
+      </div>
+    </div>
+
+    <!-- 5. Готово -->
+    <div class="meta-wizard-panel" data-step="5" style="display:none">
+      <div id="metaWizDone"></div>
+    </div>
+
+    <div id="metaWizardError" style="display:none;margin-top:16px;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-top:22px;padding-top:18px;border-top:1px solid #F0EBEB">
+      <button id="metaWizBack" type="button" style="height:44px;padding:0 18px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Назад</button>
+      <div style="flex:1"></div>
+      <span id="metaWizStatus" style="font-size:12px;color:#857D7D;font-weight:600"></span>
+      <button id="metaWizNext" type="button" style="height:44px;padding:0 22px;border:0;border-radius:12px;background:#B91414;color:#fff;font-size:13px;font-weight:700;box-shadow:0 8px 18px rgba(185,20,20,.24)">Далее →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ENTITY FORM MODAL -->
+<!-- МАСТЕР СВЯЗКИ: кампания → адсет → объявление.
+     Во весь экран, а не окном: полей три десятка, и в окне их пришлось бы
+     листать в двух скроллах сразу. -->
+<div id="metaBundleModal" role="dialog" aria-modal="true" aria-labelledby="metaBundleTitle" style="display:none;position:fixed;inset:0;z-index:62;background:#F2F2F2;flex-direction:column">
+  <div style="flex-shrink:0;background:#B91414;color:#fff;display:flex;align-items:center;gap:14px;padding:0 22px;height:56px">
+    <button id="metaBundleClose" type="button" aria-label="Закрыть" style="width:30px;height:30px;border:0;background:transparent;color:#fff;font-size:17px;font-weight:700;line-height:1">×</button>
+    <h2 id="metaBundleTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700;letter-spacing:.2px;flex:1">Создание связки</h2>
+    <button id="metaBundleCancel" type="button" style="height:34px;padding:0 14px;border:0;border-radius:9px;background:rgba(255,255,255,.16);color:#fff;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">Отмена</button>
+  </div>
+  <div style="flex-shrink:0;background:#fff;border-bottom:1px solid #EBE6E6">
+    <div id="metaBundleSteps" style="max-width:1180px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px"></div>
+  </div>
+  <div style="flex:1;overflow:auto;padding:22px">
+    <div id="metaBundleBody" style="max-width:760px;margin:0 auto;display:grid;gap:16px"></div>
+    <div id="metaBundleError" style="display:none;max-width:760px;margin:14px auto 0;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+  </div>
+  <div style="flex-shrink:0;background:#fff;border-top:1px solid #EBE6E6;padding:14px 22px">
+    <div style="max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:10px">
+      <button id="metaBundleCancel2" class="meta-action" type="button">Отмена</button>
+      <div style="flex:1"></div>
+      <button id="metaBundleBack" class="meta-action" type="button">Назад</button>
+      <button id="metaBundleNext" class="meta-action meta-action--primary" type="button" style="height:40px;padding:0 22px">Продолжить</button>
+    </div>
+  </div>
+</div>
+
+<!-- МАКРОСЫ В НАЗВАНИИ. Отдельным окном, потому что список длинный, а
+     расшифровка нужна рядом: «{{cab.time}}» ни о чём не говорит. -->
+<input id="metaUploadFiles" type="file" multiple accept="image/*,video/mp4" style="display:none">
+
+<div id="metaMacroModal" role="dialog" aria-modal="true" aria-labelledby="metaMacroTitle" style="display:none;position:fixed;inset:0;z-index:63;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:760px;background:#fff;border-radius:20px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:92vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 26px 0">
+      <h2 id="metaMacroTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">Выберите макросы</h2>
+      <button id="metaMacroClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
+    </div>
+    <div style="flex:1;overflow:auto;padding:16px 26px 20px">
+      <div style="border-left:3px solid #B91414;background:#FBF7F7;border-radius:0 10px 10px 0;padding:11px 14px;font-size:12.5px;color:#6A6161;font-weight:500;line-height:1.6">Макрос — это макрокоманда, с помощью которой можно автоматизировать нейминг создаваемых объектов. Помимо макросов, вы можете вписать любые символы.</div>
+      <label style="display:block;margin-top:18px">
+        <span id="metaMacroLabel" style="display:block;font-size:12.5px;font-weight:600;color:#3A3030;margin-bottom:6px">Название</span>
+        <input id="metaMacroInput" class="meta-control" style="width:100%;padding:0 13px">
+      </label>
+      <div id="metaMacroList" style="margin-top:16px"></div>
+    </div>
+    <div style="flex-shrink:0;display:flex;align-items:center;gap:10px;padding:16px 26px;border-top:1px solid #F0EBEB">
+      <button id="metaMacroSave" class="meta-action meta-action--primary" type="button" style="height:40px;padding:0 20px">Сохранить</button>
+      <button id="metaMacroCancel" class="meta-action" type="button" style="height:40px;padding:0 16px">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<div id="metaFormModal" role="dialog" aria-modal="true" aria-labelledby="metaFormTitle" style="display:none;position:fixed;inset:0;z-index:61;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:640px;background:#fff;border-radius:20px;padding:26px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:92vh;overflow:auto">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+      <div>
+        <h2 id="metaFormTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">—</h2>
+        <p id="metaFormSubtitle" style="font-size:12px;color:#6A6161;font-weight:500;margin-top:6px;line-height:1.55"></p>
+      </div>
+      <button id="metaFormClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
+    </div>
+    <div id="metaFormBody" style="display:grid;gap:12px;margin-top:20px"></div>
+    <div id="metaFormError" style="display:none;margin-top:14px;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:20px">
+      <button id="metaFormSave" type="button" style="height:44px;padding:0 20px;border:0;border-radius:12px;background:#B91414;color:#fff;font-size:13px;font-weight:700">Сохранить</button>
+      <button id="metaFormDelete" type="button" style="display:none;height:44px;padding:0 16px;border:1px solid #F1D9D9;border-radius:12px;background:#fff;color:#B91414;font-size:13px;font-weight:700">Удалить</button>
+      <span id="metaFormStatus" style="font-size:12px;color:#857D7D;font-weight:600"></span>
+    </div>
+  </div>
+</div>
+
+<!-- CONNECTION MODAL -->
+<div id="metaModal" role="dialog" aria-modal="true" aria-labelledby="metaModalTitle" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:540px;background:#fff;border-radius:20px;padding:26px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:90vh;overflow:auto">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+      <div>
+        <h2 id="metaModalTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">Подключение Meta Ads</h2>
+        <p style="font-size:12px;color:#6A6161;font-weight:500;margin-top:6px;line-height:1.55">Токен хранится в зашифрованном виде и обратно не выдаётся. Способ его получения на работу CRM не влияет — от него зависит только то, как долго токен проживёт.</p>
+      </div>
+      <button id="metaModalClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
+    </div>
+
+    <div style="display:grid;gap:12px;margin-top:20px">
+      <label style="display:block">
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Название</span>
+        <input id="metaFieldName" class="meta-control" type="text" placeholder="Celestial BM" style="width:100%;padding:0 13px">
+      </label>
+      <div>
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Способ получения токена</span>
+        <div id="metaAuthMethods" style="display:grid;gap:2px"></div>
+      </div>
+      <label style="display:block">
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Access token</span>
+        <input id="metaFieldToken" class="meta-control" type="password" autocomplete="off" placeholder="EAAB..." style="width:100%;padding:0 13px">
+        <span id="metaTokenHint" style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Оставьте пустым, чтобы не менять сохранённый токен</span>
+      </label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <label style="display:block">
+          <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Business ID</span>
+          <input id="metaFieldBusiness" class="meta-control" type="text" inputmode="numeric" placeholder="необязательно" style="width:100%;padding:0 13px">
+        </label>
+        <label style="display:block">
+          <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">sub_id с ID кампании</span>
+          <select id="metaFieldSub" class="meta-control meta-select" style="width:100%">
+            <option value="">не настроен</option>
+            <option value="1">sub_id_1</option>
+            <option value="2">sub_id_2</option>
+            <option value="3">sub_id_3</option>
+            <option value="4">sub_id_4</option>
+            <option value="5">sub_id_5</option>
+            <option value="6">sub_id_6</option>
+            <option value="7">sub_id_7</option>
+            <option value="8">sub_id_8</option>
+            <option value="9">sub_id_9</option>
+            <option value="10">sub_id_10</option>
+          </select>
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <label style="display:block">
+          <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Интервал, мин</span>
+          <input id="metaFieldInterval" class="meta-control" type="number" min="15" max="1440" value="30" style="width:100%;padding:0 13px">
+        </label>
+        <label style="display:block">
+          <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Перечитывать дней назад</span>
+          <input id="metaFieldLookback" class="meta-control" type="number" min="1" max="14" value="3" style="width:100%;padding:0 13px">
+        </label>
+      </div>
+      <div style="background:#F7F4F4;border-radius:12px;padding:12px 14px;font-size:11.5px;color:#6A6161;font-weight:500;line-height:1.6">
+        Чтобы у кампаний появились доход и ROI, добавьте в ссылку трекера параметр <b>sub_id_N={{campaign.id}}</b> — Meta подставит туда ID кампании сама — и укажите этот же номер выше.
+      </div>
+    </div>
+
+    <div id="metaModalChecks" style="display:none;margin-top:14px;background:#F7F4F4;border-radius:12px;padding:12px 14px;font-size:12px;color:#3A3030;font-weight:600;line-height:1.6"></div>
+    <div id="metaModalError" style="display:none;margin-top:14px;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-top:20px">
+      <button id="metaModalSave" type="button" style="height:44px;padding:0 20px;border:0;border-radius:12px;background:#B91414;color:#fff;font-size:13px;font-weight:700">Сохранить</button>
+      <button id="metaModalCheck" type="button" style="display:none;height:44px;padding:0 16px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Проверить доступы</button>
+      <button id="metaModalDelete" type="button" style="display:none;height:44px;padding:0 16px;border:1px solid #F1D9D9;border-radius:12px;background:#fff;color:#B91414;font-size:13px;font-weight:700">Удалить</button>
+      <span id="metaModalStatus" style="font-size:12px;color:#857D7D;font-weight:600"></span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

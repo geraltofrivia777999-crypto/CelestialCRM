@@ -13,9 +13,12 @@ from app.models import (
     FinanceRecord,
     IntegrationConnection,
     MediaRecord,
+    MediaServiceValue,
     Offer,
     Permission,
     Role,
+    Service,
+    SpendProvider,
     User,
 )
 from app.services.formulas import finance_import_key
@@ -124,6 +127,125 @@ async def test_clearing_a_media_field_unpins_it(database) -> None:
         record = await db.get(MediaRecord, uuid.UUID(record_id))
         assert record.ftd is None
         assert set(record.manual_fields) == {"revenue"}
+
+
+async def test_media_upsert_leaves_out_fields_it_was_not_given(database) -> None:
+    """The Медиаборд modal stopped sending the funnel metrics (ТЗ 3).
+
+    An omitted field is not a cleared field: a manual save must not wipe what
+    Keitaro synced. Only an explicit null clears — that is covered above.
+    """
+    buyer_id, offer_id = await _fixture_ids()
+    payload = {
+        "record_date": "2026-03-05",
+        "buyer_id": buyer_id,
+        "offer_id": offer_id,
+        "installs": 500,
+        "revenue": "75.5",
+    }
+
+    with _admin_client() as client:
+        created = client.post("/api/v1/media-records", json=payload)
+        assert created.status_code == 200
+        record_id = created.json()["id"]
+        # Exactly what the modal sends now: identity only.
+        again = client.post(
+            "/api/v1/media-records",
+            json={
+                "record_date": "2026-03-05",
+                "buyer_id": buyer_id,
+                "offer_id": offer_id,
+                "source": "manual",
+            },
+        )
+        assert again.status_code == 200
+        assert again.json()["created"] is False
+
+    async with SessionLocal() as db:
+        record = await db.get(MediaRecord, uuid.UUID(record_id))
+        assert record.installs == 500
+        assert record.revenue == Decimal("75.5000")
+        assert set(record.manual_fields) == {"installs", "revenue"}
+
+
+async def test_media_values_only_replace_the_blocks_it_receives(database) -> None:
+    """The modal edits agents/payments only, so services must survive (ТЗ 1, 2)."""
+    buyer_id, offer_id = await _fixture_ids()
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        service = await db.scalar(
+            select(Service).where(Service.workspace_id == admin.workspace_id)
+        )
+        provider = await db.scalar(
+            select(SpendProvider).where(SpendProvider.workspace_id == admin.workspace_id)
+        )
+        assert service is not None and provider is not None
+        service_id, provider_id = str(service.id), str(provider.id)
+
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/media-records",
+            json={
+                "record_date": "2026-03-06",
+                "buyer_id": buyer_id,
+                "offer_id": offer_id,
+            },
+        )
+        record_id = created.json()["id"]
+        seeded = client.put(
+            f"/api/v1/media-records/{record_id}/values",
+            json={
+                "services": [{"service_id": service_id, "quantity": "20"}],
+                "spend_providers": [{"provider_id": provider_id, "base_amount": "100"}],
+            },
+        )
+        assert seeded.status_code == 200
+        rent_before = Decimal(str(seeded.json()["rent"]))
+        assert rent_before > 0
+
+        # What the Медиаборд modal now sends: agents/payments, no services key.
+        updated = client.put(
+            f"/api/v1/media-records/{record_id}/values",
+            json={"spend_providers": [{"provider_id": provider_id, "base_amount": "250"}]},
+        )
+        assert updated.status_code == 200
+        # RENT still reported from the untouched service rows.
+        assert Decimal(str(updated.json()["rent"])) == rent_before
+
+    async with SessionLocal() as db:
+        kept = (
+            await db.execute(
+                select(MediaServiceValue).where(
+                    MediaServiceValue.media_record_id == uuid.UUID(record_id)
+                )
+            )
+        ).scalars().all()
+        assert len(kept) == 1
+        assert kept[0].quantity == Decimal("20.0000")
+        record = await db.get(MediaRecord, uuid.UUID(record_id))
+        assert record.spend_calculated > Decimal("250")
+
+    # An explicit empty list still clears a block.
+    with _admin_client() as client:
+        cleared = client.put(
+            f"/api/v1/media-records/{record_id}/values",
+            json={"services": []},
+        )
+        assert cleared.status_code == 200
+        assert Decimal(str(cleared.json()["rent"])) == Decimal("0")
+
+    async with SessionLocal() as db:
+        remaining = (
+            await db.execute(
+                select(MediaServiceValue).where(
+                    MediaServiceValue.media_record_id == uuid.UUID(record_id)
+                )
+            )
+        ).scalars().all()
+        assert remaining == []
+        record = await db.get(MediaRecord, uuid.UUID(record_id))
+        # Spend was not in that request, so it kept its value.
+        assert record.spend_calculated > Decimal("250")
 
 
 async def test_finance_export_reports_spend_override(database) -> None:

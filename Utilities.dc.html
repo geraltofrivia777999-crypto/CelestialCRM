@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Alumni+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;background:#F4F1F1;color:#070505;-webkit-font-smoothing:antialiased}
+  a{color:#B91414;text-decoration:none}
+  button,input,select{font:inherit}
+  button{cursor:pointer}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:#D8D0D0;border-radius:8px}
+  .settings-heading{font-family:'Alumni Sans','Inter',sans-serif}
+  .settings-control{height:42px;border:1px solid #E8E2E2;background:#fff;border-radius:11px;color:#3A3030;font-size:12.5px;font-weight:600;outline:none}
+  .settings-control:focus{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.10)}
+  .settings-select{appearance:none;padding:0 38px 0 13px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+  .settings-tab{height:42px;border:0;background:transparent;color:#857D7D;padding:0 16px;font-size:13px;font-weight:700;border-radius:10px;white-space:nowrap}
+  .settings-tab.active{background:#FCF1F1;color:#B91414}
+  .cap-th{padding:12px 14px;font-size:10.5px;font-weight:700;color:#9B9292;text-transform:uppercase;letter-spacing:.6px;text-align:left;white-space:nowrap}
+  .cap-cell{padding:13px 14px;font-size:12.5px;font-weight:600;vertical-align:middle}
+  .cap-bar{height:7px;border-radius:7px;background:#F2EDED;overflow:hidden;margin-top:6px}
+  .cap-bar span{display:block;height:100%;border-radius:7px;background:#16B57F;transition:width .2s}
+  .cap-bar--warn span{background:#C9821F}
+  .cap-bar--over span{background:#B91414}
+  .cap-stat{background:#fff;border:1px solid #EBE6E6;border-radius:14px;padding:14px 16px}
+  /* Мастер уведомления: три шага, карточки типа и макросы сообщения. */
+  .wiz-steps{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+  /* Вернуться можно только на пройденный шаг, поэтому только он и ведёт себя
+     как кнопка: остальные не отзывались на клик, оставаясь на вид нажимаемыми. */
+  .wiz-step{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border:0;border-radius:10px;background:#F7F4F4;color:#857D7D;font-size:12px;font-weight:700;cursor:default}
+  .wiz-step--done{cursor:pointer}
+  .wiz-step--done:hover{background:#EFEBEB;color:#5A5151}
+  .wiz-step__num{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#E5DFDF;color:#6A6161;font-size:10.5px}
+  .wiz-step--on{background:#FCF1F1;color:#B91414}
+  .wiz-step--on .wiz-step__num{background:#B91414;color:#fff}
+  .wiz-step--done .wiz-step__num{background:#16B57F;color:#fff}
+  .wiz-line{flex:1;min-width:12px;height:1px;background:#EBE6E6}
+  .wiz-field{grid-column:1/-1;display:block;min-width:0}
+  .wiz-field>span:first-child{display:block;color:#6A6161;font-size:11.5px;font-weight:700;margin-bottom:7px}
+  .wiz-pair{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .wiz-pair .wiz-field{grid-column:auto}
+  .wiz-hint{display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:6px;line-height:1.5}
+  .wiz-note{grid-column:1/-1;background:#F7F4F4;border-radius:12px;padding:12px 14px;font-size:11.5px;color:#6A6161;font-weight:600;line-height:1.6}
+  .wiz-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .wiz-card{position:relative;display:flex;flex-direction:column;gap:5px;padding:14px 16px;border:1px solid #E5DFDF;border-radius:13px;background:#fff;text-align:left}
+  .wiz-card:hover{border-color:#D8CFCF;background:#FAF8F8}
+  .wiz-card--on{border-color:#B91414;background:#FCF1F1}
+  .wiz-card__title{font-size:13px;font-weight:700;color:#241C1C}
+  .wiz-card__hint{font-size:11px;font-weight:600;color:#9B9292;line-height:1.5}
+  .wiz-card__tick{position:absolute;top:12px;right:13px;color:#B91414;font-weight:800}
+  .wiz-list{display:grid;gap:6px;max-height:190px;overflow:auto;border:1px solid #EBE6E6;border-radius:11px;padding:9px}
+  .wiz-check{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:600;cursor:pointer}
+  .wiz-check input{accent-color:#B91414}
+  .wiz-empty{border:1px dashed #DDD5D5;border-radius:11px;padding:13px;font-size:12px;color:#9B9292;font-weight:600}
+  .wiz-search{height:38px;margin-bottom:8px;font-size:12.5px}
+  .wiz-macros{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}
+  .wiz-macro{height:28px;padding:0 10px;border:1px solid #E5DFDF;border-radius:8px;background:#fff;color:#6A6161;font-size:11px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .wiz-macro:hover{border-color:#B91414;color:#B91414;background:#FCF1F1}
+  .wiz-area{height:250px;min-height:210px;padding:13px 14px;line-height:1.6;font-family:inherit;resize:vertical}
+  .wiz-message-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+  .wiz-message-head>span{color:#6A6161;font-size:11.5px;font-weight:700}
+  .wiz-schedule-time{display:grid;grid-template-columns:auto minmax(120px,1fr);align-items:center;gap:10px;margin-top:8px;padding:9px 10px;border-radius:10px;background:#F7F4F4}
+  .wiz-schedule-time span{font-size:11px;color:#857D7D;font-weight:700}
+  .wiz-schedule-time input{height:38px}
+  .wiz-test{grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid #F0EBEB;padding-top:14px}
+  .wiz-test .wiz-hint{flex:1;min-width:180px;margin-top:0}
+  /* Один переключатель связи над строками легче проверить глазами, чем
+     вложенные рамки И/ИЛИ, в которых терялось фактическое условие отправки. */
+  .cnd-tree{display:grid;gap:12px}
+  .cnd-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap}
+  .cnd-title{font-size:13px;font-weight:800;color:#2A2020}
+  .cnd-subtitle{font-size:11px;color:#9B9292;font-weight:600;margin-top:4px;line-height:1.45}
+  .cnd-join{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#857D7D;font-weight:600}
+  .cnd-join button{height:29px;border:1px solid #E5DFDF;border-radius:999px;background:#F7F4F4;padding:0 11px;color:#6A6161;font-size:10.5px;font-weight:800}
+  .cnd-join button.is-on{border-color:#B91414;background:#B91414;color:#fff}
+  .cnd-list{display:grid;gap:10px}
+  .cnd-row{border:1px solid #EBE6E6;border-radius:12px;padding:11px 12px;background:#F9F8F8}
+  .cnd-row:focus-within{border-color:#E0D3D3}
+  .cnd-labels,.cnd-controls{display:grid;grid-template-columns:minmax(150px,1.1fr) minmax(120px,.8fr) minmax(180px,1.1fr) 32px;gap:10px;align-items:center}
+  .cnd-labels{margin-bottom:6px;padding:0 2px}
+  .cnd-labels span{font-size:9.5px;color:#9B9292;font-weight:700}
+  .cnd-controls .form-input{height:38px;font-size:12px;background-color:#fff}
+  /* Удаление остаётся красным: в длинной строке его иначе принимают за ещё
+     один раскрывающий элемент и ищут действие по всей форме. */
+  .cnd-drop{display:grid;place-items:center;width:30px;height:36px;border:0;border-radius:9px;background:transparent;color:#D94A4A;line-height:1}
+  .cnd-drop svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .cnd-drop:hover{color:#B91414;background:#FCF1F1}
+  .cnd-value{height:38px;font-size:12px}
+  .cnd-empty{display:flex;align-items:center;height:38px;font-size:10.5px;color:#9B9292;font-weight:600}
+  .cnd-add{height:32px;border:1px dashed #E0D8D8;border-radius:9px;background:transparent;padding:0 12px;color:#857D7D;font-size:11.5px;font-weight:700;transition:border-color .14s,color .14s,background .14s}
+  .cnd-add:hover{border-color:#B91414;color:#B91414;background:#FCF1F1}
+  .cnd-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
+  .cnd-none{border:1px dashed #DDD5D5;border-radius:12px;padding:13px 14px;font-size:11.5px;color:#857D7D;font-weight:600;line-height:1.6}
+  /* Каталог не отнимает высоту у сообщения: он нужен только в момент вставки. */
+  .mcr-picker{position:relative;margin-left:auto}
+  .mcr-toggle{height:34px;border:1px solid #E5DFDF;border-radius:9px;background:#fff;padding:0 11px;color:#6A6161;font-size:11.5px;font-weight:700}
+  .mcr-toggle:hover,.mcr-toggle[aria-expanded='true']{border-color:#B91414;color:#B91414;background:#FCF1F1}
+  .mcr-popover{position:absolute;z-index:12;top:41px;right:0;width:min(370px,calc(100vw - 64px));padding:10px;border:1px solid #E5DFDF;border-radius:12px;background:#fff;box-shadow:0 18px 44px rgba(30,20,20,.20)}
+  .mcr-popover[hidden]{display:none}
+  .mcr-search{height:38px;margin-bottom:9px;font-size:12px}
+  .mcr-scroll{max-height:245px;overflow:auto;padding:1px}
+  .mcr-section+.mcr-section{margin-top:11px}
+  .mcr-title{font-size:10px;font-weight:800;color:#9B9292;margin-bottom:7px}
+  .mcr-grid{display:flex;flex-wrap:wrap;gap:6px}
+  .mcr{height:29px;border:1px solid #E5DFDF;border-radius:7px;background:#F7F4F4;padding:0 8px;text-align:left}
+  .mcr:hover{border-color:#B91414;background:#FCF1F1}
+  .mcr__code{font-size:10.5px;font-weight:650;color:#6A6161;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .mcr:hover .mcr__code{color:#B91414}
+  .mcr-description{min-height:30px;margin-top:9px;padding:7px 9px;border-radius:8px;background:#F7F4F4;color:#6A6161;font-size:10.5px;font-weight:600;line-height:1.45}
+  .mcr-description[hidden]{visibility:hidden;display:block}
+  @media(max-width:700px){.cnd-labels{display:none}.cnd-controls{grid-template-columns:minmax(0,1fr) 32px;grid-template-areas:'field drop' 'op op' 'value value'}.cnd-field{grid-area:field}.cnd-op{grid-area:op}.cnd-value-wrap{grid-area:value}.cnd-drop{grid-area:drop}.mcr-popover{right:-4px}.wiz-schedule-time{grid-template-columns:1fr}}
+  @media(max-width:640px){.wiz-cards,.wiz-pair{grid-template-columns:1fr}}
+  .settings-panel{display:none}
+  .settings-panel.active{display:block}
+  .settings-row{transition:background .18s}
+  .settings-row:hover{background:#FAF8F8}
+  .entity-icon{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .row-actions summary{list-style:none}
+  .row-actions summary::-webkit-details-marker{display:none}
+  .row-menu{position:absolute;right:0;top:39px;z-index:8;width:174px;padding:6px;background:#fff;border:1px solid #EBE6E6;border-radius:12px;box-shadow:0 14px 34px rgba(30,20,20,.16)}
+  .row-menu button{width:100%;border:0;background:transparent;padding:9px 10px;border-radius:8px;text-align:left;color:#453A3A;font-size:12.5px;font-weight:600}
+  .row-menu button:hover{background:#F7F4F4}
+  .integration-card{background:#fff;border:1px solid #EBE6E6;border-radius:18px;padding:22px}
+  .data-pill{display:inline-flex;padding:5px 8px;background:#F7F4F4;border-radius:7px;color:#6A6161;font-size:10.5px;font-weight:700}
+  .modal-backdrop{position:fixed;inset:0;z-index:30;background:rgba(20,14,14,.42);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:24px}
+  .modal-backdrop.open{display:flex}
+  /* Скроллится только тело: список условий рос, и кнопка «Далее» вместе с
+     шагами уезжала за нижний край — до неё приходилось прокручивать. */
+  .modal-card{width:min(780px,100%);max-height:calc(100vh - 48px);display:flex;flex-direction:column;background:#fff;border-radius:20px;box-shadow:0 28px 70px rgba(17,11,11,.24)}
+  .modal-card>*{flex:0 0 auto}
+  #utilModalBody{flex:1 1 auto;min-height:0;overflow:auto}
+  .field-label{display:block;color:#6A6161;font-size:11.5px;font-weight:700;margin-bottom:7px}
+  .form-input{width:100%;height:44px;border:1px solid #E5DFDF;border-radius:11px;padding:0 13px;outline:none;color:#2A2020;background:#fff;font-size:13px}
+  .form-input:focus{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.09)}
+  /* `.form-input` объявлен ниже `.settings-select`, и его шорткат `background`
+     сносил стрелку, а `padding` — место под неё: список в модалке выглядел
+     обычным текстовым полем. Стрелку и отступ возвращаем здесь. */
+  .form-input.settings-select{appearance:none;cursor:pointer;padding-right:38px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+  .form-input.settings-select:hover{border-color:#D8CFCF}
+  .toast{position:fixed;right:26px;bottom:26px;z-index:50;display:none;align-items:center;gap:10px;background:#070505;color:#fff;border-radius:12px;padding:13px 16px;box-shadow:0 14px 34px rgba(16,10,10,.24);font-size:12.5px;font-weight:700}
+  .toast.show{display:flex}
+  .sync-spin{animation:settings-spin .8s linear infinite}
+  @keyframes settings-spin{to{transform:rotate(360deg)}}
+  @media(max-width:1100px){
+    .settings-sidebar{width:224px!important}
+    .settings-main{padding:24px!important}
+    .integration-grid{grid-template-columns:1fr!important}
+  }
+  @media(max-width:800px){
+    .settings-sidebar{display:none!important}
+    .settings-header{flex-direction:column;align-items:stretch!important}
+    .settings-header-actions{width:100%}
+    .settings-search{flex:1;width:auto!important}
+    .stat-grid{grid-template-columns:1fr!important}
+    .form-grid{grid-template-columns:1fr!important}
+    /* Поле метрики занимает всю ширину: втроём в ряд они сжимаются до
+       нечитаемого, а именно метрику и надо прочитать. */
+    .cond-row{grid-template-columns:82px minmax(0,1fr) 34px;grid-template-areas:"metric metric drop" "sign value value"}
+    .cond-row .cond-metric{grid-area:metric}
+    .cond-row .cond-sign{grid-area:sign}
+    .cond-row .cond-value{grid-area:value}
+    .cond-row .cond-drop{grid-area:drop}
+  }
+  @media(max-width:540px){
+    .settings-main{padding:18px!important}
+    .settings-header-actions{flex-direction:column;align-items:stretch!important}
+    .settings-search{width:100%!important}
+    .settings-header-actions button{justify-content:center}
+    .modal-backdrop{padding:12px}
+  }
+</style>
+</head>
+<body>
+<div style="display:flex;min-height:100vh;background:#F4F1F1">
+
+  <aside class="settings-sidebar" style="width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #EBE6E6;display:flex;flex-direction:column;position:sticky;top:0;height:100vh">
+    <div style="padding:26px 24px 22px;display:flex;align-items:center;gap:11px">
+      <div style="width:38px;height:38px;border-radius:11px;background:#070505;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(7,5,5,.26)"><img src="/assets/logo-mark-white.png" alt="Celestial Group" style="width:23px;height:auto;display:block"></div>
+      <div><div style="font-family:'Alumni Sans';font-weight:700;font-size:24px;line-height:.95;letter-spacing:.4px;text-transform:uppercase">Celestial</div><div style="font-size:9.5px;color:#9B9292;font-weight:600;letter-spacing:1.3px;text-transform:uppercase">Group · Traffic CRM</div></div>
+    </div>
+    <nav style="flex:1;padding:6px 14px;overflow-y:auto">
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:10px 12px 8px">Основное</div>
+      <a href="Dashboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>Dashboard</a>
+      <a href="Mediaboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#9B9292" stroke-width="2"/><path d="M3 9h18M8 4v16" stroke="#9B9292" stroke-width="2"/></svg>Медиаборд</a>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3 2 8l10 5 10-5-10-5Z" stroke="#9B9292" stroke-width="2"/><path d="M2 16l10 5 10-5M2 12l10 5 10-5" stroke="#9B9292" stroke-width="2"/></svg>Meta Ads</div>
+      <a href="Finance.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2.5" stroke="#9B9292" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#9B9292" stroke-width="2"/></svg>Финансы</a>
+      <a href="Offers.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20.6 8.5 12 4 3.4 8.5 12 13l8.6-4.5Z" stroke="#9B9292" stroke-width="2"/><path d="M3.4 15.5 12 20l8.6-4.5" stroke="#9B9292" stroke-width="2"/></svg>Оффера</a>
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:16px 12px 8px">Рабочее</div>
+      <a href="Team.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#9B9292" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#9B9292" stroke-width="2"/></svg>Команда</a>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>Задачи</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v14H6.5A2.5 2.5 0 0 0 4 19.5V5.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M8 7.5h7M8 11h5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>База знаний</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;background:#B91414;color:#fff;font-weight:600;font-size:14px;box-shadow:0 8px 18px rgba(185,20,20,.28)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="3.5" stroke="#fff" stroke-width="2"/></svg>Утилиты</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#9B9292" stroke-width="2"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 3h-4l-.4 2.2a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 21h4l.4-2.2a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" stroke="#9B9292" stroke-width="1.6"/></svg>Настройки</div>
+    </nav>
+    <div style="margin:14px;padding:16px;border-radius:16px;background:linear-gradient(150deg,#231212,#070505 75%)">
+      <div style="color:#fff;font-weight:700;font-size:13px">Состояние системы</div>
+      <div style="color:rgba(255,255,255,.8);font-size:11.5px;margin-top:4px;line-height:1.5">Справочники и интеграции работают штатно</div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:7px"><span style="width:7px;height:7px;border-radius:50%;background:#7BEBB8;box-shadow:0 0 0 3px rgba(123,235,184,.3)"></span><span style="color:#fff;font-size:12px;font-weight:600">Все системы активны</span></div>
+    </div>
+    <div style="padding:12px 16px 18px;border-top:1px solid #EBE6E6;display:flex;align-items:center;gap:11px"><div style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#070505,#B91414);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">ЕВ</div><div style="flex:1"><div style="font-weight:700;font-size:13.5px">Evano</div><div style="font-size:11.5px;color:#9B9292">Administrator</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="#9B9292" stroke-width="2"/></svg></div>
+  </aside>
+
+  <main class="settings-main" style="flex:1;min-width:0;padding:26px 34px 40px">
+    <div class="settings-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:24px;flex-wrap:wrap">
+      <div><div style="font-size:13px;color:#9B9292;font-weight:600">Автоматизация</div><h1 class="settings-heading" style="font-size:27px;font-weight:700;letter-spacing:-.6px;margin-top:5px">Утилиты</h1></div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div id="utilBotState" style="display:flex;align-items:center;gap:8px;height:44px;border:1px solid #EBE6E6;background:#fff;border-radius:12px;padding:0 14px;font-size:12px;font-weight:700;color:#857D7D">Бот не подключён</div>
+        <button id="utilBotSetup" type="button" style="height:44px;border:0;border-radius:12px;background:#B91414;color:#fff;padding:0 17px;font-size:13px;font-weight:700;box-shadow:0 8px 18px rgba(185,20,20,.28)">Подключить Telegram</button>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:6px;display:flex;align-items:center;gap:4px;margin-bottom:16px;overflow-x:auto">
+      <button class="settings-tab active" type="button" data-util-tab="alerts">Alert <span id="utilAlertsCount" style="margin-left:5px;color:#9B9292">0</span></button>
+      <button class="settings-tab" type="button" data-util-tab="caps">CapAlert <span id="utilCapsCount" style="margin-left:5px;color:#9B9292">0</span></button>
+      <button class="settings-tab" type="button" data-util-tab="channels">Каналы <span id="utilChannelsCount" style="margin-left:5px;color:#9B9292">0</span></button>
+      <button class="settings-tab" type="button" data-util-tab="events">Журнал</button>
+    </div>
+
+    <!-- ALERT (ТЗ 9.1) -->
+    <section class="settings-panel active" data-util-panel="alerts">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px;flex-wrap:wrap">
+        <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Alert</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Сообщение на каждый депозит и отчёт по расписанию</div></div>
+        <button id="utilAlertCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;padding:0 15px;font-size:12px;font-weight:700">+ Новое уведомление</button>
+      </div>
+      <div id="utilAlerts" style="display:grid;gap:12px"></div>
+    </section>
+
+    <!-- CAP (ТЗ 9.2) -->
+    <section class="settings-panel" data-util-panel="caps">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px;flex-wrap:wrap">
+        <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">CapAlert</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Лимиты на оффер или баера и оповещения о них</div></div>
+        <button id="utilCapCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;padding:0 15px;font-size:12px;font-weight:700">+ Новый CapAlert</button>
+      </div>
+      <div id="utilCapSummary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <select id="utilCapStatus" class="settings-control settings-select" aria-label="Статус капы" style="height:38px;min-width:150px">
+          <option value="">Все статусы</option>
+          <option value="active">Активные</option>
+          <option value="inactive">Выключенные</option>
+        </select>
+        <select id="utilCapMetric" class="settings-control settings-select" aria-label="Метрика капы" style="height:38px;min-width:180px">
+          <option value="">Все метрики</option>
+        </select>
+      </div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;overflow:hidden">
+        <div style="overflow-x:auto">
+          <table style="border-collapse:collapse;width:100%;min-width:900px">
+            <thead>
+              <tr style="border-bottom:1px solid #F0EBEB">
+                <th class="cap-th" style="padding-left:20px">Название</th>
+                <th class="cap-th">Метрика</th>
+                <th class="cap-th">Период</th>
+                <th class="cap-th" style="min-width:210px">Прогресс</th>
+                <th class="cap-th">Пороги</th>
+                <th class="cap-th">Статус</th>
+                <th class="cap-th" style="padding-right:20px"></th>
+              </tr>
+            </thead>
+            <tbody id="utilCaps"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- КАНАЛЫ -->
+    <section class="settings-panel" data-util-panel="channels">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px;flex-wrap:wrap">
+        <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Каналы</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Чаты Telegram, куда уходят уведомления</div></div>
+        <button id="utilChannelCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;padding:0 15px;font-size:12px;font-weight:700">+ Новый канал</button>
+      </div>
+      <div id="utilChannels" style="display:grid;gap:12px"></div>
+    </section>
+
+    <!-- ЖУРНАЛ -->
+    <section class="settings-panel" data-util-panel="events">
+      <div style="margin:2px 0 16px"><h3 class="settings-heading" style="font-size:18px;font-weight:700">Журнал</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Что и когда ушло в Telegram — и что не ушло</div></div>
+      <div id="utilEvents" style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;overflow:hidden"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ОБЩАЯ ФОРМА: канал, уведомление, CAP, бот -->
+<div id="utilModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="utilModalTitle">
+  <div class="modal-card">
+    <div style="padding:22px 24px 18px;border-bottom:1px solid #EBE6E6;display:flex;justify-content:space-between;gap:18px">
+      <div><h2 id="utilModalTitle" class="settings-heading" style="font-size:20px">—</h2><div id="utilModalSubtitle" style="font-size:11.5px;color:#9B9292;margin-top:5px"></div></div>
+      <button id="utilModalClose" type="button" style="width:34px;height:34px;border:0;border-radius:9px;background:#F7F4F4;color:#857D7D"><svg width="17" height="17" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    </div>
+    <div id="utilModalBody" class="form-grid" style="padding:22px 24px;display:grid;grid-template-columns:1fr 1fr;gap:17px"></div>
+    <div id="utilModalError" role="alert" style="display:none;margin:0 24px;background:#FCF1F1;border-radius:11px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+    <div style="padding:16px 24px 22px;border-top:1px solid #EBE6E6;display:flex;justify-content:flex-end;gap:10px">
+      <button id="utilModalDelete" type="button" style="display:none;height:42px;border:1px solid #F1D9D9;background:#fff;border-radius:10px;padding:0 16px;color:#B91414;font-size:12.5px;font-weight:700;margin-right:auto">Удалить</button>
+      <button id="utilModalCancel" type="button" style="height:42px;border:1px solid #E5DFDF;background:#fff;border-radius:10px;padding:0 16px;color:#6A6161;font-size:12.5px;font-weight:700">Отмена</button>
+      <button id="utilModalSave" type="button" style="height:42px;border:0;background:#B91414;border-radius:10px;padding:0 18px;color:#fff;font-size:12.5px;font-weight:700;box-shadow:0 7px 16px rgba(185,20,20,.23)">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

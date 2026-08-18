@@ -1,6 +1,10 @@
 .git
 .github
 .gitignore
+.DS_Store
+._*
+**/.DS_Store
+**/._*
 .env
 .env.*
 !.env.example

@@ -31,6 +31,10 @@ services:
       sh -c "alembic upgrade head &&
              python -m app.seed &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    volumes:
+      # Вложения базы знаний (ТЗ 8.2) живут на диске. Без тома они исчезнут при
+      # первом же пересоздании контейнера, а статьи останутся с битыми ссылками.
+      - uploads_data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,3 +85,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  uploads_data:

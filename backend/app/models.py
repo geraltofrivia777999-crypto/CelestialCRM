@@ -44,6 +44,54 @@ class Status(str, enum.Enum):
     blocked = "blocked"
 
 
+class OfferStatus(str, enum.Enum):
+    """Где оффер находится в нашем процессе, а не в Keitaro.
+
+    Состояние самого Keitaro живёт в `Offer.keitaro_state`; эти значения
+    принадлежат команде и меняются только из CRM.
+
+    Три из них ставит сам процесс назначения: «Не занят» — оффер только
+    заведён, «Активен» — он у тимлида, «В работе» — тимлид раздал его баерам.
+    «Холд» и «Стоп» ставит человек, и назначение их не перебивает.
+    """
+
+    active = "active"
+    working = "working"
+    hold = "hold"
+    stop = "stop"
+    free = "free"
+
+
+class LaunchStatus(str, enum.Enum):
+    """Где залив находится в нашем процессе, а не в Meta.
+
+    `paused` и `active` отражают состояние кампании в кабинете и обновляются
+    синхронизацией; остальные значения меняются только из CRM.
+    """
+
+    draft = "draft"
+    publishing = "publishing"
+    paused = "paused"
+    active = "active"
+    stopped = "stopped"
+    failed = "failed"
+
+
+class TaskPriority(str, enum.Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+    critical = "critical"
+
+
+class ArticleStatus(str, enum.Enum):
+    """Черновик виден только автору и тем, кто может редактировать раздел."""
+
+    draft = "draft"
+    published = "published"
+    archived = "archived"
+
+
 class ProviderType(str, enum.Enum):
     agent = "agent"
     payment = "payment"
@@ -111,6 +159,7 @@ class User(UUIDMixin, TimestampMixin, Base):
     status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active, index=True)
     keitaro_company_group: Mapped[str | None] = mapped_column(String(160))
     keitaro_offer_group: Mapped[str | None] = mapped_column(String(160))
+    team_name: Mapped[str | None] = mapped_column(String(120))
     role: Mapped[Role] = relationship(lazy="selectin")
 
 
@@ -188,6 +237,17 @@ class IntegrationConnection(UUIDMixin, TimestampMixin, Base):
     lookback_days: Mapped[int] = mapped_column(default=2)
     checkpoint_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Заполняются только у kind="meta": Business Manager и номер sub_id в Keitaro,
+    # в котором лежит ID кампании Meta. Второе и связывает расход из кабинета
+    # с доходом из трекера.
+    external_account_id: Mapped[str | None] = mapped_column(String(100))
+    attribution_sub_id: Mapped[int | None] = mapped_column()
+    # Чем именно выпущен токен Meta. Само подключение от этого не меняется —
+    # Graph API любой токен принимает одинаково, — но живут они по-разному, и
+    # когда синхронизация встанет, ответ «почему» зависит от способа.
+    auth_method: Mapped[str] = mapped_column(
+        String(20), default="system_user", server_default="system_user", nullable=False
+    )
 
 
 class SyncRun(UUIDMixin, Base):
@@ -239,6 +299,56 @@ class KeitaroStatDaily(UUIDMixin, TimestampMixin, Base):
     revenue: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
 
 
+class KeitaroConversion(UUIDMixin, Base):
+    """Одна конверсия из журнала Keitaro — ТЗ 9.1.
+
+    Дневной отчёт для уведомления о депозите не годится: он знает «три продажи
+    за день по этой кампании», а сообщение должно содержать конкретный депозит —
+    его время клика и его sub_id. Поэтому журнал конверсий тянется отдельно.
+
+    `seen_at` — когда строку увидели мы, а не когда она случилась в трекере.
+    По нему правило и понимает, что нового: конверсия может приехать с
+    задержкой и с временем в прошлом, и курсор по её собственному времени
+    молча пропустил бы её.
+    """
+
+    __tablename__ = "keitaro_conversions"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "external_id", name="uq_keitaro_conversion"),
+        Index("ix_keitaro_conversions_seen", "workspace_id", "seen_at"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    # lead | sale | rejected — как их называет сам трекер.
+    status: Mapped[str] = mapped_column(String(30), default="", index=True)
+    conversion_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    click_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    campaign_external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(300))
+    campaign_group_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    # Имя группы хранится рядом с её id: условие «содержит» сравнивает текст,
+    # а тянуть его из справочника на каждую конверсию — лишний запрос ради
+    # строки, которая на момент конверсии уже была известна.
+    campaign_group_name: Mapped[str | None] = mapped_column(String(300))
+    offer_external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    offer_name: Mapped[str | None] = mapped_column(String(300))
+    country_code: Mapped[str | None] = mapped_column(String(12))
+    revenue: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    payout: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    # sub_id_1 … sub_id_10 одним полем: их десять, колонками они бы только
+    # раздули таблицу, а читаются они целиком и только в макросах сообщения.
+    sub_values: Mapped[dict] = mapped_column(JSON, default=dict)
+    seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class KeitaroGroup(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "keitaro_groups"
     __table_args__ = (
@@ -284,6 +394,574 @@ class KeitaroCampaign(UUIDMixin, TimestampMixin, Base):
     external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class MetaSocialAccount(UUIDMixin, TimestampMixin, Base):
+    """Социальный аккаунт Facebook — верхний уровень обзора.
+
+    Это владелец токена: на нём заводят бизнес-менеджеры и держат фан-пейджи.
+    Один аккаунт на подключение — Graph API отдаёт ровно того, кому принадлежит
+    токен, и разных владельцев у одного токена не бывает.
+    """
+
+    __tablename__ = "meta_social_accounts"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "external_id", name="uq_meta_social_external"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    # Ответственный со стороны CRM — назначается руками, синхронизация его не трогает.
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active, index=True)
+    external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaBusiness(UUIDMixin, TimestampMixin, Base):
+    """Бизнес-менеджер. Заводится на социальном аккаунте, держит кабинеты и ФП."""
+
+    __tablename__ = "meta_businesses"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "external_id", name="uq_meta_business_external"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
+    )
+    social_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_social_accounts.id", ondelete="SET NULL"), index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    verification_status: Mapped[str | None] = mapped_column(String(60))
+    external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaFanPage(UUIDMixin, TimestampMixin, Base):
+    """Фан-пейдж — от его лица откручивается объявление.
+
+    Висит либо прямо на социальном аккаунте, либо на бизнес-менеджере: Meta
+    допускает оба варианта, поэтому обе ссылки необязательные.
+    """
+
+    __tablename__ = "meta_fan_pages"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "external_id", name="uq_meta_page_external"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
+    )
+    social_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_social_accounts.id", ondelete="SET NULL"), index=True
+    )
+    business_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_businesses.id", ondelete="SET NULL"), index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(120))
+    external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaAdAccount(UUIDMixin, TimestampMixin, Base):
+    """Рекламный кабинет Meta — ТЗ 3.2.
+
+    Всё, кроме `owner_id` и `status`, приходит из Graph API и перезаписывается
+    каждой синхронизацией. Эти два поля принадлежат CRM: ответственный за кабинет
+    назначается руками, а `status` позволяет убрать кабинет с глаз, не трогая Meta.
+    """
+
+    __tablename__ = "meta_ad_accounts"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "external_id", name="uq_meta_account_external"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
+    )
+    # Кабинет живёт либо на БМе, либо прямо на социальном аккаунте («личный»).
+    business_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_businesses.id", ondelete="SET NULL"), index=True
+    )
+    social_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_social_accounts.id", ondelete="SET NULL"), index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    account_status: Mapped[str | None] = mapped_column(String(40))
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    timezone_name: Mapped[str | None] = mapped_column(String(64))
+    spend_cap: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    amount_spent: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active, index=True)
+    external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaEntity(UUIDMixin, TimestampMixin, Base):
+    """Кампания, группа объявлений или объявление — три уровня в одной таблице.
+
+    Разносить их по трём таблицам смысла нет: поля совпадают, а связь всегда идёт
+    по `parent_external_id`, как в самом Graph API.
+    """
+
+    __tablename__ = "meta_entities"
+    __table_args__ = (
+        UniqueConstraint("account_id", "external_id", name="uq_meta_entity_external"),
+        Index("ix_meta_entities_level", "workspace_id", "level"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="CASCADE"), index=True
+    )
+    level: Mapped[str] = mapped_column(String(10), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(100))
+    parent_external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    # Только у объявления: фан-пейдж, от лица которого оно откручивается.
+    # Уровень ФП в обзоре собирается именно по этой колонке.
+    page_external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    effective_status: Mapped[str | None] = mapped_column(String(40))
+    objective: Mapped[str | None] = mapped_column(String(60))
+    daily_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    lifetime_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaSpendCommit(UUIDMixin, Base):
+    """Расход кампании за отрезок дня, отнесённый на оффер — ТЗ 2.4.4.
+
+    Баер льёт один оффер с 12:00 до 16:00, потом другой, и расход одной и той же
+    кампании делится между ними. Дневная статистика Meta этого не знает: она
+    отдаёт сумму за сутки, поэтому окно берётся из почасовой разбивки и
+    записывается сюда.
+
+    Таблица нужна не для отчёта, а чтобы фиксация была обратимой и
+    неповторимой. Без неё второй клик по той же кнопке молча удваивал бы расход
+    в Медиаборде, а ошибочную привязку нельзя было бы снять — только вычитать
+    руками из чужой записи.
+
+    Часы полуинтервалом `[hour_from, hour_to)`: «с 12:00 по 16:00» — это часы
+    12, 13, 14 и 15. Иначе граничный час попадал бы в оба окна сразу.
+    """
+
+    __tablename__ = "meta_spend_commits"
+    __table_args__ = (
+        Index("ix_meta_commit_window", "workspace_id", "record_date", "campaign_external_id"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    record_date: Mapped[date] = mapped_column(Date, nullable=False)
+    hour_from: Mapped[int] = mapped_column(nullable=False)
+    hour_to: Mapped[int] = mapped_column(nullable=False)
+    campaign_external_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    campaign_name: Mapped[str | None] = mapped_column(String(300))
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="CASCADE")
+    )
+    media_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("media_records.id", ondelete="CASCADE"), index=True
+    )
+    provider_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("spend_providers.id"))
+    buyer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    offer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("offers.id", ondelete="CASCADE"))
+    # Расход как его отдала Meta, до процента агента: процент может поменяться,
+    # и пересчитать запись без исходной суммы было бы не из чего.
+    base_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MetaStatDaily(UUIDMixin, TimestampMixin, Base):
+    """День × объявление из Meta Insights — ТЗ 3.7.
+
+    Здесь только то, что знает сам кабинет: расход, показы, клики. Лиды, продажи и
+    доход приходят из Keitaro и присоединяются по ID кампании в sub_id — Meta про
+    выплаты партнёрки ничего не знает.
+    """
+
+    __tablename__ = "meta_stats_daily"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "dimension_key", name="uq_meta_stat_dimension"),
+        Index("ix_meta_stats_date", "workspace_id", "record_date"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE")
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE")
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="CASCADE"), index=True
+    )
+    record_date: Mapped[date] = mapped_column(Date, nullable=False)
+    campaign_external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    adset_external_id: Mapped[str | None] = mapped_column(String(100))
+    ad_external_id: Mapped[str | None] = mapped_column(String(100))
+    country_code: Mapped[str | None] = mapped_column(String(12))
+    dimension_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    impressions: Mapped[int] = mapped_column(default=0)
+    clicks: Mapped[int] = mapped_column(default=0)
+    # Клики именно по ссылке. Meta считает их отдельно от общих кликов, куда
+    # входят лайки и разворачивание текста, — по ним и меряют трафик.
+    link_clicks: Mapped[int] = mapped_column(default=0, server_default="0")
+    reach: Mapped[int] = mapped_column(default=0)
+    spend: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    # Пиксельные конверсии кабинета. Полезны, когда пиксель стоит, но деньгами их
+    # считать нельзя — в отчёте они идут отдельно от лидов Keitaro.
+    pixel_leads: Mapped[int] = mapped_column(default=0)
+    pixel_purchases: Mapped[int] = mapped_column(default=0)
+    actions: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaTemplate(UUIDMixin, TimestampMixin, Base):
+    """Шаблон залива — ТЗ 3.5.
+
+    Хранит ровно то, что потом уходит в Graph API при создании adset: цель,
+    таргет, плейсменты, бюджет и оптимизацию. Ничего вычисляемого здесь нет —
+    шаблон это заготовка параметров, а не отдельная сущность в Meta.
+    """
+
+    __tablename__ = "meta_templates"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_meta_template_name"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    objective: Mapped[str] = mapped_column(String(60), default="OUTCOME_SALES")
+    optimization_goal: Mapped[str] = mapped_column(String(60), default="OFFSITE_CONVERSIONS")
+    billing_event: Mapped[str] = mapped_column(String(40), default="IMPRESSIONS")
+    bid_strategy: Mapped[str] = mapped_column(String(60), default="LOWEST_COST_WITHOUT_CAP")
+    # Страны в формате ISO-3166-1 alpha-2 — именно так их ждёт targeting.geo_locations.
+    geo: Mapped[list] = mapped_column(JSON, default=list)
+    age_min: Mapped[int] = mapped_column(default=18)
+    age_max: Mapped[int] = mapped_column(default=65)
+    genders: Mapped[list] = mapped_column(JSON, default=list)
+    languages: Mapped[list] = mapped_column(JSON, default=list)
+    # publisher_platforms и позиции внутри них. Пустой словарь означает
+    # автоматические плейсменты — для Meta это лучший вариант по умолчанию.
+    placements: Mapped[dict] = mapped_column(JSON, default=dict)
+    interests: Mapped[list] = mapped_column(JSON, default=list)
+    daily_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    lifetime_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    page_id: Mapped[str | None] = mapped_column(String(60))
+    pixel_id: Mapped[str | None] = mapped_column(String(60))
+    custom_event_type: Mapped[str | None] = mapped_column(String(60))
+    call_to_action: Mapped[str] = mapped_column(String(40), default="LEARN_MORE")
+    notes: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active, index=True)
+    # Остальная связка тремя блоками — campaign, adset, ad. Отдельными колонками
+    # это три десятка сквозных полей Graph API, по которым мы никогда не ищем и
+    # не считаем; проверяет их схема MetaBundleSettings, а не база.
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class MetaCreative(UUIDMixin, TimestampMixin, Base):
+    """Изображение или видео, загруженное в кабинет — ТЗ 3.6.
+
+    Файл живёт в Meta, у нас остаётся только ссылка на него: `external_hash`
+    для картинок (Meta адресует их хэшем) и `external_id` для видео. Привязка к
+    кабинету обязательна: один и тот же файл в другом кабинете — другой хэш.
+    """
+
+    __tablename__ = "meta_creatives"
+    __table_args__ = (
+        Index("ix_meta_creatives_account", "account_id", "kind"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(10), default="image")
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    file_name: Mapped[str | None] = mapped_column(String(240))
+    mime_type: Mapped[str | None] = mapped_column(String(80))
+    byte_size: Mapped[int] = mapped_column(default=0)
+    external_hash: Mapped[str | None] = mapped_column(String(120), index=True)
+    external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text)
+    permalink_url: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active, index=True)
+    uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaLaunch(UUIDMixin, TimestampMixin, Base):
+    """Залив — ТЗ 3.3 и 3.4.
+
+    Учётная запись команды и одновременно рецепт публикации. ID созданных в Meta
+    объектов записываются сюда по мере создания, поэтому повторная публикация не
+    задваивает кампанию: этап, у которого ID уже есть, пропускается.
+    """
+
+    __tablename__ = "meta_launches"
+    __table_args__ = (
+        Index("ix_meta_launches_workspace_status", "workspace_id", "status"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="CASCADE"), index=True
+    )
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_templates.id", ondelete="SET NULL")
+    )
+    offer_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("offers.id", ondelete="SET NULL"))
+    partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id", ondelete="SET NULL")
+    )
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    geo: Mapped[str | None] = mapped_column(String(12), index=True)
+    daily_budget: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    spend_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    start_date: Mapped[date | None] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
+    link_url: Mapped[str | None] = mapped_column(Text)
+    primary_text: Mapped[str | None] = mapped_column(Text)
+    headline: Mapped[str | None] = mapped_column(String(240))
+    description: Mapped[str | None] = mapped_column(String(240))
+    call_to_action: Mapped[str] = mapped_column(String(40), default="LEARN_MORE")
+    page_id: Mapped[str | None] = mapped_column(String(60))
+    pixel_id: Mapped[str | None] = mapped_column(String(60))
+    # Строкой, а не типом Postgres: колонка заведена как varchar, и с
+    # native-перечислением SQLAlchemy дописывал бы к сравнению приведение к
+    # несуществующему типу `launchstatus` — фильтр по статусу падал с ошибкой.
+    status: Mapped[LaunchStatus] = mapped_column(
+        Enum(LaunchStatus, native_enum=False, length=20),
+        default=LaunchStatus.draft,
+        index=True,
+    )
+    # Кампания всегда создаётся на паузе. Этот флаг решает, снимать ли её с паузы
+    # сразу после публикации — деньги начинают тратиться именно в этот момент.
+    activate_on_publish: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    # Объявления залива: у каждого свои тексты, свои языки и свои креативы.
+    # Список, а не таблица, потому что живёт он ровно один залив и наружу
+    # ничем, кроме публикации, не используется. Пусто — старое поведение,
+    # по объявлению на креатив.
+    ads: Mapped[list] = mapped_column(JSON, default=list)
+    # Сколько копий адсета завести в кампании. Копии дают Meta несколько групп
+    # на обучение при одном и том же таргете.
+    adset_count: Mapped[int] = mapped_column(default=1, server_default="1", nullable=False)
+    # Параметры к ссылке (`url_tags`) и то, что видно в объявлении вместо неё.
+    url_tags: Mapped[str | None] = mapped_column(Text)
+    display_link: Mapped[str | None] = mapped_column(String(240))
+    # Когда создавать объекты в кабинете. Пусто — сразу; будущее время означает
+    # «залив запланирован», и его подхватит планировщик.
+    publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Когда объявлениям начать крутиться. Это не то же самое, что дата залива:
+    # залить ночью и стартовать в полночь понедельника — обычная просьба.
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Что оставить на паузе после публикации. Кампания создаётся на паузе
+    # всегда; эти флаги решают, что не снимать с неё при активации.
+    pause_campaigns: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    pause_adsets: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    pause_ads: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    campaign_external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    adset_external_id: Mapped[str | None] = mapped_column(String(100))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    external_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaLaunchCreative(UUIDMixin, Base):
+    """Креатив в заливе. Одно объявление на креатив — так их видно по отдельности."""
+
+    __tablename__ = "meta_launch_creatives"
+    __table_args__ = (
+        UniqueConstraint("launch_id", "creative_id", name="uq_meta_launch_creative"),
+    )
+
+    launch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_launches.id", ondelete="CASCADE"), index=True
+    )
+    creative_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_creatives.id", ondelete="CASCADE"), index=True
+    )
+    ad_external_id: Mapped[str | None] = mapped_column(String(100))
+    creative_external_id: Mapped[str | None] = mapped_column(String(100))
+    position: Mapped[int] = mapped_column(default=0)
+
+
+class MetaOperation(UUIDMixin, Base):
+    """Журнал записывающих вызовов Graph API.
+
+    Нужен не для красоты: Meta не поддерживает ключи идемпотентности, поэтому
+    единственный способ разобраться, что именно было создано перед обрывом, —
+    писать каждый вызов до отправки и дописывать результат после.
+    """
+
+    __tablename__ = "meta_operations"
+    __table_args__ = (
+        Index("ix_meta_operations_launch", "launch_id", "kind"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    launch_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_launches.id", ondelete="CASCADE")
+    )
+    rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_rules.id", ondelete="SET NULL")
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    target_external_id: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    request: Mapped[dict] = mapped_column(JSON, default=dict)
+    response: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class MetaRule(UUIDMixin, TimestampMixin, Base):
+    """Автоправило — ТЗ 3.8.
+
+    Условие считается по нашей же статистике, а не по правилам внутри Meta: ROI
+    Meta не знает, доход приходит из Keitaro. `min_spend` не украшение — без него
+    правило сработает на кампании с тремя кликами и нулевым доходом.
+    """
+
+    __tablename__ = "meta_rules"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_meta_rule_name"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="CASCADE"), index=True
+    )
+    launch_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_launches.id", ondelete="CASCADE")
+    )
+    # С чем работать: campaign | adset | ad. Действие применяется к объекту
+    # этого уровня, и метрики считаются по нему же.
+    level: Mapped[str] = mapped_column(String(10), default="campaign", server_default="campaign")
+    # Какие статусы брать: active | paused | any.
+    entity_status: Mapped[str] = mapped_column(
+        String(10), default="active", server_default="active"
+    )
+    # Период статы: today | yesterday | last_3d | last_7d | last_30d.
+    window: Mapped[str] = mapped_column(String(12), default="today", server_default="today")
+    # Список условий, соединённых И: [{"metric","operator","value"}].
+    # Пустой список — правило без условий: срабатывает на всём, что попало в
+    # область. Это осмысленный режим («остановить все активные объявления»),
+    # поэтому пустоту здесь не запрещаем.
+    conditions: Mapped[list] = mapped_column(JSON, default=list)
+    min_spend: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    action: Mapped[str] = mapped_column(String(30), default="notify")
+    action_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+    # Как часто правило вообще проверяется. Отличается от cooldown: частота —
+    # это «когда смотреть», cooldown — «как скоро можно сработать ещё раз».
+    frequency_minutes: Mapped[int] = mapped_column(default=60, server_default="60")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Пауза между срабатываниями по одному и тому же объекту. Без неё правило
+    # «поднять бюджет на 20%» удваивает его за час.
+    cooldown_minutes: Mapped[int] = mapped_column(default=180)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class MetaRuleEvent(UUIDMixin, Base):
+    """Срабатывание правила: что увидели, что сделали и получилось ли."""
+
+    __tablename__ = "meta_rule_events"
+    __table_args__ = (
+        Index("ix_meta_rule_events_created", "workspace_id", "created_at"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_rules.id", ondelete="CASCADE"), index=True
+    )
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="SET NULL")
+    )
+    campaign_external_id: Mapped[str | None] = mapped_column(String(100))
+    campaign_name: Mapped[str | None] = mapped_column(String(300))
+    metric: Mapped[str] = mapped_column(String(20))
+    metric_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    action: Mapped[str] = mapped_column(String(30))
+    applied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    message: Mapped[str] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class Partner(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "partners"
     __table_args__ = (
@@ -305,6 +983,14 @@ class Partner(UUIDMixin, TimestampMixin, Base):
 
 
 class Offer(UUIDMixin, TimestampMixin, Base):
+    """Оффер справочника.
+
+    Строки заводятся вручную в разделе «Оффера» (`connection_id` пуст) либо
+    приходят из Keitaro для Медиаборда, Финансов и Meta. Разделяет их именно
+    `connection_id`: у ручного оффера нет ни трекера, ни внешнего id, поэтому
+    синхронизация его не видит и не перезаписывает.
+    """
+
     __tablename__ = "offers"
     __table_args__ = (
         UniqueConstraint("connection_id", "external_id", name="uq_offer_external"),
@@ -313,19 +999,52 @@ class Offer(UUIDMixin, TimestampMixin, Base):
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
     )
-    connection_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("integration_connections.id", ondelete="CASCADE")
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
     )
     partner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("partners.id"))
-    external_id: Mapped[str] = mapped_column(String(100))
+    external_id: Mapped[str | None] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(240), nullable=False)
     geo: Mapped[str | None] = mapped_column(String(12), index=True)
-    group_name: Mapped[str | None] = mapped_column(String(160))
-    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active, index=True)
-    status_overridden: Mapped[bool] = mapped_column(
+    # Капа — свободный текст: «300/день», «по договорённости», «—».
+    # Числом её не сделать, команда пишет условие партнёрки как есть.
+    cap: Mapped[str | None] = mapped_column(String(160))
+    # Ставка партнёрки за целевое действие. В отличие от капы это число: с ним
+    # оффер уезжает в книгу баера готовым к работе, без переписывания руками.
+    cpa: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
+    cpa_currency: Mapped[str] = mapped_column(
+        String(3), default="USD", server_default="USD"
+    )
+    # KPI и комментарий — длинный текст, который читают не в таблице, а когда
+    # открывают конкретный оффер. Отдельными столбцами они бы съели ширину и
+    # всё равно не поместились.
+    kpi: Mapped[str | None] = mapped_column(Text)
+    comment: Mapped[str | None] = mapped_column(Text)
+    group_name: Mapped[str | None] = mapped_column(String(160), index=True)
+    status: Mapped[OfferStatus] = mapped_column(
+        Enum(OfferStatus), default=OfferStatus.free, server_default="free", index=True
+    )
+    # Keitaro decides this one; the sync overwrites it on every run.
+    keitaro_state: Mapped[Status] = mapped_column(
+        Enum(Status), default=Status.active, server_default="active", index=True
+    )
+    is_starred: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
     partner: Mapped[Partner | None] = relationship(lazy="selectin")
+
+
+class OfferLead(Base):
+    """Тимлид, которому отдан оффер, — первая ступень назначения."""
+
+    __tablename__ = "offer_leads"
+
+    offer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("offers.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
 
 
 class OfferBuyer(Base):
@@ -445,6 +1164,753 @@ class FinanceSpendValue(UUIDMixin, Base):
     provider_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("spend_providers.id"))
     base_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
     manual_amount_override: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+
+
+class FinanceBook(UUIDMixin, TimestampMixin, Base):
+    """Месяц одного баера: то, что раньше было отдельной вкладкой гугл-таблицы.
+
+    Всё, что здесь лежит, заполняет финансист руками. Из Keitaro сюда ничего не
+    приходит — цифры сверяются с кабинетами, а не с трекером.
+    """
+
+    __tablename__ = "finance_books"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "buyer_id",
+            "year",
+            "month",
+            "tier",
+            name="uq_finance_book_period",
+        ),
+        Index("ix_finance_books_period", "workspace_id", "year", "month"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    buyer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    year: Mapped[int] = mapped_column(nullable=False)
+    month: Mapped[int] = mapped_column(nullable=False)
+    # Тир книги: `T1` или `T23`. Баер ведёт две отдельные таблицы, потому что
+    # спенд по Tier1 и Tier2/3 приходит из разных кабинетов и разными суммами —
+    # делить общий расход между тирами было нечем, кроме пропорции.
+    tier: Mapped[str] = mapped_column(String(4), nullable=False, server_default="T1")
+    # Автоматический входящий долг: вычитается из зарплаты, в дневные расчёты
+    # не входит. Самый ранний сохранённый остаток служит начальным балансом для
+    # данных, перенесённых из прежней ручной версии.
+    prev_minus: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
+    # Курс евро к доллару для этого месяца. Книга всегда считается в долларах, а
+    # ставки евровых офферов переводятся по этому курсу. Курс хранится в самой
+    # книге, а не берётся живым на каждый расчёт: иначе профит и зарплата за
+    # закрытый месяц менялись бы каждый день вместе с рынком.
+    eur_usd_rate: Mapped[Decimal] = mapped_column(
+        Numeric(18, 6), default=1, server_default="1"
+    )
+
+
+class CountryTier(UUIDMixin, Base):
+    """Страна, отнесённая к тиру, — «Настройки → Тиры стран».
+
+    В таблице лежит только то, что отличается от умолчания: страна без строки
+    считается Tier2/3. Хранить все две сотни стран ради одного и того же
+    ответа незачем, а список Tier1 команда правит по договорённостям с
+    партнёрками — сегодня Португалия первый тир, завтра нет.
+    """
+
+    __tablename__ = "country_tiers"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "code", name="uq_country_tier_code"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    # Alpha-2, как и везде в CRM: гео проходит через `normalize_geo`.
+    code: Mapped[str] = mapped_column(String(12), nullable=False)
+    tier: Mapped[str] = mapped_column(String(4), nullable=False)
+
+
+class FinanceBookOffer(UUIDMixin, Base):
+    __tablename__ = "finance_book_offers"
+
+    book_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finance_books.id", ondelete="CASCADE"), index=True
+    )
+    # Откуда строка приехала. Назначение баера тянет оффер в его книгу, и по
+    # этой ссылке повторное назначение узнаёт свою строку вместо того, чтобы
+    # заводить дубль с тем же названием.
+    source_offer_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("offers.id", ondelete="SET NULL"), index=True
+    )
+    # Порядок задаёт финансист перетаскиванием блоков, поэтому он хранится, а не
+    # выводится из имени.
+    position: Mapped[int] = mapped_column(default=0)
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    partner: Mapped[str | None] = mapped_column(String(160))
+    # Гео оффера. Тир из него берётся справочником «Настройки → Тиры стран» и
+    # не хранится: иначе правка справочника не догнала бы уже заведённые книги,
+    # и один и тот же оффер в двух местах отвечал бы по-разному.
+    geo: Mapped[str | None] = mapped_column(String(12))
+    rate: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
+    # Валюта ставки: офферы бывают и в евро. Доход всё равно считается в долларах —
+    # евровая ставка переводится по курсу книги.
+    rate_currency: Mapped[str] = mapped_column(
+        String(3), default="USD", server_default="USD"
+    )
+
+
+class FinanceBookDay(UUIDMixin, Base):
+    __tablename__ = "finance_book_days"
+    __table_args__ = (UniqueConstraint("book_id", "day", name="uq_finance_book_day"),)
+
+    book_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finance_books.id", ondelete="CASCADE"), index=True
+    )
+    day: Mapped[int] = mapped_column(nullable=False)
+    spend_buyer: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
+    # Сверка с кабинетом: в расчёты не входит, но финансист её ведёт.
+    spend_agent: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
+    costs: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
+
+
+class FinanceOfferTag(UUIDMixin, Base):
+    """Именованная строка под оффером, по которой вводятся депозиты за день.
+
+    SOK — просто первый такой тег, а не отдельная сущность: команда переименовывает
+    его и заводит рядом свои — долёты, RAF, что угодно.
+    """
+
+    __tablename__ = "finance_offer_tags"
+
+    offer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finance_book_offers.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(default=0)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+
+
+class FinanceTagDay(UUIDMixin, Base):
+    __tablename__ = "finance_tag_days"
+    __table_args__ = (UniqueConstraint("tag_id", "day", name="uq_finance_tag_day"),)
+
+    tag_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finance_offer_tags.id", ondelete="CASCADE"), index=True
+    )
+    day: Mapped[int] = mapped_column(nullable=False)
+    # Депозиты за день по этому тегу; доход оффера — их сумма × ставка.
+    deposits: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
+
+
+class TaskSection(UUIDMixin, TimestampMixin, Base):
+    """Раздел доски задач — отдельная доска отдела.
+
+    Список плоский, без дерева: раздел здесь означает отдел («Дизайнеры»,
+    «Баеры»), а отделы друг в друга не вкладываются. Колонки, поля и шаблоны
+    остаются общими на воркспейс — разделы делят между собой карточки и права,
+    а не устройство доски.
+    """
+
+    __tablename__ = "task_sections"
+    __table_args__ = (
+        Index("ix_task_sections_order", "workspace_id", "position"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    position: Mapped[int] = mapped_column(default=0)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class TaskSectionAccess(UUIDMixin, Base):
+    """Права на раздел доски — устроены как права базы знаний (ТЗ 8.2).
+
+    Правило адресовано либо роли, либо человеку: заполнена ровно одна ссылка.
+    Именное правило сильнее ролевого — иначе раздел «только для Ирины»
+    описывался бы ролью под одного человека.
+
+    Раздел без единого правила ведёт себя как доска до появления разделов:
+    виден всем с `workspace.view`, и в нём можно заводить задачи. Правка и
+    удаление чужих карточек — отдельные права: без них остаётся обычное правило
+    карточки (свои задачи и те, где ты исполнитель).
+    """
+
+    __tablename__ = "task_section_access"
+    __table_args__ = (
+        UniqueConstraint("section_id", "role_id", name="uq_task_section_access_role"),
+        UniqueConstraint("section_id", "user_id", name="uq_task_section_access_user"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    section_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("task_sections.id", ondelete="CASCADE"), index=True
+    )
+    role_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("roles.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    can_view: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    can_create: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_edit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_delete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_manage: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class TaskStatus(UUIDMixin, TimestampMixin, Base):
+    """Колонка канбан-доски — ТЗ 8.1.
+
+    Пять статусов заводит seed, остальные создаёт команда. `is_system` защищает
+    базовые от удаления, `is_terminal` отмечает колонки, где задача считается
+    завершённой, — по нему строится «сколько ещё в работе».
+    """
+
+    __tablename__ = "task_statuses"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "code", name="uq_task_status_code"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    color: Mapped[str] = mapped_column(String(16), default="#9B9292")
+    position: Mapped[int] = mapped_column(default=0, index=True)
+    is_system: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    is_terminal: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+
+class TaskField(UUIDMixin, TimestampMixin, Base):
+    """Пользовательское поле задачи — ТЗ 8.1.
+
+    Значения полей лежат в `Task.custom_values` одним JSON, а не отдельной
+    таблицей: полей у задачи единицы, и любой запрос всё равно тянет карточку
+    целиком. Ключ значения — `id` поля, поэтому переименование поля не ломает
+    уже заполненные задачи.
+    """
+
+    __tablename__ = "task_fields"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_task_field_name"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), default="text")
+    options: Mapped[list] = mapped_column(JSON, default=list)
+    # Настройки, зависящие от типа: валюта для «Сумма», подпись кнопки для
+    # «Ссылка». Отдельным JSON, а не колонками, — у каждого типа они свои.
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    position: Mapped[int] = mapped_column(default=0)
+    is_required: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    # Поле доски против поля шаблона. Общее поле есть в каждой карточке;
+    # выключенное показывается только тем задачам, чей шаблон его подключил, —
+    # иначе бриф на креатив тянул бы за собой поля бухгалтерии.
+    show_always: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+
+
+class Task(UUIDMixin, TimestampMixin, Base):
+    """Карточка задачи — ТЗ 8.1.
+
+    `position` задаёт порядок внутри колонки: канбан переставляют мышью, и без
+    собственного порядка карточки прыгали бы при каждом обновлении.
+    """
+
+    __tablename__ = "tasks"
+    __table_args__ = (
+        Index("ix_tasks_board", "workspace_id", "status_id", "position"),
+        Index("ix_tasks_section", "workspace_id", "section_id"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    # Раздел задаётся всегда: карточка без раздела не попала бы ни на одну
+    # доску. Раздел не удаляют, пока в нём есть задачи, — их переносят.
+    section_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("task_sections.id", ondelete="RESTRICT"), index=True
+    )
+    status_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("task_statuses.id", ondelete="RESTRICT"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    due_date: Mapped[date | None] = mapped_column(Date, index=True)
+    priority: Mapped[TaskPriority] = mapped_column(
+        Enum(TaskPriority), default=TaskPriority.medium, index=True
+    )
+    position: Mapped[int] = mapped_column(default=0)
+    custom_values: Mapped[dict] = mapped_column(JSON, default=dict)
+    # По какому шаблону заведена карточка — от этого зависит набор её полей.
+    # Удаление шаблона обнуляет ссылку, но поля с уже заполненными значениями
+    # из карточки не пропадают.
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("task_templates.id", ondelete="SET NULL")
+    )
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    assignees: Mapped[list["TaskAssignee"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan"
+    )
+
+
+class TaskAssignee(Base):
+    """Исполнитель. Их может быть несколько — ТЗ 8.1."""
+
+    __tablename__ = "task_assignees"
+
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+
+
+class TaskTemplate(UUIDMixin, TimestampMixin, Base):
+    """Шаблон задачи — ТЗ 8.1.
+
+    Задаёт набор пользовательских полей карточки и их значения по умолчанию.
+    Стандартные поля — название, приоритет, колонку, срок, описание,
+    исполнителей — шаблон не трогает: их заполняют под конкретную задачу.
+
+    Ссылки на поля идут по ID: удалённое поле просто перестаёт подставляться,
+    а шаблон продолжает работать.
+    """
+
+    __tablename__ = "task_templates"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_task_template_name"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    custom_values: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Какие поля шаблон выводит в карточку и в каком порядке. Список ID, а не
+    # связь: порядок здесь смысловой (бриф читают сверху вниз), и хранить его
+    # в отдельной таблице ради этого незачем.
+    field_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # Шаблон, который подставляется в новую задачу сам. Один на воркспейс:
+    # команда работает по одному брифу, и выбирать его каждый раз заново —
+    # лишний шаг в самом частом действии раздела.
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class KnowledgeSection(UUIDMixin, TimestampMixin, Base):
+    """Раздел базы знаний — ТЗ 8.2. Дерево строится через `parent_id`."""
+
+    __tablename__ = "knowledge_sections"
+    __table_args__ = (
+        Index("ix_knowledge_sections_tree", "workspace_id", "parent_id", "position"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("knowledge_sections.id", ondelete="CASCADE")
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    icon: Mapped[str | None] = mapped_column(String(16))
+    position: Mapped[int] = mapped_column(default=0)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class KnowledgeArticle(UUIDMixin, TimestampMixin, Base):
+    """Статья — ТЗ 8.2.
+
+    Содержимое хранится списком блоков в JSON, как в Notion, а не готовым HTML:
+    из блоков можно перерисовать статью в любом виде, а из HTML обратно блоки
+    уже не собрать. `search_text` — плоская выжимка тех же блоков, по ней и
+    ищем: по JSON полнотекстовый поиск не построить.
+    """
+
+    __tablename__ = "knowledge_articles"
+    __table_args__ = (
+        Index("ix_knowledge_articles_section", "section_id", "position"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    section_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("knowledge_sections.id", ondelete="CASCADE"), index=True
+    )
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("knowledge_articles.id", ondelete="CASCADE")
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    blocks: Mapped[list] = mapped_column(JSON, default=list)
+    search_text: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[ArticleStatus] = mapped_column(
+        Enum(ArticleStatus), default=ArticleStatus.draft, index=True
+    )
+    position: Mapped[int] = mapped_column(default=0)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    updated_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class KnowledgeAccess(UUIDMixin, Base):
+    """Права на раздел базы знаний — ТЗ 8.2.
+
+    Правило адресовано либо роли, либо конкретному человеку: заполнена ровно
+    одна из ссылок. Именное правило сильнее ролевого — иначе раздел «только для
+    Ирины» невозможно было бы описать, не заводя роль под одного человека.
+
+    Правило наследуется вниз по дереву: заданное на корневом разделе действует и
+    на вложенные, пока у вложенного нет собственного. Раздел без единого правила
+    открыт всем, у кого есть `knowledge.view` — иначе первый же созданный раздел
+    оказался бы невидимым даже своему автору.
+    """
+
+    __tablename__ = "knowledge_access"
+    __table_args__ = (
+        UniqueConstraint("section_id", "role_id", name="uq_knowledge_access_role"),
+        UniqueConstraint("section_id", "user_id", name="uq_knowledge_access_user"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    section_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_sections.id", ondelete="CASCADE"), index=True
+    )
+    role_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("roles.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    can_view: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    can_create: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_edit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_delete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_manage: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class KnowledgeAttachment(UUIDMixin, Base):
+    """Вложение воркспейса: файл статьи (ТЗ 8.2) или файл задачи (ТЗ 8.1).
+
+    Сам файл лежит на диске, в базе только метаданные и путь. Отдаётся всегда
+    через API с проверкой прав: раздел может быть закрыт для роли, и прямая
+    ссылка на файл не должна обходить это.
+
+    Имя таблицы историческое — вложения появились в базе знаний, а поля задач
+    типа «Файлы» переиспользуют то же хранилище и ту же проверку загрузки.
+    Заполнена ровно одна из ссылок; обе пустые — файл ещё не закреплён и
+    удаляется фоновой уборкой.
+    """
+
+    __tablename__ = "knowledge_attachments"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    article_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("knowledge_articles.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), index=True
+    )
+    file_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    byte_size: Mapped[int] = mapped_column(default=0)
+    storage_path: Mapped[str] = mapped_column(String(400), nullable=False)
+    uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class TelegramBot(UUIDMixin, TimestampMixin, Base):
+    """Бот команды для уведомлений — ТЗ 9.
+
+    Один на воркспейс: у команды один бот и несколько чатов, а не наоборот.
+    Хранить токен в каждом канале значило бы менять его в пяти местах при
+    первой же ротации.
+
+    Токен лежит зашифрованным и через API не возвращается — по нему можно
+    писать от имени команды куда угодно.
+    """
+
+    __tablename__ = "telegram_bots"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", name="uq_telegram_bot_workspace"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    username: Mapped[str | None] = mapped_column(String(120))
+    token_encrypted: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class AlertChannel(UUIDMixin, TimestampMixin, Base):
+    """Чат, куда уходят уведомления — ТЗ 9.1, 9.2.
+
+    `thread_id` — тема супергруппы: в общий чат команды сыпать алерты по CAP
+    нельзя, их читают отдельные люди.
+    """
+
+    __tablename__ = "alert_channels"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    chat_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    thread_id: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active)
+
+
+class AlertRule(UUIDMixin, TimestampMixin, Base):
+    """Уведомление в Telegram — ТЗ 9.1.
+
+    Два вида, и они устроены по-разному:
+
+    * `deposit` — сообщение на каждый депозит из журнала конверсий Keitaro.
+      Смотрит не на числа, а на события: пришла продажа — ушло сообщение.
+    * `report` — сводка по расписанию: период, лиды, продажи, доход, расход,
+      профит, ROI. Область у неё всегда вся команда.
+
+    Универсального «дерева условий» здесь больше нет. Оно позволяло собрать
+    что угодно, но команде нужны ровно эти два сценария, а всё остальное только
+    множило способы ошибиться.
+
+    `cursor_at` — у уведомления о депозитах: до какого момента конверсии уже
+    разосланы. По времени самой конверсии двигать курсор нельзя, трекер отдаёт
+    их с задержкой и задним числом; поэтому курсор идёт по `seen_at` — когда
+    строку увидели мы.
+    """
+
+    __tablename__ = "alert_rules"
+    __table_args__ = (
+        Index("ix_alert_rules_workspace_status", "workspace_id", "status"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active)
+    # deposit | report
+    kind: Mapped[str] = mapped_column(String(16), default="deposit")
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("alert_channels.id", ondelete="CASCADE"), index=True
+    )
+    thread_id: Mapped[str | None] = mapped_column(String(32))
+    # Условия уведомления о депозитах: {"op": "and", "items": [условие | группа]}.
+    # Условие — {"field", "operator", "values" | "text"}. Полей ровно два —
+    # группа кампаний Keitaro и оффер, — но одного списка отмеченных значений
+    # не хватало: «всё, кроме этой группы» галочками не выразить.
+    conditions: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Отчёт: период сводки, расписание и таймзона, по которой оно считается.
+    window: Mapped[str] = mapped_column(String(16), default="today")
+    schedule: Mapped[str] = mapped_column(
+        String(24), default="daily_09", server_default="daily_09", nullable=False
+    )
+    timezone: Mapped[str] = mapped_column(
+        String(64), default="Europe/Moscow", server_default="Europe/Moscow", nullable=False
+    )
+    message_template: Mapped[str | None] = mapped_column(Text)
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cursor_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CapRule(UUIDMixin, TimestampMixin, Base):
+    """CAP на оффер и оповещение о его исчерпании — ТЗ 9.2.
+
+    `notify_at` — пороги в процентах: команде нужно знать не только про сотый
+    процент, но и про восьмидесятый, пока ещё можно перелить трафик.
+    `notified_percent` помнит максимальный уже отправленный порог, поэтому один
+    и тот же рубеж не приходит дважды за период.
+    """
+
+    __tablename__ = "cap_rules"
+    __table_args__ = (
+        Index("ix_cap_rules_workspace_status", "workspace_id", "status"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active)
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("alert_channels.id", ondelete="CASCADE"), index=True
+    )
+    # Несколько офферов на одну капу: их показатели складываются. Одного поля
+    # не хватало — партнёрка обычно даёт общий лимит на связку офферов, а не
+    # на каждый по отдельности.
+    offer_ids: Mapped[list] = mapped_column(JSON, default=list)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    # Что ограничиваем: ftd | leads | installs | spend
+    metric: Mapped[str] = mapped_column(String(40), default="ftd")
+    limit_value: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    # day | week | month
+    period: Mapped[str] = mapped_column(String(16), default="day")
+    # Таймзона сброса счётчика. Без неё «каждый день в 00:00» означало бы
+    # полночь сервера, а команда живёт по своему времени.
+    timezone: Mapped[str] = mapped_column(
+        String(64), default="UTC", server_default="UTC"
+    )
+    # Тема супергруппы для этой конкретной капы. У канала есть свой thread_id,
+    # но капы одного канала часто разводят по разным темам.
+    thread_id: Mapped[str | None] = mapped_column(String(32))
+    notify_at: Mapped[list] = mapped_column(JSON, default=list)
+    notified_percent: Mapped[int] = mapped_column(default=0)
+    notified_period: Mapped[str | None] = mapped_column(String(24))
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AlertEvent(UUIDMixin, Base):
+    """Что и когда ушло в Telegram — ТЗ 9.1, 9.2.
+
+    Журнал нужен не для красоты: когда алерт не пришёл, единственный способ
+    отличить «правило не сработало» от «Telegram не принял» — это запись с
+    текстом ошибки.
+    """
+
+    __tablename__ = "alert_events"
+    __table_args__ = (
+        Index("ix_alert_events_workspace_time", "workspace_id", "created_at"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    alert_rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("alert_rules.id", ondelete="CASCADE"), index=True
+    )
+    cap_rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("cap_rules.id", ondelete="CASCADE"), index=True
+    )
+    rule_name: Mapped[str] = mapped_column(String(160), default="")
+    kind: Mapped[str] = mapped_column(String(16), default="trigger")
+    value: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    message: Mapped[str] = mapped_column(Text, default="")
+    delivered: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SalaryRule(UUIDMixin, TimestampMixin, Base):
+    """Правило расчёта зарплаты — «Настройки → Расчет ЗП».
+
+    Правило адресуется роли или конкретному человеку. Именное сильнее
+    ролевого: у людей с одной ролью бывают разные договорённости, а вот
+    «всем сразу» на практике не встречалось — зарплата всегда чья-то.
+    `mode` решает, что делать с тем, что дало ролевое правило: «заменить»
+    отбрасывает его целиком, «дополнить» добавляет свои компоненты к уже
+    собранным.
+
+    Даты действия хранятся здесь, а не в компонентах: правило меняют целиком,
+    когда договорённость с человеком поменялась, и старое должно остаться в
+    истории — иначе пересчёт закрытого месяца дал бы другую сумму.
+    """
+
+    __tablename__ = "salary_rules"
+    __table_args__ = (
+        Index("ix_salary_rules_workspace_status", "workspace_id", "status"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active)
+    # replace — заменить правила пошире, add — дополнить их.
+    mode: Mapped[str] = mapped_column(String(16), default="replace")
+    # role | user
+    scope: Mapped[str] = mapped_column(String(16), default="role")
+    role_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("roles.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date)
+    position: Mapped[int] = mapped_column(default=0)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    components: Mapped[list["SalaryComponent"]] = relationship(
+        "SalaryComponent",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="SalaryComponent.position",
+    )
+
+
+class SalaryComponent(UUIDMixin, Base):
+    """Одна строка формулы правила.
+
+    Правило почти всегда состоит из нескольких частей: процент от профита плюс
+    сетка по профиту команды плюс фиксированный оклад. Поэтому компоненты
+    отдельной таблицей, а не одним полем формулы: их складывают, переставляют и
+    удаляют по одному.
+    """
+
+    __tablename__ = "salary_components"
+
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("salary_rules.id", ondelete="CASCADE"), index=True
+    )
+    # percent | fixed | grid | deduction
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    base: Mapped[str | None] = mapped_column(String(40))
+    percent: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    # Уровни сетки: [{"up_to": "5000", "percent": "10"}, ...]; последний может
+    # быть без потолка.
+    tiers: Mapped[list] = mapped_column(JSON, default=list)
+    position: Mapped[int] = mapped_column(default=0)
 
 
 class UserPreference(UUIDMixin, TimestampMixin, Base):

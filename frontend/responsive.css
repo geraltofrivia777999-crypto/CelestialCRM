@@ -8,7 +8,7 @@
 
 html {
   min-width: 320px;
-  background: #eef0f6;
+  background: #F4F1F1;
 }
 
 body {
@@ -16,8 +16,139 @@ body {
   overflow-x: hidden;
 }
 
-body > div:first-of-type {
+body > div:first-of-type,
+body > #celestialInitialLoader + div {
   min-height: 100dvh !important;
+}
+
+.celestial-initial-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(185, 20, 20, 0.10), transparent 32%),
+    #F4F1F1;
+  opacity: 1;
+  transition: opacity 180ms ease;
+}
+
+.celestial-initial-loader.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+html.celestial-data-loading body {
+  overflow: hidden;
+}
+
+.celestial-loader-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: min(284px, calc(100vw - 48px));
+  padding: 17px 20px;
+  border: 1px solid rgba(221, 224, 238, 0.9);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 18px 50px rgba(41, 45, 78, 0.12);
+}
+
+.celestial-loader-mark {
+  position: relative;
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 13px;
+  /* The brand mark itself, on the same black tile the sidebar uses. */
+  background: #070505 url("/assets/logo-mark-white.png") center / 26px auto no-repeat;
+  box-shadow: 0 9px 22px rgba(7, 5, 5, 0.26);
+}
+
+.celestial-loader-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.celestial-loader-copy strong {
+  color: #070505;
+  font: 700 17px/1.15 "Alumni Sans", "Inter", sans-serif;
+  letter-spacing: -0.2px;
+}
+
+.celestial-loader-copy small {
+  color: #857D7D;
+  font: 600 11.5px/1.35 "Inter", sans-serif;
+  white-space: nowrap;
+}
+
+.celestial-loader-progress {
+  width: min(236px, calc(100vw - 80px));
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(185, 20, 20, 0.12);
+}
+
+.celestial-loader-progress > span {
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #B91414, #D45555);
+  animation: celestial-loader-slide 1050ms ease-in-out infinite;
+}
+
+.celestial-initial-loader.has-error .celestial-loader-card {
+  flex-wrap: wrap;
+  border-color: rgba(217, 75, 97, 0.2);
+}
+
+.celestial-initial-loader.has-error .celestial-loader-mark {
+  background: #B91414 url("/assets/logo-mark-white.png") center / 26px auto no-repeat;
+  box-shadow: 0 9px 22px rgba(185, 20, 20, 0.24);
+}
+
+.celestial-initial-loader.has-error .celestial-loader-progress {
+  display: none;
+}
+
+.celestial-loader-retry {
+  height: 36px;
+  margin-left: auto;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: #B91414;
+  color: #fff;
+  font: 700 11.5px "Inter", sans-serif;
+  cursor: pointer;
+}
+
+.celestial-loader-retry:hover,
+.celestial-loader-retry:focus-visible {
+  background: #8A0F0F;
+  outline: 3px solid rgba(185, 20, 20, 0.18);
+}
+
+@keyframes celestial-loader-slide {
+  from {
+    transform: translateX(-115%);
+  }
+
+  to {
+    transform: translateX(340%);
+  }
 }
 
 .celestial-sidebar {
@@ -58,7 +189,9 @@ body > div:first-of-type {
    * while the pointer sat over the table. */
   overscroll-behavior-x: contain;
   overscroll-behavior-y: auto;
-  scrollbar-gutter: stable;
+  /* Без `scrollbar-gutter`. Он резервировал 9px под вертикальную полосу, которая
+   * здесь почти никогда не появляется, и заливка шапки «Результата» обрывалась,
+   * не доходя до края карточки. */
 }
 
 /*
@@ -73,11 +206,16 @@ body > div:first-of-type {
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Названия офферов длинные ("4ra BEE IN TowerRushModule 8$ pwa fd 50") и на 220px
+ * ломались в четыре строки. Ширину забираем у блока «Агенты и платёжки»: там одна
+ * колонка с числом, а вся свободная ширина карточки раздувалась именно ей.
+ */
 .celestial-board-table thead tr:first-child > th:first-child,
 .celestial-board-table tbody tr > td:first-child {
-  width: 220px !important;
-  min-width: 220px !important;
-  max-width: 220px;
+  width: 320px !important;
+  min-width: 320px !important;
+  max-width: 320px;
 }
 
 .celestial-board-table thead tr:nth-child(2) > th,
@@ -219,7 +357,7 @@ body > div:first-of-type {
     width: min(280px, calc(100vw - 48px)) !important;
     transform: translateX(-102%);
     transition: transform 180ms ease;
-    box-shadow: 18px 0 46px rgba(31, 34, 49, 0.18);
+    box-shadow: 18px 0 46px rgba(23, 17, 17, 0.18);
   }
 
   body.celestial-sidebar-open {
@@ -235,7 +373,7 @@ body > div:first-of-type {
     inset: 0;
     z-index: 10035;
     border: 0;
-    background: rgba(23, 26, 38, 0.38);
+    background: rgba(18, 12, 12, 0.38);
     backdrop-filter: blur(2px);
   }
 
@@ -250,13 +388,13 @@ body > div:first-of-type {
     z-index: 10030;
     width: 44px;
     height: 44px;
-    border: 1px solid #e1e4ed;
+    border: 1px solid #E5DFDF;
     border-radius: 12px;
     background: #fff;
-    color: #5a5fe0;
+    color: #B91414;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 8px 24px rgba(40, 44, 74, 0.14);
+    box-shadow: 0 8px 24px rgba(30, 20, 20, 0.14);
     cursor: pointer;
   }
 
@@ -348,7 +486,509 @@ body > div:first-of-type {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .celestial-sidebar {
+  .celestial-sidebar,
+  .celestial-initial-loader {
     transition: none;
   }
+
+  .celestial-loader-progress > span {
+    animation: none;
+    transform: translateX(70%);
+  }
+}
+
+/*
+ * Правая колонка карточки-строки: статус и кнопки.
+ *
+ * Раньше каждая страница собирала её сама, и статус оказывался то выше кнопок,
+ * то ниже: контейнер выравнивал по верху, а бейдж — по центру. При разной
+ * высоте карточек это читается как случайность вёрстки.
+ *
+ * Здесь статус и кнопки — одна строка одной высоты, а у статуса есть
+ * минимальная ширина: без неё «Активно» и «Выключено» разъезжаются по
+ * горизонтали, и колонка кнопок теряет общий край.
+ */
+.row-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.row-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  min-width: 104px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.row-status--on {
+  color: #0E7350;
+  background: #E4F7F0;
+}
+
+.row-status--off {
+  color: #857D7D;
+  background: #F2EDED;
+}
+
+.row-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #E5DFDF;
+  border-radius: 9px;
+  background: #fff;
+  color: #3A3030;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.row-btn:hover {
+  border-color: #D8CFCF;
+  background: #FAF8F8;
+}
+
+@media (max-width: 640px) {
+  /* На узком экране правая колонка встаёт под текст — тогда общий край ей
+     уже не нужен, а растянутый статус только съедает ширину. */
+  .row-side {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .row-status {
+    min-width: 0;
+  }
+}
+
+/*
+ * Форма CapAlert. Живёт в общем файле, потому что открывается с двух страниц
+ * с разной разметкой — свои стили она носит с собой.
+ */
+.capf-back {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(20, 14, 14, .42);
+  backdrop-filter: blur(3px);
+  font-family: 'Inter', -apple-system, 'Helvetica Neue', sans-serif;
+}
+
+.capf-back.capf-open {
+  display: flex;
+}
+
+.capf-card {
+  width: min(620px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 20px;
+  box-shadow: 0 28px 70px rgba(17, 11, 11, .24);
+}
+
+.capf-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid #EBE6E6;
+}
+
+.capf-title {
+  font-family: 'Alumni Sans', 'Inter', sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  color: #070505;
+}
+
+.capf-sub {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: #9B9292;
+  font-weight: 600;
+}
+
+.capf-x {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 9px;
+  background: #F7F4F4;
+  color: #857D7D;
+  cursor: pointer;
+}
+
+.capf-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 17px;
+  padding: 22px 24px;
+  overflow-y: auto;
+}
+
+.capf-field {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.capf-field--half {
+  grid-column: auto;
+}
+
+.capf-label {
+  display: block;
+  margin-bottom: 7px;
+  color: #6A6161;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.capf-hint {
+  display: block;
+  margin-top: 6px;
+  color: #9B9292;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.capf-input {
+  width: 100%;
+  height: 44px;
+  padding: 0 13px;
+  border: 1px solid #E5DFDF;
+  border-radius: 11px;
+  background: #fff;
+  color: #2A2020;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.capf-input:focus {
+  border-color: #D06060;
+  box-shadow: 0 0 0 3px rgba(185, 20, 20, .09);
+}
+
+.capf-search {
+  height: 38px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+}
+
+.capf-list {
+  display: grid;
+  gap: 6px;
+  max-height: 190px;
+  overflow: auto;
+  padding: 9px;
+  border: 1px solid #EBE6E6;
+  border-radius: 11px;
+}
+
+.capf-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.capf-check input {
+  accent-color: #B91414;
+}
+
+.capf-none {
+  padding: 4px 2px;
+  color: #9B9292;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.capf-chips {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.capf-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid #E5DFDF;
+  border-radius: 9px;
+  background: #fff;
+  color: #6A6161;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.capf-chip input {
+  display: none;
+}
+
+.capf-chip--on {
+  border-color: #B91414;
+  background: #FCF1F1;
+  color: #B91414;
+}
+
+.capf-siblings {
+  display: grid;
+  gap: 7px;
+}
+
+.capf-sibling {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 13px;
+  border: 1px solid #E5DFDF;
+  border-radius: 11px;
+  background: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.capf-sibling:hover {
+  border-color: #B91414;
+  color: #B91414;
+}
+
+.capf-sibling-note {
+  color: #9B9292;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.capf-note {
+  grid-column: 1 / -1;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #F7F4F4;
+  color: #6A6161;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.capf-error {
+  display: none;
+  margin: 0 24px;
+  padding: 11px 14px;
+  border-radius: 11px;
+  background: #FCF1F1;
+  color: #B91414;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.capf-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px 22px;
+  border-top: 1px solid #EBE6E6;
+}
+
+.capf-foot button {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.capf-del {
+  margin-right: auto;
+  border: 1px solid #F1D9D9;
+  background: #fff;
+  color: #B91414;
+}
+
+.capf-cancel {
+  border: 1px solid #E5DFDF;
+  background: #fff;
+  color: #6A6161;
+}
+
+.capf-save {
+  border: 0;
+  background: #B91414;
+  color: #fff;
+  box-shadow: 0 7px 16px rgba(185, 20, 20, .23);
+}
+
+.capf-save[disabled] {
+  opacity: .6;
+}
+
+@media (max-width: 800px) {
+  .capf-body {
+    grid-template-columns: 1fr;
+  }
+
+  .capf-back {
+    padding: 12px;
+  }
+}
+
+/*
+ * Свой список для `<select>`.
+ *
+ * Само поле остаётся родным — списком браузер рисует окно операционной
+ * системы, которое не стилизуется ничем. Панель прибита к окну (`fixed`), а не
+ * к полю: формы лежат в модалках с прокруткой, и внутри них список обрезался
+ * бы их краем.
+ */
+.csel-panel {
+  position: fixed;
+  z-index: 2147482000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 6px;
+  border: 1px solid #EBE6E6;
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: 0 18px 44px rgba(30, 20, 20, .20);
+  font-family: 'Inter', -apple-system, 'Helvetica Neue', sans-serif;
+}
+
+.csel-search {
+  padding: 2px 2px 7px;
+}
+
+.csel-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid #E5DFDF;
+  border-radius: 9px;
+  background: #FBF9F9;
+  color: #2A2020;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  outline: none;
+}
+
+.csel-input:focus {
+  border-color: #D06060;
+  background: #fff;
+}
+
+.csel-list {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.csel-group {
+  padding: 9px 10px 5px;
+  color: #AFA6A6;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+}
+
+/* Свой `display` у класса перебивает `hidden` из стилей браузера, и поиск
+   прятал варианты только на словах: список оставался прежним. */
+.csel-panel [hidden] {
+  display: none !important;
+}
+
+.csel-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #3A3030;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.csel-option-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.csel-option[disabled] {
+  color: #C4BBBB;
+  cursor: default;
+}
+
+.csel-option--active:not([disabled]) {
+  background: #F7F4F4;
+}
+
+.csel-option--on {
+  color: #B91414;
+  font-weight: 700;
+}
+
+.csel-option--on.csel-option--active {
+  background: #FCF1F1;
+}
+
+.csel-tick {
+  flex-shrink: 0;
+  color: #B91414;
+}
+
+.csel-empty {
+  padding: 12px 10px;
+  color: #9B9292;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Стрелка у списков формы CapAlert — та же, что у остальных полей CRM. */
+.capf-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0 38px 0 13px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  font-weight: 600;
 }

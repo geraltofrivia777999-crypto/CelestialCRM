@@ -14,20 +14,14 @@
   var pages = {
     "Dashboard": "/",
     "Медиаборд": "/Mediaboard.dc.html",
+    "Meta Ads": "/MetaAds.dc.html",
+    "Задачи": "/Tasks.dc.html",
+    "База знаний": "/Knowledge.dc.html",
     "Финансы": "/Finance.dc.html",
-    "Партнёрки": "/Partners.dc.html",
     "Оффера": "/Offers.dc.html",
     "Команда": "/Team.dc.html",
+    "Утилиты": "/Utilities.dc.html",
     "Настройки": "/Settings.dc.html"
-  };
-
-  // Present in the sidebar markup but not implemented yet. Marked as such instead of
-  // silently swallowing the click.
-  var upcoming = {
-    "Meta Ads": "Модуль Meta Ads ещё не реализован",
-    "Workspace": "Модуль Workspace ещё не реализован",
-    "Утилиты": "Модуль «Утилиты» ещё не реализован",
-    "Логи": "Модуль «Логи» ещё не реализован"
   };
 
   // The .dc.html files double as design mock-ups, so they ship with demo rows and demo
@@ -44,29 +38,48 @@
       values: ["mediaResultCount"]
     },
     {
+      id: "meta",
+      match: "metaads",
+      permission: "meta.view",
+      title: "Meta Ads",
+      containers: ["metaLevelHead", "metaTableBody", "metaAttribution"],
+      values: ["metaSpend", "metaSpendHint", "metaClicks", "metaCtr", "metaLeads",
+        "metaCpl", "metaProfit", "metaRoi", "metaResultCount"]
+    },
+    {
+      id: "tasks",
+      match: "tasks",
+      permission: "workspace.view",
+      title: "Задачи",
+      containers: ["wsBoard"],
+      values: ["wsTaskSummary"]
+    },
+    {
+      id: "knowledge",
+      match: "knowledge",
+      permission: "knowledge.view",
+      title: "База знаний",
+      containers: ["wsKbTree", "wsDoc"],
+      values: []
+    },
+    {
       id: "finance",
       match: "finance",
       permission: "finance.view",
       title: "Финансы",
-      containers: ["financeTableHead", "financeTableBody"],
-      values: ["financeResultCount", "financeKpiRevenue", "financeKpiCosts",
-        "financeKpiProfit", "financeKpiRoi"]
-    },
-    {
-      id: "partners",
-      match: "partner",
-      permission: "partners.view",
-      title: "Партнёрки",
-      containers: ["partnersTableBody", "partnersPagination"],
-      values: ["partnersTotal", "partnersActive", "partnersOffers", "partnersResultCount"]
+      containers: ["finGridHead", "finGridBody", "finSummaryTiers",
+        "finSummaryBuyers", "finSummaryDaily", "finSalaryRoles", "finSalaryTiers", "finSummaryPeople"],
+      values: ["finOfferCount", "finCardIncome", "finCardSpend",
+        "finCardCosts", "finCardProfit", "finCardRoi", "finCardSalary", "finSalaryFund"]
     },
     {
       id: "offers",
       match: "offer",
       permission: "offers.view",
       title: "Оффера",
-      containers: ["offersTableBody", "offersPagination"],
-      values: ["offersTotal", "offersActive", "offersGeos", "offersResultCount"]
+      containers: ["offersTableBody", "offersKeitaroStatus"],
+      values: ["offersTotal", "offersFree", "offersAtLeads", "offersActive",
+        "offersResultCount"]
     },
     {
       id: "team",
@@ -78,14 +91,24 @@
         "teamUsersTabCount", "teamRolesTabCount", "usersResultCount", "hierarchyLevelCount"]
     },
     {
+      id: "utilities",
+      match: "utilities",
+      permission: "utilities.view",
+      title: "Утилиты",
+      containers: ["utilAlerts", "utilCaps", "utilChannels", "utilEvents"],
+      values: ["utilAlertsCount", "utilCapsCount", "utilChannelsCount"]
+    },
+    {
       id: "settings",
       match: "settings",
       permission: "settings.view",
       title: "Настройки",
-      containers: ["servicesTableBody", "providersTableBody", "integrationsGrid"],
-      values: ["settingsServicesTotal", "settingsProvidersTotal", "settingsConnectionsTotal",
-        "settingsServicesTabCount", "settingsProvidersTabCount", "settingsConnectionsTabCount",
-        "settingsServicesResultCount", "settingsProvidersResultCount", "settingsSyncSummary"]
+      containers: ["providersTableBody", "integrationsGrid",
+        "tierOneList", "tierTwoList"],
+      values: ["settingsProvidersTotal", "settingsConnectionsTotal",
+        "settingsProvidersTabCount", "settingsConnectionsTabCount",
+        "settingsProvidersResultCount", "settingsSyncSummary",
+        "settingsTiersTabCount", "tierOneCount", "tierTwoCount"]
     },
     {
       id: "dashboard",
@@ -119,7 +142,7 @@
       if (!element) return;
       if (element.tagName === "TBODY") {
         element.innerHTML = '<tr><td colspan="' + columnCount(element) +
-          '" style="padding:44px 24px;text-align:center;color:#A2A7B5;font-size:13px">' +
+          '" style="padding:44px 24px;text-align:center;color:#9B9292;font-size:13px">' +
           "Загрузка данных…</td></tr>";
       } else {
         element.innerHTML = "";
@@ -131,21 +154,42 @@
     });
   }
 
+  /*
+   * On a warm navigation there is no full-screen loader to carry the retry button, so a
+   * failed module load has to say so where the data would have been. Placeholders are
+   * never left spinning and mock values never come back.
+   */
+  function showLoadFailure(message) {
+    var rule = currentRule();
+    rule.containers.forEach(function (id) {
+      var element = document.getElementById(id);
+      if (!element || element.tagName !== "TBODY") return;
+      element.innerHTML = '<tr><td colspan="' + columnCount(element) +
+        '" style="padding:38px 24px;text-align:center;color:#857D7D;font-size:13px">' +
+        escapeHtml(message || "Не удалось загрузить данные") +
+        '<br><button type="button" data-shell-action="reload" style="margin-top:12px;border:1px solid #E5DFDF;' +
+        "background:#F8F5F5;border-radius:9px;padding:7px 15px;font:700 12px Inter,sans-serif;" +
+        'color:#B91414;cursor:pointer">Повторить</button></td></tr>';
+      var retry = element.querySelector('[data-shell-action="reload"]');
+      if (retry) retry.addEventListener("click", function () { window.location.reload(); });
+    });
+  }
+
   function renderAccessDenied(rule) {
     var host = document.querySelector("main") || document.body;
     host.innerHTML =
       '<section role="alert" style="max-width:520px;margin:96px auto;padding:32px;text-align:center;' +
-      "background:#fff;border:1px solid #E5E7EF;border-radius:18px;font-family:'Manrope',sans-serif\">" +
+      "background:#fff;border:1px solid #EBE6E6;border-radius:18px;font-family:'Inter',sans-serif\">" +
       '<div style="width:52px;height:52px;margin:0 auto 18px;border-radius:15px;background:#FDECEF;' +
       'display:flex;align-items:center;justify-content:center">' +
       '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
-      '<rect x="4" y="10" width="16" height="10" rx="2.5" stroke="#D94B61" stroke-width="2"/>' +
-      '<path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="#D94B61" stroke-width="2" stroke-linecap="round"/></svg></div>' +
-      '<h1 style="font:700 20px \'Space Grotesk\',Manrope,sans-serif;color:#171A26">Раздел недоступен</h1>' +
-      '<p style="margin-top:10px;font-size:13px;color:#6B7180;line-height:1.55">У вашей роли нет прав на раздел «' +
+      '<rect x="4" y="10" width="16" height="10" rx="2.5" stroke="#FF0000" stroke-width="2"/>' +
+      '<path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="#FF0000" stroke-width="2" stroke-linecap="round"/></svg></div>' +
+      '<h1 style="font:700 20px \'Alumni Sans\',Inter,sans-serif;color:#070505">Раздел недоступен</h1>' +
+      '<p style="margin-top:10px;font-size:13px;color:#6A6161;line-height:1.55">У вашей роли нет прав на раздел «' +
       escapeHtml(rule.title) + '». Обратитесь к администратору, если доступ нужен для работы.</p>' +
       '<a href="/" style="display:inline-block;margin-top:20px;height:40px;line-height:40px;padding:0 20px;' +
-      "background:#5A5FE0;color:#fff;border-radius:10px;font:700 12.5px Manrope,sans-serif;text-decoration:none\">" +
+      "background:#B91414;color:#fff;border-radius:10px;font:700 12.5px Inter,sans-serif;text-decoration:none\">" +
       "На дашборд</a></section>";
   }
 
@@ -154,9 +198,41 @@
       var name = pageName(element);
       if (!name) return;
       var rule = pageRules.find(function (item) { return item.title === name; });
-      if (!rule || hasPermission(user, rule.permission)) return;
-      element.style.display = "none";
+      if (!rule) return;
+      // Toggled both ways, since a background re-check can grant access as well as
+      // remove it — and the markup lays these out with an inline `display:flex`, so the
+      // original value has to come back rather than being cleared.
+      if (element.dataset.shellDisplay === undefined) {
+        element.dataset.shellDisplay = element.style.display || "";
+      }
+      element.style.display = hasPermission(user, rule.permission)
+        ? element.dataset.shellDisplay
+        : "none";
     });
+  }
+
+  /* Applied when the background `/auth/me` disagrees with the user this tab started with. */
+  function refreshUser(user) {
+    if (!user) return;
+    shellState.user = user;
+    var footer = document.getElementById("celestialAccountButton");
+    if (footer) {
+      var avatar = footer.children[0];
+      var identity = footer.children[1];
+      if (avatar) avatar.textContent = initials(user.name || user.login);
+      if (identity && identity.children[0]) {
+        identity.children[0].textContent = user.name || user.login;
+      }
+      if (identity && identity.children[1]) {
+        identity.children[1].textContent = user.role ? user.role.name : "";
+      }
+    }
+    applyNavPermissions(user);
+    var rule = currentRule();
+    if (!hasPermission(user, rule.permission)) {
+      shellState.allowed = false;
+      renderAccessDenied(rule);
+    }
   }
 
   function escapeHtml(value) {
@@ -186,30 +262,56 @@
     style.id = "celestialShellStyles";
     style.textContent =
       "#celestialAccountButton{position:relative;cursor:pointer;user-select:none;outline:none;transition:background .16s ease}" +
-      "#celestialAccountButton:hover,#celestialAccountButton:focus-visible{background:#F7F8FC}" +
-      "#celestialAccountButton[aria-expanded=true]{background:#F4F5FA}" +
+      "#celestialAccountButton:hover,#celestialAccountButton:focus-visible{background:#FAF8F8}" +
+      "#celestialAccountButton[aria-expanded=true]{background:#F7F4F4}" +
       "#celestialAccountMenu{position:absolute;left:14px;right:14px;bottom:calc(100% + 9px);z-index:10020;" +
-      "background:#fff;border:1px solid #E5E7EF;border-radius:13px;padding:6px;box-shadow:0 16px 42px rgba(31,34,49,.18)}" +
+      "background:#fff;border:1px solid #EBE6E6;border-radius:13px;padding:6px;box-shadow:0 16px 42px rgba(23,17,17,.18)}" +
       "#celestialAccountMenu[hidden]{display:none}" +
       ".celestial-account-action{display:block;width:100%;border:0;background:transparent;border-radius:9px;" +
-      "padding:10px 11px;text-align:left;font:600 12.5px Manrope,sans-serif;color:#383D4D;cursor:pointer}" +
-      ".celestial-account-action:hover,.celestial-account-action:focus-visible{background:#F4F5FA;outline:none}" +
-      ".celestial-account-action[data-shell-action=logout]{color:#D94B61}" +
-      "#celestialProfileOverlay{position:fixed;inset:0;z-index:10030;background:rgba(23,26,38,.42);" +
+      "padding:10px 11px;text-align:left;font:600 12.5px Inter,sans-serif;color:#3A3030;cursor:pointer}" +
+      ".celestial-account-action:hover,.celestial-account-action:focus-visible{background:#F7F4F4;outline:none}" +
+      ".celestial-account-action[data-shell-action=logout]{color:#FF0000}" +
+      "#celestialProfileOverlay{position:fixed;inset:0;z-index:10030;background:rgba(18,12,12,.42);" +
       "display:flex;align-items:center;justify-content:center;padding:24px}" +
-      "#celestialProfileDialog{width:min(430px,100%);background:#fff;border:1px solid #E5E7EF;border-radius:18px;" +
-      "box-shadow:0 24px 70px rgba(23,26,38,.25);padding:24px}" +
-      ".celestial-profile-row{display:flex;justify-content:space-between;gap:24px;padding:11px 0;border-bottom:1px solid #F0F1F6}" +
-      ".celestial-profile-label{font-size:12px;color:#8A8FA3;font-weight:600}" +
-      ".celestial-profile-value{font-size:12.5px;color:#282C3A;font-weight:700;text-align:right;overflow-wrap:anywhere}" +
+      "#celestialProfileDialog{width:min(430px,100%);background:#fff;border:1px solid #EBE6E6;border-radius:18px;" +
+      "box-shadow:0 24px 70px rgba(18,12,12,.25);padding:24px}" +
+      ".celestial-profile-row{display:flex;justify-content:space-between;gap:24px;padding:11px 0;border-bottom:1px solid #F0EBEB}" +
+      ".celestial-profile-label{font-size:12px;color:#857D7D;font-weight:600}" +
+      ".celestial-profile-value{font-size:12.5px;color:#2A2020;font-weight:700;text-align:right;overflow-wrap:anywhere}" +
       "#celestialSyncCard{transition:transform .16s ease,box-shadow .16s ease;outline:none}" +
       "#celestialSyncCard[data-actionable=true]{cursor:pointer}" +
       "#celestialSyncCard[data-actionable=true]:hover,#celestialSyncCard[data-actionable=true]:focus-visible{" +
-      "transform:translateY(-1px);box-shadow:0 10px 24px rgba(90,95,224,.25)}" +
-      ".celestial-upcoming-module{cursor:not-allowed!important;color:#9095A6!important}" +
-      ".celestial-upcoming-badge{display:inline-flex;align-items:center;justify-content:center;margin-left:auto;" +
-      "border:1px solid #DDE0FF;border-radius:999px;background:#F0F1FF;color:#666BE5;padding:2px 6px;" +
-      "font:800 8px/1.25 Manrope,sans-serif;letter-spacing:.045em;white-space:nowrap}" +
+      "transform:translateY(-1px);box-shadow:0 10px 24px rgba(185,20,20,.25)}" +
+      ".celestial-dialog-scrim{position:fixed;inset:0;z-index:10060;background:rgba(7,5,5,.46);" +
+      "display:flex;align-items:center;justify-content:center;padding:24px;" +
+      "animation:celestial-dialog-in .14s ease}" +
+      ".celestial-dialog{width:min(430px,100%);background:#fff;border-radius:20px;padding:24px;" +
+      "box-shadow:0 26px 60px rgba(30,20,20,.3)}" +
+      ".celestial-dialog h2{font:700 19px/1.25 'Alumni Sans',Inter,sans-serif;letter-spacing:-.3px;" +
+      "color:#070505;margin:0}" +
+      ".celestial-dialog p{font:500 13px/1.6 Inter,sans-serif;color:#5A5151;margin:9px 0 0;" +
+      "white-space:pre-line;overflow-wrap:anywhere}" +
+      ".celestial-dialog p:empty{display:none}" +
+      ".celestial-dialog-input{width:100%;height:44px;margin-top:16px;padding:0 13px;" +
+      "border:1px solid #E8E2E2;border-radius:11px;font:600 13px Inter,sans-serif;color:#3A3030;" +
+      "outline:none}" +
+      ".celestial-dialog-input:focus{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.1)}" +
+      ".celestial-dialog-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:22px;" +
+      "flex-wrap:wrap}" +
+      ".celestial-dialog-button{min-height:42px;padding:0 18px;border:1px solid #E8E2E2;" +
+      "border-radius:12px;background:#fff;color:#3A3030;font:700 13px Inter,sans-serif;cursor:pointer}" +
+      ".celestial-dialog-button:hover{background:#F7F4F4}" +
+      ".celestial-dialog-button--primary{border:0;background:#070505;color:#fff}" +
+      ".celestial-dialog-button--primary:hover{background:#231A1A}" +
+      ".celestial-dialog-button--danger{background:#B91414;box-shadow:0 8px 18px rgba(185,20,20,.24)}" +
+      ".celestial-dialog-button--danger:hover{background:#A21212}" +
+      "@keyframes celestial-dialog-in{from{opacity:0}to{opacity:1}}" +
+      "@media(prefers-reduced-motion:reduce){.celestial-dialog-scrim{animation:none}}" +
+      "@media(max-width:520px){.celestial-dialog-scrim{align-items:flex-end;padding:0}" +
+      ".celestial-dialog{border-radius:20px 20px 0 0;" +
+      "padding:22px 18px calc(20px + env(safe-area-inset-bottom))}" +
+      ".celestial-dialog-actions{flex-direction:column-reverse}" +
+      ".celestial-dialog-button{width:100%}}" +
       "@media(max-width:760px){#celestialAccountMenu{position:fixed;left:14px;right:14px;bottom:76px}}";
     document.head.appendChild(style);
   }
@@ -225,33 +327,12 @@
     return matchName(element, Object.keys(pages));
   }
 
-  function markUpcoming(element, name) {
-    if (element.classList.contains("celestial-upcoming-module")) return;
-    element.classList.add("celestial-upcoming-module");
-    element.setAttribute("aria-disabled", "true");
-    element.title = upcoming[name] + " — раздел появится позже";
-    var badge = document.createElement("span");
-    badge.className = "celestial-upcoming-badge";
-    badge.setAttribute("aria-hidden", "true");
-    badge.textContent = "СКОРО";
-    element.appendChild(badge);
-    element.addEventListener("click", function (event) {
-      event.preventDefault();
-      event.stopPropagation();
-      toast(upcoming[name], "info");
-    });
-  }
-
   function setupNavigation() {
     var candidates = document.querySelectorAll("nav a, nav > div");
 
     candidates.forEach(function (element) {
       var name = pageName(element);
-      if (!name) {
-        var pending = matchName(element, Object.keys(upcoming));
-        if (pending) markUpcoming(element, pending);
-        return;
-      }
+      if (!name) return;
 
       var target = pages[name];
       if (element.tagName === "A") {
@@ -327,6 +408,116 @@
     });
   }
 
+  /* ---------- диалоги подтверждения ----------
+   *
+   * Штатные window.confirm/prompt/alert браузер рисует своим окном у верхней
+   * кромки — оно выпадает из интерфейса CRM и перекрывает шапку, а на карточке
+   * задачи вообще выглядит как сообщение сайта, а не действия. Здесь тот же
+   * контракт (Promise вместо возвращаемого значения) и та же вёрстка, что у
+   * остальных модалок: карточка по центру, затемнение, красная кнопка действия.
+   */
+
+  var dialogState = { resolve: null, previousFocus: null, previousOverflow: "" };
+
+  function closeDialog(result) {
+    var node = document.getElementById("celestialDialog");
+    if (node) node.remove();
+    document.body.style.overflow = dialogState.previousOverflow;
+    var resolve = dialogState.resolve;
+    var focus = dialogState.previousFocus;
+    dialogState.resolve = null;
+    dialogState.previousFocus = null;
+    if (focus && document.contains(focus)) focus.focus();
+    if (resolve) resolve(result);
+  }
+
+  function shellDialog(options) {
+    var config = options || {};
+    var kind = config.kind || "confirm";
+    // Открытый диалог закрываем как отменённый: два подтверждения одновременно
+    // означали бы, что пользователь отвечает не на тот вопрос, который видит.
+    if (dialogState.resolve) closeDialog(kind === "prompt" ? null : false);
+
+    return new Promise(function (resolve) {
+      // Стили обычно уже вставлены оболочкой, но диалог может понадобиться
+      // раньше — например, когда страница ещё не прошла инициализацию. Без
+      // этого вопрос показался бы голым текстом поверх интерфейса.
+      injectShellStyles();
+      dialogState.resolve = resolve;
+      dialogState.previousFocus = document.activeElement;
+      dialogState.previousOverflow = document.body.style.overflow;
+
+      var scrim = document.createElement("div");
+      scrim.id = "celestialDialog";
+      scrim.className = "celestial-dialog-scrim";
+      scrim.innerHTML =
+        '<div class="celestial-dialog" role="alertdialog" aria-modal="true" ' +
+        'aria-labelledby="celestialDialogTitle" aria-describedby="celestialDialogText">' +
+        '<h2 id="celestialDialogTitle">' + escapeHtml(config.title || "Подтвердите действие") +
+        "</h2>" +
+        '<p id="celestialDialogText">' + escapeHtml(config.message || "") + "</p>" +
+        (kind === "prompt"
+          ? '<input id="celestialDialogInput" class="celestial-dialog-input" type="text" ' +
+            'value="' + escapeHtml(config.value || "") + '"' +
+            (config.placeholder ? ' placeholder="' + escapeHtml(config.placeholder) + '"' : "") +
+            ">"
+          : "") +
+        '<div class="celestial-dialog-actions">' +
+        (kind === "alert"
+          ? ""
+          : '<button type="button" class="celestial-dialog-button" data-dialog="cancel">' +
+            escapeHtml(config.cancelLabel || "Отмена") + "</button>") +
+        '<button type="button" class="celestial-dialog-button celestial-dialog-button--primary' +
+        (config.danger ? " celestial-dialog-button--danger" : "") + '" data-dialog="ok">' +
+        escapeHtml(config.confirmLabel || (kind === "alert" ? "Понятно" : "Подтвердить")) +
+        "</button></div></div>";
+      document.body.appendChild(scrim);
+      document.body.style.overflow = "hidden";
+
+      function answer(ok) {
+        var input = document.getElementById("celestialDialogInput");
+        if (kind === "prompt") return closeDialog(ok ? input.value : null);
+        closeDialog(kind === "alert" ? true : ok);
+      }
+
+      scrim.addEventListener("click", function (event) {
+        var button = event.target.closest ? event.target.closest("[data-dialog]") : null;
+        if (button) return answer(button.getAttribute("data-dialog") === "ok");
+        // Клик мимо карточки — это отказ, а не подтверждение.
+        if (event.target === scrim) answer(false);
+      });
+      scrim.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          return answer(false);
+        }
+        if (event.key === "Enter" && event.target.tagName !== "BUTTON") {
+          event.preventDefault();
+          return answer(true);
+        }
+        if (event.key !== "Tab") return;
+        var focusable = scrim.querySelectorAll("button,input");
+        var first = focusable[0];
+        var last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
+
+      var input = document.getElementById("celestialDialogInput");
+      if (input) {
+        input.focus();
+        input.select();
+      } else {
+        scrim.querySelector('[data-dialog="ok"]').focus();
+      }
+    });
+  }
+
   function toast(message, kind) {
     var current = document.getElementById("celestialShellToast");
     if (current) current.remove();
@@ -335,8 +526,8 @@
     element.textContent = message;
     element.style.cssText =
       "position:fixed;right:24px;bottom:24px;z-index:10050;max-width:390px;padding:13px 17px;" +
-      "border-radius:11px;color:#fff;font:700 12px Manrope,sans-serif;box-shadow:0 14px 38px rgba(31,34,49,.22);" +
-      "background:" + (kind === "error" ? "#D94B61" : kind === "info" ? "#5A5FE0" : "#16B57F");
+      "border-radius:11px;color:#fff;font:700 12px Inter,sans-serif;box-shadow:0 14px 38px rgba(23,17,17,.22);" +
+      "background:" + (kind === "error" ? "#FF0000" : kind === "info" ? "#B91414" : "#16B57F");
     document.body.appendChild(element);
     window.setTimeout(function () { element.remove(); }, 5000);
   }
@@ -422,11 +613,11 @@
     overlay.innerHTML =
       '<section id="celestialProfileDialog" role="dialog" aria-modal="true" aria-labelledby="celestialProfileTitle">' +
       '<div style="display:flex;align-items:center;gap:13px;margin-bottom:18px">' +
-      '<div style="width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#5A5FE0,#8E8BF0);' +
+      '<div style="width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#070505,#B91414);' +
       'display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:15px">' +
       escapeHtml(initials(user.name || user.login)) + "</div>" +
-      '<div><h2 id="celestialProfileTitle" style="font:700 19px Space Grotesk,Manrope,sans-serif;color:#171A26">' +
-      escapeHtml(user.name || user.login) + '</h2><div style="font-size:12px;color:#8A8FA3;margin-top:3px">Профиль пользователя</div></div></div>' +
+      '<div><h2 id="celestialProfileTitle" style="font:700 19px Alumni Sans,Inter,sans-serif;color:#070505">' +
+      escapeHtml(user.name || user.login) + '</h2><div style="font-size:12px;color:#857D7D;margin-top:3px">Профиль пользователя</div></div></div>' +
       '<div class="celestial-profile-row"><span class="celestial-profile-label">Логин</span>' +
       '<span class="celestial-profile-value">@' + escapeHtml(user.login) + "</span></div>" +
       '<div class="celestial-profile-row"><span class="celestial-profile-label">Роль</span>' +
@@ -439,11 +630,11 @@
         : "") +
       '<div style="display:flex;justify-content:flex-end;gap:9px;margin-top:20px">' +
       (hasPermission(user, "settings.view")
-        ? '<button type="button" data-profile-settings style="height:38px;border:1px solid #E5E7EF;background:#fff;' +
-          'border-radius:9px;padding:0 14px;font:700 12px Manrope,sans-serif;color:#5A5FE0;cursor:pointer">Настройки</button>'
+        ? '<button type="button" data-profile-settings style="height:38px;border:1px solid #EBE6E6;background:#fff;' +
+          'border-radius:9px;padding:0 14px;font:700 12px Inter,sans-serif;color:#B91414;cursor:pointer">Настройки</button>'
         : "") +
-      '<button type="button" data-profile-close style="height:38px;border:0;background:#5A5FE0;color:#fff;' +
-      'border-radius:9px;padding:0 17px;font:700 12px Manrope,sans-serif;cursor:pointer">Закрыть</button></div></section>';
+      '<button type="button" data-profile-close style="height:38px;border:0;background:#B91414;color:#fff;' +
+      'border-radius:9px;padding:0 17px;font:700 12px Inter,sans-serif;cursor:pointer">Закрыть</button></div></section>';
     document.body.appendChild(overlay);
     var close = overlay.querySelector("[data-profile-close]");
     if (close) close.focus();
@@ -459,6 +650,7 @@
   async function logout() {
     try {
       await api.post("/auth/logout", {});
+      if (window.CelestialSession) window.CelestialSession.clear();
       window.location.replace("/login.html");
     } catch (error) {
       toast(error.message || "Не удалось выйти", "error");
@@ -508,7 +700,7 @@
     if (!status.configured) {
       detail.textContent = "Подключение ещё не настроено";
       text = "Требует настройки";
-      color = "#D6D9E4";
+      color = "#D8D0D0";
     } else if (status.state === "syncing") {
       detail.textContent = "Синхронизация: " + Number(status.progress_pct || 0) + "%";
       text = "Обновление данных";
@@ -520,7 +712,7 @@
     } else if (status.state === "inactive") {
       detail.textContent = relativeTime(status.last_sync_at);
       text = "Подключение выключено";
-      color = "#D6D9E4";
+      color = "#D8D0D0";
     } else {
       detail.textContent = relativeTime(status.last_sync_at);
     }
@@ -532,6 +724,39 @@
     card.title = actionable
       ? (status.configured ? "Нажмите, чтобы синхронизировать" : "Открыть настройки Keitaro")
       : text;
+    renderKeitaroBadge(status, color, text);
+  }
+
+  /* The offers page ships a "Keitaro подключён" badge in its mock-up markup that nothing
+   * ever updated — it claimed a live connection regardless of the real state. It is
+   * blanked with the rest of the mock data and filled in from the status we already poll. */
+  function renderKeitaroBadge(status, color, text) {
+    var badge = document.getElementById("offersKeitaroStatus");
+    if (!badge) return;
+    badge.innerHTML =
+      '<span style="width:7px;height:7px;border-radius:50%;background:' + color + '"></span>' +
+      '<span style="font-size:12px;color:#6A6161;font-weight:700">' +
+      escapeHtml(status.configured ? "Keitaro · " + text : "Keitaro не подключён") + "</span>";
+  }
+
+  function renderSyncLoading() {
+    var card = shellState.syncCard;
+    if (!card || card.children.length < 3) return;
+    var detail = card.children[1];
+    var row = card.children[2];
+    var dot = row.children[0];
+    var label = row.children[1];
+    card.dataset.actionable = "false";
+    card.setAttribute("aria-busy", "true");
+    card.removeAttribute("role");
+    card.removeAttribute("tabindex");
+    if (detail) detail.textContent = "Проверяем подключение…";
+    if (dot) {
+      dot.style.background = "#D8D0D0";
+      dot.style.boxShadow = "0 0 0 3px rgba(214,217,228,.3)";
+    }
+    if (label) label.textContent = "Проверка API";
+    card.title = "Проверяем состояние Keitaro";
   }
 
   async function refreshSyncStatus() {
@@ -604,9 +829,11 @@
         runSidebarSync();
       }
     });
-    refreshSyncStatus();
+    renderSyncLoading();
+    var initialRefresh = refreshSyncStatus();
     if (shellState.syncTimer) window.clearInterval(shellState.syncTimer);
     shellState.syncTimer = window.setInterval(refreshSyncStatus, 30000);
+    return initialRefresh;
   }
 
   async function initShell(user) {
@@ -629,8 +856,7 @@
       return { allowed: false };
     }
 
-    setupSyncCard();
-    return { allowed: true };
+    return { allowed: true, ready: setupSyncCard() };
   }
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -643,6 +869,19 @@
   window.CelestialShell = {
     init: initShell,
     refreshSync: refreshSyncStatus,
-    currentRule: currentRule
+    currentRule: currentRule,
+    refreshUser: refreshUser,
+    showLoadFailure: showLoadFailure,
+    // Замена window.confirm/prompt/alert: тот же смысл, но Promise и стиль CRM.
+    confirm: function (options) {
+      return shellDialog(Object.assign({ kind: "confirm" }, options));
+    },
+    prompt: function (options) {
+      return shellDialog(Object.assign({ kind: "prompt" }, options));
+    },
+    notify: function (options) {
+      return shellDialog(Object.assign({ kind: "alert" }, options));
+    },
+    toast: toast
   };
 })();

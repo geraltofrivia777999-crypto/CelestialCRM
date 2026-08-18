@@ -8,12 +8,17 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, UploadFi
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook, load_workbook
 from redis.asyncio import Redis
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.deps import accessible_user_ids, require_permission
+from app.core.deps import (
+    accessible_user_ids,
+    has_full_access,
+    has_permission,
+    require_permission,
+)
 from app.models import (
     FinanceRecord,
     FinanceServiceValue,
@@ -24,10 +29,11 @@ from app.models import (
     MediaSpendValue,
     Offer,
     OfferBuyer,
+    OfferLead,
+    OfferStatus,
     Partner,
     Service,
     SpendProvider,
-    Status,
     User,
 )
 from app.schemas import (
@@ -47,6 +53,7 @@ from app.services.formulas import (
     media_metrics,
     service_cost,
 )
+from app.services.geo import normalize_geo
 
 router = APIRouter(tags=["analytics"])
 
@@ -71,11 +78,20 @@ def _media_filters(
     offer_id: uuid.UUID | None,
     geo: str | None = None,
     partner_id: uuid.UUID | None = None,
+    exclude_offers_group: bool = False,
 ) -> list:
     filters = [
         MediaRecord.workspace_id == workspace_id,
         MediaRecord.buyer_id.in_(allowed_buyer_ids),
     ]
+    # Группа «Оффера» принадлежит одноимённому модулю — в Медиаборде её не показываем.
+    # Флаг обязателен: включать это в общий фильтр нельзя, дашборд считает по
+    # MediaRecord без join с Offer.
+    if exclude_offers_group:
+        filters.append(
+            func.lower(func.coalesce(Offer.group_name, ""))
+            != settings.keitaro_offers_group.strip().lower()
+        )
     if date_from:
         filters.append(MediaRecord.record_date >= date_from)
     if date_to:
@@ -177,6 +193,7 @@ async def media_record_groups(
         offer_id,
         geo,
         partner_id,
+        exclude_offers_group=True,
     )
     filtered = (
         select(
@@ -344,6 +361,7 @@ async def list_media_records(
         offer_id,
         geo,
         partner_id,
+        exclude_offers_group=True,
     )
     total = await db.scalar(
         select(func.count())
@@ -484,7 +502,13 @@ async def upsert_media_record(
     # "Агенты и платёжки" block, and a filled field is pinned against Keitaro sync
     # while clearing it hands the field back to Keitaro.
     manual = set(record.manual_fields or [])
+    provided = payload.model_fields_set
     for field in MEDIA_MANUAL_FIELDS:
+        # A field the caller left out is a field it does not own. The Медиаборд modal
+        # no longer edits the funnel metrics, and omitting them must not wipe what
+        # Keitaro synced; sending an explicit null still clears and unpins the field.
+        if field not in provided:
+            continue
         value = getattr(payload, field)
         setattr(record, field, value)
         if value is None:
@@ -508,6 +532,25 @@ async def upsert_media_record(
     return {"id": str(record.id), "created": created}
 
 
+async def _media_rent(db: AsyncSession, record_id: uuid.UUID) -> Decimal:
+    """RENT the record already carries, for a request that does not touch services."""
+    rows = (
+        await db.execute(
+            select(MediaServiceValue, Service)
+            .join(Service, Service.id == MediaServiceValue.service_id)
+            .where(MediaServiceValue.media_record_id == record_id)
+        )
+    ).all()
+    return sum(
+        (
+            value.manual_cost_override
+            if value.manual_cost_override is not None
+            else service_cost(value.quantity, service.install_cost, service.commission_pct)
+        )
+        for value, service in rows
+    ) or Decimal("0")
+
+
 @router.put("/media-records/{record_id}/values")
 async def replace_media_values(
     record_id: uuid.UUID,
@@ -524,66 +567,78 @@ async def replace_media_values(
         or record.buyer_id not in visible_buyers
     ):
         raise HTTPException(status_code=404, detail="Media record not found")
-    services = {
-        row.id: row
-        for row in (
-            await db.execute(
-                select(Service).where(
-                    Service.workspace_id == current.workspace_id,
-                    Service.id.in_({value.service_id for value in payload.services}),
+    if payload.services is not None:
+        services = {
+            row.id: row
+            for row in (
+                await db.execute(
+                    select(Service).where(
+                        Service.workspace_id == current.workspace_id,
+                        Service.id.in_({value.service_id for value in payload.services}),
+                    )
                 )
-            )
-        ).scalars()
-    }
-    providers = {
-        row.id: row
-        for row in (
-            await db.execute(
-                select(SpendProvider).where(
-                    SpendProvider.workspace_id == current.workspace_id,
-                    SpendProvider.id.in_(
-                        {value.provider_id for value in payload.spend_providers}
-                    ),
+            ).scalars()
+        }
+        if (
+            len(payload.services) != len({value.service_id for value in payload.services})
+            or len(services) != len(payload.services)
+        ):
+            raise HTTPException(status_code=422, detail="One or more services are invalid")
+    if payload.spend_providers is not None:
+        providers = {
+            row.id: row
+            for row in (
+                await db.execute(
+                    select(SpendProvider).where(
+                        SpendProvider.workspace_id == current.workspace_id,
+                        SpendProvider.id.in_(
+                            {value.provider_id for value in payload.spend_providers}
+                        ),
+                    )
                 )
+            ).scalars()
+        }
+        if (
+            len(payload.spend_providers)
+            != len({value.provider_id for value in payload.spend_providers})
+            or len(providers) != len(payload.spend_providers)
+        ):
+            raise HTTPException(
+                status_code=422, detail="One or more spend providers are invalid"
             )
-        ).scalars()
-    }
-    if (
-        len(payload.services) != len({value.service_id for value in payload.services})
-        or len(services) != len(payload.services)
-    ):
-        raise HTTPException(status_code=422, detail="One or more services are invalid")
-    if (
-        len(payload.spend_providers)
-        != len({value.provider_id for value in payload.spend_providers})
-        or len(providers) != len(payload.spend_providers)
-    ):
-        raise HTTPException(status_code=422, detail="One or more spend providers are invalid")
-    await db.execute(
-        delete(MediaServiceValue).where(MediaServiceValue.media_record_id == record.id)
-    )
-    await db.execute(
-        delete(MediaSpendValue).where(MediaSpendValue.media_record_id == record.id)
-    )
-    rent = Decimal("0")
-    spend = Decimal("0")
-    for value in payload.services:
-        service = services[value.service_id]
-        rent += (
-            value.manual_cost_override
-            if value.manual_cost_override is not None
-            else service_cost(value.quantity, service.install_cost, service.commission_pct)
+
+    if payload.services is None:
+        rent = await _media_rent(db, record.id)
+    else:
+        await db.execute(
+            delete(MediaServiceValue).where(MediaServiceValue.media_record_id == record.id)
         )
-        db.add(MediaServiceValue(media_record_id=record.id, **value.model_dump()))
-    for value in payload.spend_providers:
-        provider = providers[value.provider_id]
-        spend += (
-            value.manual_amount_override
-            if value.manual_amount_override is not None
-            else amount_with_commission(value.base_amount, provider.commission_pct)
+        rent = Decimal("0")
+        for value in payload.services:
+            service = services[value.service_id]
+            rent += (
+                value.manual_cost_override
+                if value.manual_cost_override is not None
+                else service_cost(value.quantity, service.install_cost, service.commission_pct)
+            )
+            db.add(MediaServiceValue(media_record_id=record.id, **value.model_dump()))
+
+    if payload.spend_providers is None:
+        spend = record.spend_calculated
+    else:
+        await db.execute(
+            delete(MediaSpendValue).where(MediaSpendValue.media_record_id == record.id)
         )
-        db.add(MediaSpendValue(media_record_id=record.id, **value.model_dump()))
-    record.spend_calculated = spend
+        spend = Decimal("0")
+        for value in payload.spend_providers:
+            provider = providers[value.provider_id]
+            spend += (
+                value.manual_amount_override
+                if value.manual_amount_override is not None
+                else amount_with_commission(value.base_amount, provider.commission_pct)
+            )
+            db.add(MediaSpendValue(media_record_id=record.id, **value.model_dump()))
+        record.spend_calculated = spend
     await audit(
         db,
         current,
@@ -1274,6 +1329,65 @@ async def export_finance(
     )
 
 
+async def _offers_widget(db: AsyncSession, current: User) -> dict[uuid.UUID, dict]:
+    """Виджет «Рабочие оффера» — то, что ждёт действия именно этого человека.
+
+    Роль читается по правам, а не по названию: скопированная или переименованная
+    роль (ТЗ 7.1) должна вести себя так же.
+
+    * полный доступ — оффера в статусе «Не занят»: их ещё некому раздать;
+    * `offers.manage` (тимлид) — назначенные лично ему и уже «Активные»;
+    * остальные (баер) — назначенные лично ему и ушедшие «В работу».
+    """
+    if await has_full_access(db, current):
+        condition = Offer.status == OfferStatus.free
+    elif has_permission(current, "offers.manage"):
+        condition = and_(
+            Offer.status == OfferStatus.active,
+            Offer.id.in_(select(OfferLead.offer_id).where(OfferLead.user_id == current.id)),
+        )
+    else:
+        condition = and_(
+            Offer.status == OfferStatus.working,
+            Offer.id.in_(
+                select(OfferBuyer.offer_id).where(OfferBuyer.user_id == current.id)
+            ),
+        )
+    rows = (
+        await db.execute(
+            select(Offer.id, Offer.name, Offer.geo, Offer.cap, Partner.name)
+            .outerjoin(Partner, Partner.id == Offer.partner_id)
+            .where(Offer.workspace_id == current.workspace_id, condition)
+            .order_by(Offer.is_starred.desc(), Offer.name, Offer.id)
+            .limit(50)
+        )
+    ).all()
+    offers = {
+        offer_id: {
+            "id": str(offer_id),
+            "name": name,
+            "geo": normalize_geo(geo),
+            "cap": cap,
+            "partner": partner_name,
+            "buyers": [],
+        }
+        for offer_id, name, geo, cap, partner_name in rows
+    }
+    if not offers:
+        return offers
+    people = (
+        await db.execute(
+            select(OfferBuyer.offer_id, User.id, User.name)
+            .join(User, User.id == OfferBuyer.user_id)
+            .where(OfferBuyer.offer_id.in_(list(offers)))
+            .order_by(User.name)
+        )
+    ).all()
+    for offer_id, user_id, user_name in people:
+        offers[offer_id]["buyers"].append({"id": str(user_id), "name": user_name})
+    return offers
+
+
 @router.get("/dashboard", response_model=DashboardSummary)
 async def dashboard(
     date_from: date | None = None,
@@ -1345,33 +1459,7 @@ async def dashboard(
         }
         for row_date, row_revenue, row_spend in series_rows
     ]
-    working_rows = (
-        await db.execute(
-            select(Offer.id, Offer.name, Offer.geo, Partner.name, User.id, User.name)
-            .join(OfferBuyer, OfferBuyer.offer_id == Offer.id)
-            .join(User, User.id == OfferBuyer.user_id)
-            .outerjoin(Partner, Partner.id == Offer.partner_id)
-            .where(
-                Offer.workspace_id == current.workspace_id,
-                Offer.status == Status.active,
-                User.id.in_(visible_buyers),
-            )
-            .order_by(Offer.name, User.name)
-        )
-    ).all()
-    working_offer_map: dict[uuid.UUID, dict] = {}
-    for offer_id, offer_name, geo, partner_name, user_id, user_name in working_rows:
-        item = working_offer_map.setdefault(
-            offer_id,
-            {
-                "id": str(offer_id),
-                "name": offer_name,
-                "geo": geo,
-                "partner": partner_name,
-                "buyers": [],
-            },
-        )
-        item["buyers"].append({"id": str(user_id), "name": user_name})
+    working_offer_map = await _offers_widget(db, current)
     summary = DashboardSummary(
         leads=leads,
         sales=sales,

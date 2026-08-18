@@ -11,28 +11,38 @@ DEMO_RESET=1 — будут удалены только записи с демо
 """
 
 import asyncio
+import calendar
 import os
 import random
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import encrypt_secret, hash_password
 from app.models import (
     AuditEvent,
+    FinanceBook,
+    FinanceBookDay,
+    FinanceBookOffer,
+    FinanceOfferTag,
     FinanceRecord,
     FinanceServiceValue,
     FinanceSpendValue,
+    FinanceTagDay,
     IntegrationConnection,
     MediaRecord,
     MediaServiceValue,
     MediaSpendValue,
     Offer,
     OfferBuyer,
+    OfferStatus,
     Partner,
     Role,
+    SalaryComponent,
+    SalaryRule,
     Service,
     SpendProvider,
     Status,
@@ -57,12 +67,24 @@ OFFERS_PER_BUYER = int(os.getenv("DEMO_OFFERS_PER_BUYER", "3"))
 AUDIT_EVENTS = int(os.getenv("DEMO_AUDIT_EVENTS", "4000"))
 BATCH = int(os.getenv("DEMO_BATCH", "2000"))
 RESET = os.getenv("DEMO_RESET") == "1"
+FINANCE_ONLY = os.getenv("DEMO_FINANCE_ONLY") == "1"
+
+TEAM_NAMES = ["Север", "Юг", "Восток", "Запад"]
 
 GEOS = [
     "BR", "MX", "IN", "ID", "PH", "VN", "TR", "EG", "NG", "ZA",
     "PL", "DE", "IT", "ES", "KZ", "UZ", "AZ", "PE", "CO", "CL",
 ]
 VERTICALS = ["Casino", "Betting", "Crypto", "Dating", "Nutra", "Gambling", "Sweeps"]
+WORKFLOW_STATUSES = [
+    OfferStatus.working,
+    OfferStatus.working,
+    OfferStatus.working,
+    OfferStatus.active,
+    OfferStatus.hold,
+    OfferStatus.working,
+    OfferStatus.stop,
+]
 SOURCES = ["Facebook", "Google", "TikTok", "UAC", "PWA", "Push"]
 FIRST = [
     "Ivan", "Petr", "Anna", "Marat", "Dina", "Oleg", "Sergey", "Alina",
@@ -87,6 +109,369 @@ async def flush_batch(db, rows: list, force: bool = False) -> None:
         rows.clear()
 
 
+async def clear_demo_finance(db, workspace_id, user_ids: list) -> None:
+    """Удаляет книги демо-пользователей и только помеченные демо-правила ЗП."""
+    if user_ids:
+        books = select(FinanceBook.id).where(
+            FinanceBook.workspace_id == workspace_id,
+            FinanceBook.buyer_id.in_(user_ids),
+        )
+        offers = select(FinanceBookOffer.id).where(
+            FinanceBookOffer.book_id.in_(books)
+        )
+        tags = select(FinanceOfferTag.id).where(
+            FinanceOfferTag.offer_id.in_(offers)
+        )
+        await db.execute(delete(FinanceTagDay).where(FinanceTagDay.tag_id.in_(tags)))
+        await db.execute(delete(FinanceOfferTag).where(FinanceOfferTag.offer_id.in_(offers)))
+        await db.execute(delete(FinanceBookOffer).where(FinanceBookOffer.book_id.in_(books)))
+        await db.execute(delete(FinanceBookDay).where(FinanceBookDay.book_id.in_(books)))
+        await db.execute(delete(FinanceBook).where(FinanceBook.id.in_(books)))
+
+    rules = select(SalaryRule.id).where(
+        SalaryRule.workspace_id == workspace_id,
+        or_(
+            SalaryRule.name.like("Demo · %"),
+            SalaryRule.user_id.in_(user_ids or [None]),
+        ),
+    )
+    await db.execute(delete(SalaryComponent).where(SalaryComponent.rule_id.in_(rules)))
+    await db.execute(delete(SalaryRule).where(SalaryRule.id.in_(rules)))
+
+
+async def add_finance_offer(
+    db,
+    *,
+    book: FinanceBook,
+    position: int,
+    name: str,
+    partner: str,
+    tier: str | None,
+    rate: Decimal,
+    currency: str,
+    day_count: int,
+    spend: Decimal,
+    costs: Decimal,
+    deposits: int,
+    offset: int,
+    day_totals: dict[int, dict[str, Decimal]],
+) -> int:
+    """Создаёт оффер с двумя тегами и депозитами по дням.
+
+    Затраты оффер не хранит — они вводятся на день книги целиком, поэтому свою
+    долю расхода оффер докладывает в `day_totals`, а строку дня пишет вызывающий.
+    """
+    offer = FinanceBookOffer(
+        book_id=book.id,
+        position=position,
+        name=name,
+        partner=partner,
+        tier=tier,
+        rate=rate,
+        rate_currency=currency,
+    )
+    db.add(offer)
+    await db.flush()
+
+    sok = FinanceOfferTag(offer_id=offer.id, position=0, name="SOK")
+    late = FinanceOfferTag(offer_id=offer.id, position=1, name="Долёты")
+    db.add_all([sok, late])
+    await db.flush()
+
+    tag_days = 0
+    for day in range(1, day_count + 1):
+        # Пропуски делают график и таблицу похожими на живой месяц.
+        if (day + offset + position) % 7 == 0:
+            continue
+        entry = day_totals.setdefault(day, {"spend": Decimal("0"), "costs": Decimal("0")})
+        entry["spend"] += spend + Decimal((day + offset) % 9)
+        entry["costs"] += costs + Decimal(day % 3)
+
+        db.add(
+            FinanceTagDay(
+                tag_id=sok.id,
+                day=day,
+                deposits=Decimal(deposits + ((day + offset) % 3)),
+            )
+        )
+        tag_days += 1
+        if day % 4 == 0:
+            db.add(FinanceTagDay(tag_id=late.id, day=day, deposits=Decimal("1")))
+            tag_days += 1
+    return tag_days
+
+
+async def seed_finance_demo(
+    db,
+    *,
+    workspace_id,
+    buyers: list[User],
+    leads: list[User],
+    cmo: User,
+    creator: User,
+    buyer_role: Role,
+    lead_role: Role,
+    cmo_role: Role,
+) -> dict[str, int]:
+    """Пересоздаёт согласованный набор книг и правил для нового раздела."""
+    demo_people = [*buyers, *leads, cmo]
+    await clear_demo_finance(db, workspace_id, [person.id for person in demo_people])
+
+    today = date.today()
+    current_year, current_month = today.year, today.month
+    if current_month == 1:
+        previous_year, previous_month = current_year - 1, 12
+    else:
+        previous_year, previous_month = current_year, current_month - 1
+    current_days = min(today.day, calendar.monthrange(current_year, current_month)[1])
+
+    # Один закрытый убыточный месяц нужен для проверки автоматического переноса
+    # долга в следующую книгу.
+    debt_owner = buyers[0]
+    previous_book = FinanceBook(
+        workspace_id=workspace_id,
+        buyer_id=debt_owner.id,
+        year=previous_year,
+        month=previous_month,
+        prev_minus=Decimal("0"),
+        eur_usd_rate=Decimal("1.09"),
+    )
+    db.add(previous_book)
+    await db.flush()
+    previous_offer = FinanceBookOffer(
+        book_id=previous_book.id,
+        position=0,
+        name="Demo · Долг прошлого месяца",
+        partner="Demo Legacy Partners",
+        tier="T1",
+        rate=Decimal("20"),
+        rate_currency="USD",
+    )
+    db.add(previous_offer)
+    await db.flush()
+    previous_tag = FinanceOfferTag(offer_id=previous_offer.id, position=0, name="SOK")
+    db.add(previous_tag)
+    await db.flush()
+    db.add_all(
+        [
+            FinanceBookDay(
+                book_id=previous_book.id,
+                day=1,
+                spend_buyer=Decimal("2400"),
+                spend_agent=Decimal("0"),
+                costs=Decimal("0"),
+            ),
+            FinanceTagDay(tag_id=previous_tag.id, day=1, deposits=Decimal("10")),
+        ]
+    )
+
+    book_people = [*buyers, *leads]
+    offer_days = 1
+    tag_days = 1
+    offer_count = 1
+    for index, person in enumerate(book_people):
+        book = FinanceBook(
+            workspace_id=workspace_id,
+            buyer_id=person.id,
+            year=current_year,
+            month=current_month,
+            prev_minus=Decimal("2200") if person.id == debt_owner.id else Decimal("0"),
+            eur_usd_rate=Decimal("1.09"),
+        )
+        db.add(book)
+        await db.flush()
+
+        # Затраты книги собираются со всех офферов и пишутся одной строкой на
+        # день: в самой книге они и вводятся так же, одним блоком на день.
+        day_totals: dict[int, dict[str, Decimal]] = {}
+        for day in range(1, current_days + 1):
+            if (day + index) % 5 == 0:
+                entry = day_totals.setdefault(
+                    day, {"spend": Decimal("0"), "costs": Decimal("0")}
+                )
+                entry["spend"] += Decimal("8") + Decimal(index % 4)
+                entry["costs"] += Decimal("2")
+
+        loss_multiplier = Decimal("1.8") if index % 9 == 0 else Decimal("1")
+        created_tags = await add_finance_offer(
+            db,
+            book=book,
+            position=0,
+            name=f"Demo · T1 — {person.name}",
+            partner="Demo Alpha Network",
+            tier="T1",
+            rate=Decimal("52") + Decimal(index % 7),
+            currency="USD",
+            day_count=current_days,
+            spend=Decimal("110") * loss_multiplier,
+            costs=Decimal("4"),
+            deposits=2,
+            offset=index,
+            day_totals=day_totals,
+        )
+        offer_count += 1
+        tag_days += created_tags
+
+        created_tags = await add_finance_offer(
+            db,
+            book=book,
+            position=1,
+            name=f"Demo · T2/3 — {person.name}",
+            partner="Demo Euro Partners",
+            tier="T23",
+            rate=Decimal("36") + Decimal(index % 5),
+            currency="EUR" if index % 4 == 0 else "USD",
+            day_count=current_days,
+            spend=Decimal("70") * loss_multiplier,
+            costs=Decimal("3"),
+            deposits=1,
+            offset=index + 2,
+            day_totals=day_totals,
+        )
+        offer_count += 1
+        tag_days += created_tags
+
+        if index % 3 == 0:
+            created_tags = await add_finance_offer(
+                db,
+                book=book,
+                position=2,
+                name=f"Demo · Без тира — {person.name}",
+                partner="Demo Direct",
+                tier=None,
+                rate=Decimal("28"),
+                currency="USD",
+                day_count=current_days,
+                spend=Decimal("48") * loss_multiplier,
+                costs=Decimal("2"),
+                deposits=1,
+                offset=index + 4,
+                day_totals=day_totals,
+            )
+            offer_count += 1
+            tag_days += created_tags
+
+        for day, entry in sorted(day_totals.items()):
+            db.add(
+                FinanceBookDay(
+                    book_id=book.id,
+                    day=day,
+                    spend_buyer=entry["spend"],
+                    spend_agent=Decimal("25") + Decimal(day),
+                    costs=entry["costs"],
+                )
+            )
+            offer_days += 1
+
+    rules = [
+        SalaryRule(
+            workspace_id=workspace_id,
+            name="Demo · Баеры — процент, сетка, фикс и вычет",
+            status=Status.active,
+            mode="replace",
+            scope="role",
+            role_id=buyer_role.id,
+            valid_from=date(current_year, 1, 1),
+            position=0,
+            created_by_id=creator.id,
+            components=[
+                SalaryComponent(
+                    kind="percent", base="finance_profit", percent=Decimal("5"), position=0
+                ),
+                SalaryComponent(
+                    kind="grid",
+                    base="finance_profit",
+                    tiers=[
+                        {"up_to": "3000", "percent": "2"},
+                        {"up_to": "8000", "percent": "4"},
+                        {"up_to": None, "percent": "6"},
+                    ],
+                    position=1,
+                ),
+                SalaryComponent(kind="fixed", amount=Decimal("350"), position=2),
+                SalaryComponent(kind="deduction", amount=Decimal("25"), position=3),
+            ],
+        ),
+        SalaryRule(
+            workspace_id=workspace_id,
+            name="Demo · Тимлиды — фикс и процент команды",
+            status=Status.active,
+            mode="replace",
+            scope="role",
+            role_id=lead_role.id,
+            valid_from=date(current_year, 1, 1),
+            position=1,
+            created_by_id=creator.id,
+            components=[
+                SalaryComponent(kind="fixed", amount=Decimal("1200"), position=0),
+                SalaryComponent(
+                    kind="percent", base="team_profit", percent=Decimal("3"), position=1
+                ),
+            ],
+        ),
+        SalaryRule(
+            workspace_id=workspace_id,
+            name="Demo · CMO — фикс и процент компании",
+            status=Status.active,
+            mode="replace",
+            scope="role",
+            role_id=cmo_role.id,
+            valid_from=date(current_year, 1, 1),
+            position=2,
+            created_by_id=creator.id,
+            components=[
+                SalaryComponent(kind="fixed", amount=Decimal("2500"), position=0),
+                SalaryComponent(
+                    kind="percent", base="team_profit", percent=Decimal("1"), position=1
+                ),
+            ],
+        ),
+        SalaryRule(
+            workspace_id=workspace_id,
+            name="Demo · Персональная надбавка баеру",
+            status=Status.active,
+            mode="add",
+            scope="user",
+            user_id=buyers[1].id,
+            valid_from=date(current_year, 1, 1),
+            position=3,
+            created_by_id=creator.id,
+            components=[SalaryComponent(kind="fixed", amount=Decimal("150"), position=0)],
+        ),
+        SalaryRule(
+            workspace_id=workspace_id,
+            name="Demo · Персональная сетка баера",
+            status=Status.active,
+            mode="replace",
+            scope="user",
+            user_id=buyers[2].id,
+            valid_from=date(current_year, 1, 1),
+            position=4,
+            created_by_id=creator.id,
+            components=[
+                SalaryComponent(
+                    kind="grid",
+                    base="finance_profit",
+                    tiers=[
+                        {"up_to": "3000", "percent": "8"},
+                        {"up_to": None, "percent": "12"},
+                    ],
+                    position=0,
+                )
+            ],
+        ),
+    ]
+    db.add_all(rules)
+    await db.flush()
+    return {
+        "books": len(book_people) + 1,
+        "offers": offer_count,
+        "offer_days": offer_days,
+        "tag_days": tag_days,
+        "salary_rules": len(rules),
+    }
+
+
 async def reset_demo(db, workspace_id) -> None:
     """Удаляет только демо-данные (по префиксу логина/имени)."""
     demo_users = (
@@ -97,6 +482,7 @@ async def reset_demo(db, workspace_id) -> None:
             )
         )
     ).scalars().all()
+    await clear_demo_finance(db, workspace_id, demo_users)
     demo_offers = (
         await db.execute(
             select(Offer.id).where(
@@ -179,6 +565,28 @@ async def main() -> None:
         }
         buyer_role = roles.get("Buyer") or roles["Administrator"]
         lead_role = roles.get("Team Lead") or buyer_role
+        finance_role = roles.get("Finance") or roles["Administrator"]
+        cmo_role = roles.get("CMO")
+        if cmo_role is None:
+            cmo_role = Role(
+                workspace_id=workspace.id,
+                name="CMO",
+                description="Marketing executive access",
+                is_system=True,
+                permissions=list(lead_role.permissions),
+            )
+            db.add(cmo_role)
+            await db.flush()
+            roles["CMO"] = cmo_role
+
+        creator = await db.scalar(
+            select(User).where(
+                User.workspace_id == workspace.id,
+                User.role_id == roles["Administrator"].id,
+            )
+        )
+        if creator is None:
+            raise SystemExit("Нет администратора: запустите python -m app.seed")
 
         services = (
             await db.execute(
@@ -220,17 +628,63 @@ async def main() -> None:
         )
         password_hash = hash_password("demo12345")
 
+        finance_user = await db.scalar(
+            select(User).where(
+                User.workspace_id == workspace.id,
+                User.login == f"{DEMO_PREFIX}finance01",
+            )
+        )
+        if finance_user is None:
+            finance_user = User(
+                workspace_id=workspace.id,
+                role_id=finance_role.id,
+                name="Demo Finance Manager",
+                login=f"{DEMO_PREFIX}finance01",
+                password_hash=password_hash,
+                status=Status.active,
+            )
+            db.add(finance_user)
+        else:
+            finance_user.role_id = finance_role.id
+            finance_user.status = Status.active
+
+        cmo = await db.scalar(
+            select(User).where(
+                User.workspace_id == workspace.id,
+                User.login == f"{DEMO_PREFIX}cmo01",
+            )
+        )
+        if cmo is None:
+            cmo = User(
+                workspace_id=workspace.id,
+                role_id=cmo_role.id,
+                name="Demo CMO",
+                login=f"{DEMO_PREFIX}cmo01",
+                password_hash=password_hash,
+                status=Status.active,
+                team_name="Celestial Performance",
+            )
+            db.add(cmo)
+        else:
+            cmo.role_id = cmo_role.id
+            cmo.status = Status.active
+            cmo.team_name = "Celestial Performance"
+        await db.flush()
+
         leads: list[User] = []
         for i in range(LEADS):
             login = f"{DEMO_PREFIX}lead{i + 1:02d}"
             if login in existing_logins:
-                leads.append(
-                    await db.scalar(
-                        select(User).where(
-                            User.workspace_id == workspace.id, User.login == login
-                        )
+                user = await db.scalar(
+                    select(User).where(
+                        User.workspace_id == workspace.id, User.login == login
                     )
                 )
+                user.role_id = lead_role.id
+                user.status = Status.active
+                user.keitaro_company_group = f"Team {i + 1}"
+                user.team_name = TEAM_NAMES[i % len(TEAM_NAMES)]
+                leads.append(user)
                 continue
             user = User(
                 workspace_id=workspace.id,
@@ -240,6 +694,7 @@ async def main() -> None:
                 password_hash=password_hash,
                 status=Status.active,
                 keitaro_company_group=f"Team {i + 1}",
+                team_name=TEAM_NAMES[i % len(TEAM_NAMES)],
             )
             db.add(user)
             leads.append(user)
@@ -249,13 +704,15 @@ async def main() -> None:
         for i in range(BUYERS):
             login = f"{DEMO_PREFIX}buyer{i + 1:03d}"
             if login in existing_logins:
-                buyers.append(
-                    await db.scalar(
-                        select(User).where(
-                            User.workspace_id == workspace.id, User.login == login
-                        )
+                user = await db.scalar(
+                    select(User).where(
+                        User.workspace_id == workspace.id, User.login == login
                     )
                 )
+                user.role_id = buyer_role.id
+                user.status = Status.active if i % 9 else Status.inactive
+                user.keitaro_company_group = f"Team {i % max(LEADS, 1) + 1}"
+                buyers.append(user)
                 continue
             status = Status.active if i % 9 else Status.inactive
             user = User(
@@ -285,8 +742,37 @@ async def main() -> None:
             parent = leads[i % len(leads)]
             if (buyer.id, parent.id) not in existing_parents:
                 db.add(UserParent(user_id=buyer.id, parent_id=parent.id))
+        for lead in leads:
+            if (lead.id, cmo.id) not in existing_parents:
+                db.add(UserParent(user_id=lead.id, parent_id=cmo.id))
         await db.flush()
-        print(f"Пользователи: {len(leads)} тимлидов, {len(buyers)} байеров")
+        print(
+            f"Пользователи: {len(leads)} тимлидов, {len(buyers)} байеров, "
+            "Finance и CMO"
+        )
+
+        finance_stats = await seed_finance_demo(
+            db,
+            workspace_id=workspace.id,
+            buyers=buyers,
+            leads=leads,
+            cmo=cmo,
+            creator=creator,
+            buyer_role=buyer_role,
+            lead_role=lead_role,
+            cmo_role=cmo_role,
+        )
+        await db.commit()
+        print(
+            "Новые Финансы: "
+            f"книг {finance_stats['books']}, офферов {finance_stats['offers']}, "
+            f"дней офферов {finance_stats['offer_days']}, "
+            f"дней тегов {finance_stats['tag_days']}, "
+            f"правил ЗП {finance_stats['salary_rules']}"
+        )
+        if FINANCE_ONLY:
+            print("Готово. Пароль всех демо-пользователей: demo12345")
+            return
 
         # --- партнёры --------------------------------------------------------
         existing_partner_ext = set(
@@ -352,8 +838,13 @@ async def main() -> None:
                 external_id=ext,
                 name=f"{vertical} {geo} {rnd.choice(SOURCES)} #{i + 1:03d}",
                 geo=geo,
-                group_name=vertical,
-                status=Status.active if i % 11 else Status.inactive,
+                # Раздел «Оффера» ведёт свои строки вручную; здесь генерируются
+                # трекерные офферы для Медиаборда и Финансов, поэтому группа
+                # раздаётся так же, как это делает синхронизация.
+                group_name=settings.keitaro_offers_group if i % 7 else vertical,
+                # Workflow status follows the buyer links assigned below.
+                status=OfferStatus.free,
+                keitaro_state=Status.active if i % 11 else Status.inactive,
             )
             db.add(offer)
             offers.append(offer)
@@ -375,6 +866,12 @@ async def main() -> None:
                 if (offer.id, buyer.id) not in existing_links:
                     db.add(OfferBuyer(offer_id=offer.id, user_id=buyer.id))
                     existing_links.add((offer.id, buyer.id))
+        # An offer with buyers is no longer "не занят": most go to work, the rest
+        # spread over the other statuses so every pill shows up on the page.
+        assigned = {offer_id for offer_id, _ in existing_links}
+        for index, offer in enumerate(offers):
+            if offer.id in assigned:
+                offer.status = WORKFLOW_STATUSES[index % len(WORKFLOW_STATUSES)]
         await db.flush()
 
         # --- медиаборд и финансы --------------------------------------------
@@ -548,7 +1045,7 @@ async def main() -> None:
             ("settings.changed", "Изменены настройки"),
         ]
         audit_rows: list[AuditEvent] = []
-        actors = buyers + leads
+        actors = buyers + leads + [finance_user, cmo]
         for _ in range(AUDIT_EVENTS):
             event_type, description = rnd.choice(event_types)
             actor = rnd.choice(actors)

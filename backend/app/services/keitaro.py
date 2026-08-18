@@ -25,7 +25,41 @@ REPORT_MEASURES = [
     "cost",
     "revenue",
 ]
+# Колонки журнала конверсий. Просим то, что есть во всех версиях трекера:
+# лишняя колонка роняет запрос целиком, а недостающую мы просто не покажем.
+CONVERSION_COLUMNS = [
+    "conversion_id",
+    "status",
+    "postback_datetime",
+    "click_datetime",
+    "campaign",
+    "campaign_id",
+    "offer",
+    "offer_id",
+    "country",
+    "revenue",
+    "payout",
+    *[f"sub_id_{index}" for index in range(1, 11)],
+]
 RETRYABLE_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+# What the tracker's HTTP code actually means for whoever is filling in the form.
+# Without these the UI only ever showed "HTTP 404", which tells nobody anything.
+STATUS_HINTS = {
+    400: "Keitaro не принял запрос (400). Проверьте версию трекера — нужен Admin API v1.",
+    401: (
+        "Keitaro отклонил API-ключ (401). Возьмите ключ в трекере: "
+        "Администратор → Настройки → API."
+    ),
+    403: (
+        "Keitaro запретил доступ (403). У ключа нет прав на Admin API "
+        "либо IP сервера не в белом списке трекера."
+    ),
+    404: (
+        "По этому адресу нет Admin API Keitaro (404). Чаще всего URL ведёт на домен "
+        "для трафика, а не на панель трекера — укажите адрес, по которому вы "
+        "открываете саму панель Keitaro."
+    ),
+}
 
 
 class KeitaroError(RuntimeError):
@@ -87,9 +121,8 @@ class KeitaroClient:
                 return response.json()
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
-                detail = _safe_error_detail(exc.response)
                 raise KeitaroError(
-                    f"Keitaro Admin API returned HTTP {status}{detail}",
+                    _status_message(status, exc.response, self.base_url),
                     status_code=status,
                     retryable=status in RETRYABLE_STATUSES,
                 ) from exc
@@ -102,7 +135,8 @@ class KeitaroClient:
                 raise KeitaroError("Keitaro returned an invalid JSON response") from exc
 
         raise KeitaroError(
-            f"Keitaro is unavailable after {self.max_attempts} attempts",
+            f"Keitaro не отвечает по адресу {self.base_url} "
+            f"({self.max_attempts} попытки). Проверьте, что домен доступен с этого сервера.",
             retryable=True,
         ) from last_error
 
@@ -172,6 +206,40 @@ class KeitaroClient:
         )
 
 
+    async def conversions(
+        self,
+        start: date,
+        end: date,
+        *,
+        timezone: str = "UTC",
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Журнал конверсий за период — по строке на конверсию.
+
+        Дневной отчёт для уведомления о депозите не годится: он знает «три
+        продажи за день», а в сообщении нужен конкретный депозит — его время
+        клика и его sub_id.
+
+        Набор колонок у разных версий трекера отличается, поэтому мы просим
+        то, что есть везде, и разбираем ответ по факту, а не по ожиданиям.
+        """
+        payload = {
+            "range": {
+                "from": start.isoformat(),
+                "to": end.isoformat(),
+                "timezone": timezone,
+            },
+            "columns": CONVERSION_COLUMNS,
+            "filters": [],
+            "sort": [{"name": "postback_datetime", "order": "DESC"}],
+            "limit": limit,
+            "offset": 0,
+        }
+        return _rows(
+            await self._request("POST", "/admin_api/v1/conversions/log", json=payload)
+        )
+
+
 def stat_dimension_key(row: dict) -> str:
     values = [
         str(row.get("day") or row.get("datetime") or row.get("date") or ""),
@@ -208,6 +276,19 @@ def _rows(data: Any) -> list[dict]:
         rows = data.get("rows", [])
         return [row for row in rows if isinstance(row, dict)]
     return []
+
+
+def _status_message(status: int, response: httpx.Response, base_url: str) -> str:
+    """A message the person editing the connection can act on.
+
+    The tracker's own wording is appended when it says something useful, but it is
+    never the whole message: Keitaro answers a wrong URL with a bare 404 page.
+    """
+    hint = STATUS_HINTS.get(status)
+    if hint is None:
+        hint = f"Keitaro ответил HTTP {status} на {base_url}."
+    detail = _safe_error_detail(response)
+    return f"{hint}{detail}"
 
 
 def _safe_error_detail(response: httpx.Response) -> str:

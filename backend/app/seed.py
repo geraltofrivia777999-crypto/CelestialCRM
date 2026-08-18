@@ -7,14 +7,32 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.models import (
+    CountryTier,
     Permission,
     ProviderType,
     Role,
     Service,
     SpendProvider,
+    TaskSection,
+    TaskStatus,
     User,
     Workspace,
 )
+from app.services.country_tiers import DEFAULT_TIER_1, TIER_1
+
+# Пять колонок канбана из ТЗ 8.1. Заводятся системными: переименовать и
+# перекрасить можно, удалить — нет, на них держится смысл доски.
+TASK_STATUSES = [
+    ("open", "Открыта", "#6A6161", False),
+    ("in_progress", "В работе", "#C9821F", False),
+    ("review", "На ревью", "#2C4E77", False),
+    ("done", "Готово", "#16B57F", True),
+    ("archive", "Архив", "#9B9292", True),
+]
+
+# Раздел доски по умолчанию. Разделы делят задачи по отделам, но пока отделы не
+# заведены, доска обязана быть одна и работать как раньше.
+DEFAULT_TASK_SECTION = "Общие задачи"
 
 PERMISSIONS = {
     "dashboard.view",
@@ -23,13 +41,23 @@ PERMISSIONS = {
     "finance.view",
     "finance.manage",
     "finance.export",
-    "partners.view",
     "offers.view",
     "offers.manage",
     "team.view",
     "team.manage",
+    "meta.view",
+    "meta.manage",
+    "meta.launch",
+    "workspace.view",
+    "workspace.manage",
+    "knowledge.view",
+    "knowledge.manage",
     "settings.view",
     "settings.manage",
+    "salary.view",
+    "salary.manage",
+    "utilities.view",
+    "utilities.manage",
 }
 
 
@@ -74,18 +102,40 @@ async def seed() -> None:
                 "media.view",
                 "media.manage",
                 "finance.view",
-                "partners.view",
                 "offers.view",
                 "offers.manage",
                 "team.view",
+                "meta.view",
+                "meta.launch",
+                "workspace.view",
+                "workspace.manage",
+                "knowledge.view",
+                "knowledge.manage",
                 "settings.view",
+                "salary.view",
+                "utilities.view",
+                "utilities.manage",
             },
             "Buyer": {
                 "dashboard.view",
                 "media.view",
                 "media.manage",
-                "partners.view",
                 "offers.view",
+                "meta.view",
+                "workspace.view",
+                "knowledge.view",
+                "utilities.view",
+            },
+            "CMO": {
+                "dashboard.view",
+                "finance.view",
+                "offers.view",
+                "team.view",
+                "workspace.view",
+                "knowledge.view",
+                "settings.view",
+                "salary.view",
+                "utilities.view",
             },
             "Finance": {
                 "dashboard.view",
@@ -93,6 +143,13 @@ async def seed() -> None:
                 "finance.manage",
                 "finance.export",
                 "offers.view",
+                "workspace.view",
+                "knowledge.view",
+                # Экран настроек нужен, чтобы дойти до раздела «Расчет ЗП».
+                "settings.view",
+                "salary.view",
+                "salary.manage",
+                "utilities.view",
             },
         }
         for name, codes in role_defaults.items():
@@ -125,6 +182,52 @@ async def seed() -> None:
                     password_hash=hash_password(settings.admin_password),
                 )
             )
+
+        for position, (code, title, color, terminal) in enumerate(TASK_STATUSES):
+            existing = await db.scalar(
+                select(TaskStatus).where(
+                    TaskStatus.workspace_id == workspace.id, TaskStatus.code == code
+                )
+            )
+            if not existing:
+                db.add(
+                    TaskStatus(
+                        workspace_id=workspace.id,
+                        code=code,
+                        name=title,
+                        color=color,
+                        position=position,
+                        is_system=True,
+                        is_terminal=terminal,
+                    )
+                )
+
+        # Раздел заводится, только если на доске нет ни одного: команда могла
+        # переименовать его под себя или завести свои отделы, и второй «Общие
+        # задачи» после каждого запуска ей не нужен.
+        has_section = await db.scalar(
+            select(TaskSection.id).where(TaskSection.workspace_id == workspace.id).limit(1)
+        )
+        if not has_section:
+            db.add(TaskSection(workspace_id=workspace.id, title=DEFAULT_TASK_SECTION))
+
+        # Tier1 заводится один раз и дальше правится в настройках: seed не
+        # переписывает уже принятые командой решения, а только доносит базу
+        # в воркспейс, где справочника ещё нет.
+        known_tiers = set(
+            (
+                await db.scalars(
+                    select(CountryTier.code).where(
+                        CountryTier.workspace_id == workspace.id
+                    )
+                )
+            ).all()
+        )
+        if not known_tiers:
+            for code in DEFAULT_TIER_1:
+                db.add(
+                    CountryTier(workspace_id=workspace.id, code=code, tier=TIER_1)
+                )
 
         for name, cost, commission in [
             ("PWA", "0.0300", "0"),

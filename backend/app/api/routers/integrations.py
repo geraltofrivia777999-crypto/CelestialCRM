@@ -1,17 +1,19 @@
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_user, require_permission
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models import (
+    FinanceRecord,
     IdempotencyRecord,
     IntegrationConnection,
     KeitaroCampaign,
     KeitaroStatDaily,
+    MediaRecord,
     Offer,
     Partner,
     Status,
@@ -25,18 +27,6 @@ from app.services.keitaro import KeitaroClient, KeitaroError
 from app.workers.tasks import sync_keitaro_connection
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
-
-
-@router.get("/meta/status")
-async def meta_status(
-    _: User = Depends(require_permission("settings.view")),
-) -> dict:
-    return {
-        "kind": "meta_ads",
-        "available": False,
-        "status": "scaffolded",
-        "message": "Meta Ads is prepared for a post-MVP connector.",
-    }
 
 
 @router.get("/keitaro", response_model=Page)
@@ -146,6 +136,69 @@ async def update_connection(
     await db.commit()
     await db.refresh(connection)
     return connection
+
+
+@router.delete("/keitaro/{connection_id}", status_code=200)
+async def delete_connection(
+    connection_id: uuid.UUID,
+    request: Request,
+    purge: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("settings.manage")),
+) -> dict:
+    connection = await db.get(IntegrationConnection, connection_id)
+    if not connection or connection.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    # Offers, партнёрки, кампании и статистика уходят каскадом вместе с подключением.
+    # Медиаборд и Финансы каскада не имеют — это ручные данные команды, и удалить их
+    # можно только по отдельному подтверждению, иначе БД просто отклонит удаление.
+    offer_ids = select(Offer.id).where(Offer.connection_id == connection.id)
+    media_count = (
+        await db.scalar(
+            select(func.count()).select_from(MediaRecord).where(
+                MediaRecord.offer_id.in_(offer_ids)
+            )
+        )
+        or 0
+    )
+    finance_count = (
+        await db.scalar(
+            select(func.count()).select_from(FinanceRecord).where(
+                FinanceRecord.offer_id.in_(offer_ids)
+            )
+        )
+        or 0
+    )
+    if (media_count or finance_count) and not purge:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "На офферах этого подключения держатся записи: "
+                f"Медиаборд — {media_count}, Финансы — {finance_count}. "
+                "Удаление подключения сотрёт их вместе с офферами."
+            ),
+        )
+    if purge:
+        await db.execute(delete(MediaRecord).where(MediaRecord.offer_id.in_(offer_ids)))
+        await db.execute(delete(FinanceRecord).where(FinanceRecord.offer_id.in_(offer_ids)))
+
+    name = connection.name
+    await db.delete(connection)
+    await audit(
+        db,
+        current,
+        "integration.deleted",
+        f"Deleted Keitaro connection {name}",
+        request=request,
+        entity_id=str(connection_id),
+    )
+    await db.commit()
+    return {
+        "deleted": str(connection_id),
+        "media_records_removed": media_count if purge else 0,
+        "finance_records_removed": finance_count if purge else 0,
+    }
 
 
 @router.get("/keitaro/overview")
@@ -325,7 +378,12 @@ async def check_connection(
     if not connection or connection.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Connection not found")
     client = KeitaroClient(connection.base_url, decrypt_secret(connection.api_key_encrypted))
-    await client.check()
+    try:
+        await client.check()
+    except KeitaroError as exc:
+        # Without this the endpoint answered a misconfigured tracker with a 500 and
+        # the UI showed "Ошибка запроса" instead of what Keitaro actually said.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"ok": True}
 
 

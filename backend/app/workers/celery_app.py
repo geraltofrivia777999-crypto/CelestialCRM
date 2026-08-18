@@ -15,7 +15,30 @@ celery_app.conf.update(
         "schedule-keitaro-syncs": {
             "task": "app.workers.tasks.schedule_keitaro_syncs",
             "schedule": max(settings.keitaro_sync_interval_minutes, 5) * 60,
-        }
+        },
+        "schedule-meta-syncs": {
+            "task": "app.workers.tasks.schedule_meta_syncs",
+            "schedule": max(settings.meta_sync_interval_minutes, 15) * 60,
+        },
+        # Правила считаются по уже загруженной статистике, поэтому чаще
+        # синхронизации их гонять бессмысленно — цифры не изменятся.
+        "run-meta-rules": {
+            "task": "app.workers.tasks.run_meta_rules",
+            "schedule": max(settings.meta_rules_interval_minutes, 15) * 60,
+        },
+        # Алерты гоняются чаще правил Meta: их смысл в том, чтобы узнать о
+        # проблеме сегодня, а не через полчаса. Пауза между срабатываниями
+        # задана у каждого правила отдельно.
+        # Запланированные заливы: проверяем раз в минуту, потому что время
+        # залива баер указывает с точностью до минуты.
+        "publish-due-meta-launches": {
+            "task": "app.workers.tasks.publish_due_meta_launches",
+            "schedule": 60,
+        },
+        "run-alerts": {
+            "task": "app.workers.tasks.run_alerts",
+            "schedule": max(settings.alerts_interval_minutes, 1) * 60,
+        },
     },
 )
 celery_app.autodiscover_tasks(["app.workers"])
