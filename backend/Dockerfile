@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# Playwright 1.52 ещё не поддерживает Debian Trixie и запрашивает удалённые пакеты
+# шрифтов, поэтому фиксируем совместимую стабильную базу вместо плавающего slim.
+FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 # Xvfb + x11vnc: браузерные сессии Meta Ads (токен EAAB) запускаются headful,
