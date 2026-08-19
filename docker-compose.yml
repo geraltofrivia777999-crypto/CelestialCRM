@@ -28,13 +28,22 @@ services:
     build: ./backend
     env_file: .env
     command: >
-      sh -c "alembic upgrade head &&
+      sh -c "Xvfb :99 -screen 0 1366x768x24 & sleep 1 &&
+             x11vnc -forever -shared -display :99 -nopw -bg &
+             alembic upgrade head &&
              python -m app.seed &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      # VNC без пароля доступен только локально: с VPS к нему подключаются через
+      # SSH-туннель, а наружный порт позволил бы управлять сессией кому угодно.
+      - "127.0.0.1:5900:5900"
     volumes:
       # Вложения базы знаний (ТЗ 8.2) живут на диске. Без тома они исчезнут при
       # первом же пересоздании контейнера, а статьи останутся с битыми ссылками.
       - uploads_data:/app/uploads
+      # Браузерные сессии Meta Ads: сохранённый storage_state используется для
+      # автообновления EAAB-токена, и он должен переживать пересоздание контейнера.
+      - meta_sessions_data:/app/meta_sessions
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,7 +55,13 @@ services:
   worker:
     build: ./backend
     env_file: .env
-    command: celery -A app.workers.celery_app worker --loglevel=INFO
+    command: >
+      sh -c "Xvfb :99 -screen 0 1366x768x24 & sleep 1 &&
+             exec celery -A app.workers.celery_app worker --loglevel=INFO"
+    volumes:
+      # Токен сессии (EAAB) обновляется синхронизацией через восстановление
+      # браузерной сессии — worker тоже должен видеть сохранённые сессии.
+      - meta_sessions_data:/app/meta_sessions
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,3 +101,4 @@ volumes:
   postgres_data:
   redis_data:
   uploads_data:
+  meta_sessions_data:

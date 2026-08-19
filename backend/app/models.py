@@ -248,6 +248,11 @@ class IntegrationConnection(UUIDMixin, TimestampMixin, Base):
     auth_method: Mapped[str] = mapped_column(
         String(20), default="system_user", server_default="system_user", nullable=False
     )
+    # Через какой адрес ходить в Meta. Нужен там, где кабинеты живут за своим
+    # прокси: запрос из другой сети она к ним просто не пустит.
+    proxy_url: Mapped[str | None] = mapped_column(String(500))
+    # Свой User-Agent. Пусто — уходит httpx-овский по умолчанию.
+    user_agent: Mapped[str | None] = mapped_column(String(500))
 
 
 class SyncRun(UUIDMixin, Base):

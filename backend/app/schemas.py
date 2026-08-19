@@ -182,6 +182,8 @@ class MetaConnectionCreate(BaseModel):
     # Чем выпущен токен. На запросы к Graph API не влияет — влияет на то, что
     # сказать человеку, когда токен умрёт, а умирают они по-разному.
     auth_method: Literal["system_user", "app_token", "session"] = "system_user"
+    proxy_url: str | None = Field(default=None, max_length=500)
+    user_agent: str | None = Field(default=None, max_length=500)
     sync_interval_minutes: int = Field(default=30, ge=15, le=1440)
     lookback_days: int = Field(default=3, ge=1, le=14)
     attribution_sub_id: int | None = Field(default=None, ge=1, le=10)
@@ -193,6 +195,11 @@ class MetaConnectionCreate(BaseModel):
     @classmethod
     def validate_business_id(cls, value: str | None) -> str | None:
         return normalize_business_id(value)
+
+    @field_validator("proxy_url")
+    @classmethod
+    def validate_proxy(cls, value: str | None) -> str | None:
+        return validate_proxy_url(value)
 
 
 def normalize_business_id(value: str | None) -> str | None:
@@ -211,6 +218,8 @@ class MetaConnectionUpdate(BaseModel):
     access_token: str | None = Field(default=None, min_length=20)
     business_id: str | None = Field(default=None, max_length=100)
     auth_method: Literal["system_user", "app_token", "session"] | None = None
+    proxy_url: str | None = Field(default=None, max_length=500)
+    user_agent: str | None = Field(default=None, max_length=500)
     status: Status | None = None
     sync_interval_minutes: int | None = Field(default=None, ge=15, le=1440)
     lookback_days: int | None = Field(default=None, ge=1, le=14)
@@ -222,6 +231,21 @@ class MetaConnectionUpdate(BaseModel):
         return normalize_business_id(value)
 
 
+def validate_proxy_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    clean = value.strip()
+    if not clean:
+        return None
+    parsed = urlparse(clean)
+    if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+        raise ValueError(
+            "Прокси задаётся в виде http://логин:пароль@хост:порт "
+            "(или socks5://…) — без схемы клиент его не примет"
+        )
+    return clean
+
+
 class MetaConnectionOut(ORMModel):
     id: uuid.UUID
     name: str
@@ -230,6 +254,8 @@ class MetaConnectionOut(ORMModel):
     lookback_days: int
     business_id: str | None = Field(default=None, validation_alias="external_account_id")
     auth_method: str = "system_user"
+    proxy_url: str | None = None
+    user_agent: str | None = None
     attribution_sub_id: int | None
     checkpoint_at: datetime | None
     last_sync_at: datetime | None
@@ -247,11 +273,62 @@ class MetaConnectionPreview(BaseModel):
 
     access_token: str = Field(min_length=20)
     business_id: str | None = Field(default=None, max_length=100)
+    # Проверка идёт тем же маршрутом, что и работа: токен, привязанный к
+    # прокси, без него кабинетов не покажет, и «проверка прошла» была бы
+    # обещанием, которое не выполнится при первой синхронизации.
+    proxy_url: str | None = Field(default=None, max_length=500)
+    user_agent: str | None = Field(default=None, max_length=500)
 
     @field_validator("business_id")
     @classmethod
     def validate_business_id(cls, value: str | None) -> str | None:
         return normalize_business_id(value)
+
+    @field_validator("proxy_url")
+    @classmethod
+    def validate_proxy(cls, value: str | None) -> str | None:
+        return validate_proxy_url(value)
+
+
+class MetaSessionStart(BaseModel):
+    """Запуск браузерной сессии для получения EAAB-токена.
+
+    Прокси обязателен: браузер без него не стартует — это защита аккаунта от
+    бана (cookies, показанные чужому IP, помечают сессию как угнанную).
+    """
+
+    cookies: str = Field(default="", max_length=60000)
+    proxy_url: str = Field(..., max_length=500)
+    user_agent: str | None = Field(default=None, max_length=500)
+    # Для повторного входа существующего подключения: сохранённая сессия
+    # ляжет в <connection_id>.json, и синхронизация сможет обновлять токен сама.
+    connection_id: str | None = Field(default=None, max_length=128)
+
+    @field_validator("proxy_url")
+    @classmethod
+    def validate_proxy(cls, value: str) -> str:
+        validated = validate_proxy_url(value)
+        if not validated:
+            raise ValueError("Прокси обязателен для токена сессии (EAAB)")
+        return validated
+
+
+class MetaSessionAttach(BaseModel):
+    """Привязка сохранённой браузерной сессии к подключению Meta."""
+
+    connection_id: str = Field(..., max_length=128)
+
+
+class MetaProxyCheck(BaseModel):
+    proxy_url: str = Field(..., max_length=500)
+
+    @field_validator("proxy_url")
+    @classmethod
+    def validate_proxy(cls, value: str) -> str:
+        validated = validate_proxy_url(value)
+        if not validated:
+            raise ValueError("Укажите прокси в виде http://логин:пароль@хост:порт")
+        return validated
 
 
 class MetaBundleCampaign(BaseModel):

@@ -9,6 +9,8 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB.as_posix()}"
 os.environ["SECRET_KEY"] = "test-secret-that-is-long-enough-for-tests"
 os.environ["ADMIN_LOGIN"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "test-password"
+# Браузерные сессии Meta Ads не должны трогать реальные каталоги проекта.
+os.environ["META_SESSION_DIR"] = str(Path(tempfile.gettempdir()) / "celestial_meta_sessions")
 
 from app.core.database import engine  # noqa: E402
 from app.models import Base  # noqa: E402

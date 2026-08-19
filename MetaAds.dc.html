@@ -703,10 +703,35 @@
           <span>Название подключения</span>
           <input id="metaWizName" class="meta-control" type="text" placeholder="Celestial BM">
         </label>
-        <label class="meta-field">
+        <label class="meta-field" id="metaWizTokenField">
           <span>EAA Token</span>
           <input id="metaWizToken" class="meta-control" type="password" autocomplete="off" placeholder="EAAB...">
           <span style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Хранится в зашифрованном виде и обратно через API не возвращается</span>
+        </label>
+        <!-- Браузерная сессия: способ для токена EAAB. Показывается только при
+             выборе «Токен сессии (EAAB)». -->
+        <div id="metaWizSessionBlock" style="display:none;border:1px solid #EBE6E6;border-radius:14px;padding:14px;background:#FAF8F8">
+          <div style="font-size:12px;font-weight:700;margin-bottom:10px">Браузер Facebook</div>
+          <label class="meta-field" style="margin-bottom:10px">
+            <span>Cookies из браузера (facebook.com)</span>
+            <textarea id="metaWizCookies" class="meta-control" style="height:74px;font-family:monospace;font-size:11px;line-height:1.5" placeholder="c_user=…; xs=…; fr=…&#10;или JSON-массив из экспорта"></textarea>
+            <span style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Вставьте cookies вручную — браузер откроется уже авторизованным. Если их нет, выполните вход вручную через VNC (порт 5900).</span>
+          </label>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button id="metaWizProxyCheck" type="button" class="meta-action" style="height:38px">Проверить прокси</button>
+            <button id="metaWizSessionStart" type="button" style="height:38px;padding:0 16px;border:0;border-radius:12px;background:#B91414;color:#fff;font-size:12.5px;font-weight:700">Запустить браузер</button>
+            <button id="metaWizSessionClose" type="button" style="display:none;height:38px;padding:0 14px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:12.5px;font-weight:700">Закрыть браузер</button>
+          </div>
+          <div id="metaWizSessionStatus" style="margin-top:10px;font-size:12px;color:#6A6161;font-weight:600;line-height:1.6"></div>
+        </div>
+        <label class="meta-field">
+          <span>Прокси</span>
+          <input id="metaWizProxy" class="meta-control" type="text" placeholder="http://логин:пароль@хост:порт">
+          <span id="metaWizProxyHint" style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Нужен, если кабинеты живут за своим прокси. Поддерживаются http, https и socks5</span>
+        </label>
+        <label class="meta-field">
+          <span>User-Agent</span>
+          <input id="metaWizUserAgent" class="meta-control" type="text" placeholder="необязательно">
         </label>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <label class="meta-field">
@@ -870,10 +895,34 @@
         <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Способ получения токена</span>
         <div id="metaAuthMethods" style="display:grid;gap:2px"></div>
       </div>
-      <label style="display:block">
+      <label style="display:block" id="metaModalTokenField">
         <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Access token</span>
         <input id="metaFieldToken" class="meta-control" type="password" autocomplete="off" placeholder="EAAB..." style="width:100%;padding:0 13px">
         <span id="metaTokenHint" style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Оставьте пустым, чтобы не менять сохранённый токен</span>
+      </label>
+      <!-- Браузерная сессия для токена EAAB. Показывается при выборе способа
+           «Токен сессии (EAAB)». -->
+      <div id="metaModalSessionBlock" style="display:none;border:1px solid #EBE6E6;border-radius:14px;padding:14px;background:#FAF8F8">
+        <div style="font-size:12px;font-weight:700;margin-bottom:10px">Браузер Facebook</div>
+        <label style="display:block;margin-bottom:10px">
+          <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Cookies из браузера (facebook.com)</span>
+          <textarea id="metaModalCookies" class="meta-control" style="width:100%;height:66px;font-family:monospace;font-size:11px;line-height:1.5;padding:9px 13px" placeholder="c_user=…; xs=…; fr=…&#10;или JSON-массив из экспорта"></textarea>
+        </label>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <button id="metaModalSessionStart" type="button" style="height:38px;padding:0 16px;border:0;border-radius:12px;background:#B91414;color:#fff;font-size:12.5px;font-weight:700">Запустить браузер</button>
+          <button id="metaModalSessionClose" type="button" style="display:none;height:38px;padding:0 14px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:12.5px;font-weight:700">Закрыть браузер</button>
+        </div>
+        <div id="metaModalSessionStatus" style="margin-top:10px;font-size:12px;color:#6A6161;font-weight:600;line-height:1.6"></div>
+        <input id="metaModalSessionToken" type="hidden" value="">
+      </div>
+      <label style="display:block">
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Прокси</span>
+        <input id="metaFieldProxy" class="meta-control" type="text" placeholder="http://логин:пароль@хост:порт" style="width:100%;padding:0 13px">
+        <span id="metaFieldProxyHint" style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Через него пойдут все запросы этого подключения — синхронизация, заливы и автоправила</span>
+      </label>
+      <label style="display:block">
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">User-Agent</span>
+        <input id="metaFieldUserAgent" class="meta-control" type="text" placeholder="необязательно" style="width:100%;padding:0 13px">
       </label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <label style="display:block">

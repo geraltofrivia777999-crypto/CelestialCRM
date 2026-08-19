@@ -11,7 +11,9 @@ ID кампании Meta, который баер кладёт в sub_id ссы�
 пустой доход за ноль.
 """
 
+import asyncio
 import json
+import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -67,8 +69,11 @@ from app.schemas import (
     MetaLaunchBatch,
     MetaLaunchCreate,
     MetaLaunchUpdate,
+    MetaProxyCheck,
     MetaRuleCreate,
     MetaRuleUpdate,
+    MetaSessionAttach,
+    MetaSessionStart,
     MetaSpendCommitIn,
     MetaTemplateCreate,
     MetaTemplateUpdate,
@@ -120,9 +125,12 @@ from app.services.meta_rules import (
 )
 from app.services.meta_rules import LEVELS as LEVEL_LABELS
 from app.services.meta_rules import WINDOWS as RULE_WINDOWS
+from app.services.meta_session import MetaSessionError, check_proxy_url, get_session_manager
 from app.workers.tasks import publish_meta_launch, sync_meta_connection
 
 router = APIRouter(prefix="/meta", tags=["meta"])
+
+logger = logging.getLogger("meta_router")
 
 MAX_PERIOD_DAYS = 186
 
@@ -157,7 +165,12 @@ async def preview_connection(
     Третий шаг мастера подключения. Без него список кабинетов появлялся бы только
     после сохранения и первой синхронизации — то есть выбирать было бы уже поздно.
     """
-    accounts = await _verify_token(payload.access_token, payload.business_id)
+    accounts = await _verify_token(
+        payload.access_token,
+        payload.business_id,
+        proxy=payload.proxy_url,
+        user_agent=payload.user_agent,
+    )
     return {"accounts": [_preview_row(row) for row in accounts]}
 
 
@@ -168,7 +181,13 @@ async def create_connection(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.manage")),
 ) -> IntegrationConnection:
-    accounts = await _verify_token(payload.access_token, payload.business_id)
+    _require_proxy_for_session(payload.auth_method, payload.proxy_url)
+    accounts = await _verify_token(
+        payload.access_token,
+        payload.business_id,
+        proxy=payload.proxy_url,
+        user_agent=payload.user_agent,
+    )
     duplicate = await db.scalar(
         select(IntegrationConnection).where(
             IntegrationConnection.workspace_id == current.workspace_id,
@@ -190,6 +209,8 @@ async def create_connection(
         external_account_id=payload.business_id,
         attribution_sub_id=payload.attribution_sub_id,
         auth_method=payload.auth_method,
+        proxy_url=payload.proxy_url,
+        user_agent=payload.user_agent,
     )
     db.add(connection)
     await db.flush()
@@ -222,8 +243,16 @@ async def update_connection(
         connection.external_account_id = changes.pop("business_id")
     for field, value in changes.items():
         setattr(connection, field, value)
+    # Токен сессии (EAAB) живёт только за своим прокси: без него Meta видит
+    # «смену IP» и отзывает сессию, а при повторах банит аккаунт.
+    _require_proxy_for_session(connection.auth_method, connection.proxy_url)
     if access_token:
-        await _verify_token(access_token, connection.external_account_id)
+        await _verify_token(
+            access_token,
+            connection.external_account_id,
+            proxy=connection.proxy_url,
+            user_agent=connection.user_agent,
+        )
         connection.api_key_encrypted = encrypt_secret(access_token)
     await audit(
         db,
@@ -277,8 +306,13 @@ async def check_connection(
     """
     connection = await _connection(db, current, connection_id)
     token = decrypt_secret(connection.api_key_encrypted)
-    accounts = await _verify_token(token, connection.external_account_id)
-    client = MetaClient(token)
+    accounts = await _verify_token(
+        token,
+        connection.external_account_id,
+        proxy=connection.proxy_url,
+        user_agent=connection.user_agent,
+    )
+    client = client_for(connection)
 
     async def probe(action) -> dict:
         try:
@@ -302,6 +336,161 @@ async def check_connection(
         "auth_method_hint": AUTH_METHOD_HINTS.get(connection.auth_method, ""),
         "checks": checks,
     }
+
+
+# --- Браузерные сессии для токена EAAB ---------------------------------------
+# Токен сессии получают не вставкой готовой строки, а из живого браузера с
+# cookies и прокси аккаунта: так Meta не видит «смену IP», и токен с аккаунтом
+# не банятся. Браузер всегда headful; при капче/чекпойнте оператор входит
+# вручную через VNC (порт 5900), а после входа сессия сохраняется на диск и
+# EAAB извлекается автоматически.
+
+
+@router.post("/session/start")
+async def session_start(
+    payload: MetaSessionStart,
+    current: User = Depends(require_permission("meta.manage")),
+) -> dict:
+    """Запускает браузер Facebook с cookies и прокси аккаунта.
+
+    Без работающего прокси браузер не стартует — это защита от бана: cookies,
+    показанные чужому IP, помечают сессию как угнанную. Если cookies валидны,
+    вход происходит сразу; иначе — ручной вход через VNC, и после него сессия
+    автосохраняется, а EAAB-токен извлекается автоматически.
+    """
+    if not settings.meta_session_enabled:
+        raise HTTPException(status_code=503, detail="Браузерные сессии отключены")
+    manager = get_session_manager()
+    try:
+        state = await asyncio.wait_for(
+            manager.start(
+                session_id=payload.connection_id or None,
+                cookies=payload.cookies,
+                proxy_url=payload.proxy_url,
+                user_agent=payload.user_agent,
+            ),
+            timeout=120,
+        )
+    except MetaSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Timed out while launching browser") from exc
+    except Exception as exc:
+        logger.exception("meta session start failed")
+        raise HTTPException(status_code=500, detail=f"Failed to start session: {exc}") from exc
+    return {
+        "session_id": state.id,
+        "status": state.status,
+        "error": state.error,
+        "message": (
+            "Cookies приняты — проверяем авторизацию."
+            if payload.cookies.strip()
+            else "Браузер запущен. Выполните вход вручную (VNC, порт 5900) — "
+            "сессия сохранится, токен извлечётся автоматически."
+        ),
+    }
+
+
+@router.get("/session/{session_id}/status")
+async def session_status(
+    session_id: str,
+    current: User = Depends(require_permission("meta.manage")),
+) -> dict:
+    state = get_session_manager().get(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Сессия браузера не найдена")
+    return state.to_dict()
+
+
+@router.post("/session/{session_id}/token")
+async def session_token(
+    session_id: str,
+    current: User = Depends(require_permission("meta.manage")),
+) -> dict:
+    """Извлекает EAAB-токен из живой браузерной сессии."""
+    manager = get_session_manager()
+    try:
+        result = await manager.extract_token(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("meta session token extraction failed")
+        raise HTTPException(status_code=500, detail=f"Token extraction failed: {exc}") from exc
+    if not result.get("token"):
+        state = manager.get(session_id)
+        fb_hint = None
+        if state:
+            url = state.page.url if state.page else ""
+            if "checkpoint" in url or "captcha" in url:
+                fb_hint = "Facebook показывает капчу — требуется ручное вмешательство (VNC)."
+            elif "blocked" in url or "login" in url:
+                fb_hint = "Аккаунт забанен или сессия протухла — требуется повторный вход."
+        detail = (
+            f"EAAB token not found. Попробованы методы: "
+            f"{', '.join(result.get('methods_tried', [])) or '—'}."
+        )
+        if fb_hint:
+            detail = f"{detail} {fb_hint}"
+        raise HTTPException(status_code=422, detail=detail)
+    return result
+
+
+@router.post("/session/{session_id}/attach")
+async def session_attach(
+    session_id: str,
+    payload: MetaSessionAttach,
+    current: User = Depends(require_permission("meta.manage")),
+) -> dict:
+    """Привязывает сохранённую сессию мастера к подключению Meta.
+
+    После этого синхронизация сможет при смерти токена восстановить браузерную
+    сессию, извлечь новый EAAB и продолжить работу без участия человека.
+    """
+    manager = get_session_manager()
+    try:
+        return await manager.attach(session_id, payload.connection_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/session/{session_id}/close")
+async def session_close(
+    session_id: str,
+    current: User = Depends(require_permission("meta.manage")),
+) -> dict:
+    await get_session_manager().close(session_id)
+    return {"session_id": session_id, "status": "closed"}
+
+
+@router.get("/sessions")
+async def sessions_list(current: User = Depends(require_permission("meta.manage"))) -> dict:
+    return {"sessions": get_session_manager().list_sessions()}
+
+
+@router.post("/proxy/check")
+async def proxy_check(payload: MetaProxyCheck) -> dict:
+    """Проверка прокси: внешний IP и задержка через него.
+
+    Тот же маршрут, которым позже пойдёт браузер и все запросы подключения, —
+    если проверка не прошла, браузер не запустится, а аккаунт не пострадает.
+    """
+    result = await check_proxy_url(payload.proxy_url)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Proxy check failed"))
+    return result
+
+
+def _require_proxy_for_session(auth_method: str, proxy_url: str | None) -> None:
+    """Токен сессии (EAAB) работает только через прокси — иначе бан аккаунта."""
+    if auth_method == "session" and not (proxy_url or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Токен сессии (EAAB) требует прокси: без него Meta видит смену IP "
+                "и отзывает сессию, а при повторах банит аккаунт. Укажите прокси, "
+                "с которого заходите в Ads Manager."
+            ),
+        )
 
 
 @router.post("/connections/{connection_id}/sync", status_code=202)
@@ -584,7 +773,7 @@ async def hourly_insights(
     connection = await db.get(IntegrationConnection, account.connection_id)
     if not connection:
         raise HTTPException(status_code=422, detail="У кабинета нет подключения Meta")
-    client = MetaClient(decrypt_secret(connection.api_key_encrypted))
+    client = client_for(connection)
     try:
         hours = await meta_hourly.load(client, external_id, start, end)
     except MetaError as exc:
@@ -1149,7 +1338,7 @@ async def targeting(
             status_code=422,
             detail="Нет активного подключения Meta — справочники берутся её токеном",
         )
-    client = MetaClient(decrypt_secret(connection.api_key_encrypted))
+    client = client_for(connection)
     try:
         rows = await client.targeting_search(kind, query)
     except MetaError as exc:
@@ -2153,7 +2342,7 @@ async def _account_client(
     connection = await db.get(IntegrationConnection, account.connection_id)
     if not connection:
         raise HTTPException(status_code=422, detail="У кабинета нет подключения Meta")
-    return MetaClient(decrypt_secret(connection.api_key_encrypted)), connection
+    return client_for(connection), connection
 
 
 async def _apply_launch_action(
@@ -2490,14 +2679,29 @@ async def _with_latest_runs(
     return [(connection, latest.get(connection.id)) for connection in connections]
 
 
-async def _verify_token(access_token: str, business_id: str | None) -> list[dict]:
+def client_for(connection: IntegrationConnection) -> MetaClient:
+    """Клиент этого подключения — с его токеном, прокси и user-agent."""
+    return MetaClient(
+        decrypt_secret(connection.api_key_encrypted),
+        proxy=connection.proxy_url,
+        user_agent=connection.user_agent,
+    )
+
+
+async def _verify_token(
+    access_token: str,
+    business_id: str | None,
+    *,
+    proxy: str | None = None,
+    user_agent: str | None = None,
+) -> list[dict]:
     """Токен принимается, только если через него реально видны кабинеты.
 
     Проверка «/me отвечает» ничего не доказывает: она проходит и с токеном без
     ads_read, а первая же синхронизация падает. Возвращаем сами кабинеты — их
     показывает мастер подключения на шаге выбора.
     """
-    client = MetaClient(access_token)
+    client = MetaClient(access_token, proxy=proxy, user_agent=user_agent)
     try:
         await client.check()
         accounts = await client.ad_accounts(business_id)

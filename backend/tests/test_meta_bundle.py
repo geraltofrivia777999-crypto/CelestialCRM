@@ -577,3 +577,38 @@ def test_age_randomization_respects_the_given_years_and_meta_limits() -> None:
         result = _randomized_age(edges, seed, years=3)
         assert 18 <= result["age_min"] <= 21
         assert 62 <= result["age_max"] <= 65
+
+
+def test_the_client_routes_through_the_connection_proxy() -> None:
+    from app.services.meta import MetaClient
+
+    client = MetaClient("token", proxy="socks5://user:pass@1.2.3.4:1080", user_agent="UA/1.0")
+    assert client.proxy == "socks5://user:pass@1.2.3.4:1080"
+    # User-Agent уходит заголовком рядом с токеном, а не подменяет его.
+    assert client.headers["User-Agent"] == "UA/1.0"
+    assert client.headers["Authorization"] == "Bearer token"
+
+    bare = MetaClient("token")
+    assert bare.proxy is None and "User-Agent" not in bare.headers
+
+
+def test_proxy_without_scheme_is_rejected_at_the_form() -> None:
+    from app.schemas import validate_proxy_url
+
+    assert validate_proxy_url("http://user:pass@1.2.3.4:8080") == "http://user:pass@1.2.3.4:8080"
+    assert validate_proxy_url("  ") is None
+    # «1.2.3.4:8080» httpx не примет, и падало бы это в синхронизации — далеко
+    # от места, где адрес вводили.
+    with pytest.raises(ValueError):
+        validate_proxy_url("1.2.3.4:8080")
+
+
+def test_gentle_window_for_non_system_tokens() -> None:
+    from app.services.meta_sync import BACKFILL_DAYS, GENTLE_DAYS, MetaSyncEngine
+
+    system = MetaSyncEngine._date_window("backfill", {"auth_method": "system_user"})
+    session = MetaSyncEngine._date_window("backfill", {"auth_method": "session"})
+    # Токену системного пользователя полная выкачка нормальна, токену из сессии
+    # такой всплеск сразу после выпуска Meta засчитывает за угон.
+    assert (system[1] - system[0]).days == BACKFILL_DAYS
+    assert (session[1] - session[0]).days == GENTLE_DAYS

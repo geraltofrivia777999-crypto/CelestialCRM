@@ -117,7 +117,7 @@ class MetaRuleEngine:
                 return {"triggered": 0, "applied": 0}
             candidates = await collect_candidates(db, rule)
             recent = await self._recent_campaigns(db, rule)
-            token = await _rule_token(db, rule)
+            access = await _rule_token(db, rule)
 
         pending = [
             row
@@ -127,7 +127,15 @@ class MetaRuleEngine:
         if not pending:
             return {"triggered": 0, "applied": 0}
 
-        client = self.client_factory(token) if token and rule.action in WRITE_ACTIONS else None
+        client = (
+            self.client_factory(
+                access["token"],
+                proxy=access["proxy_url"],
+                user_agent=access["user_agent"],
+            )
+            if access and rule.action in WRITE_ACTIONS
+            else None
+        )
         applied = 0
         for row in pending:
             error: str | None = None
@@ -522,7 +530,7 @@ async def _attribution_sub_id(db: AsyncSession, workspace_id: uuid.UUID) -> int 
     )
 
 
-async def _rule_token(db: AsyncSession, rule: MetaRule) -> str | None:
+async def _rule_token(db: AsyncSession, rule: MetaRule) -> dict | None:
     """Токен кабинета, к которому относится правило.
 
     У правила без кабинета берётся первое активное подключение: несколько
@@ -546,7 +554,13 @@ async def _rule_token(db: AsyncSession, rule: MetaRule) -> str | None:
             .limit(1)
         )
     )
-    return decrypt_secret(connection.api_key_encrypted) if connection else None
+    if not connection:
+        return None
+    return {
+        "token": decrypt_secret(connection.api_key_encrypted),
+        "proxy_url": connection.proxy_url,
+        "user_agent": connection.user_agent,
+    }
 
 
 def _as_decimal(value: object) -> Decimal | None:

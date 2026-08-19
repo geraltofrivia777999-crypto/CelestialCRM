@@ -47,6 +47,35 @@ class Settings(BaseSettings):
     # раз в квартал и снимает поддержку старой через два года — поднимать здесь,
     # а не искать по коду.
     meta_graph_version: str = "v23.0"
+    # --- Браузер для подключений «Токен сессии (EAAB)» ---
+    # Токен сессии живёт, пока жива сессия аккаунта в браузере, поэтому его
+    # получают не вставкой готовой строки, а из живого браузера с cookies и
+    # прокси — как это делает сам человек, открывший Ads Manager. Браузер всегда
+    # headful (headless заметно сильнее палится) и всегда запускается только
+    # через проверенный прокси: иначе cookies «увидят» чужой IP, и Meta забанит
+    # аккаунт, а не токен.
+    meta_session_enabled: bool = True
+    # Канал браузера: "chrome" — установленный Google Chrome (лучше для
+    # антидетекта), "" — встроенный Chromium Playwright. При недоступности
+    # канала происходит автоматический откат на Chromium.
+    meta_browser_channel: str = "chrome"
+    meta_browser_headless: bool = False
+    meta_browser_viewport_width: int = 1366
+    meta_browser_viewport_height: int = 768
+    meta_browser_locale: str = "ru-RU"
+    meta_browser_timezone: str = "Europe/Moscow"
+    meta_browser_language_header: str = "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+    # Сколько ждём ручной вход через VNC (капча/чекпойнт автоматику не пропускают).
+    meta_login_timeout_sec: int = 900
+    meta_page_timeout_ms: int = 45000
+    # Сохранённые браузерные сессии: после входа storage_state пишется на диск,
+    # чтобы при смерти токена синхронизация могла восстановить сессию, заново
+    # извлечь EAAB и продолжить работу без участия человека.
+    meta_session_dir: str = "/app/meta_sessions"
+    meta_session_ttl_hours: int = 72
+    meta_facebook_url: str = "https://www.facebook.com"
+    meta_facebook_login_url: str = "https://www.facebook.com/login"
+    meta_ads_manager_url: str = "https://adsmanager.facebook.com/adsmanager/manage/"
     admin_login: str = "admin"
     admin_password: str = "change-me-now"
     session_days: int = 14

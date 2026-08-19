@@ -85,7 +85,11 @@ class MetaLaunchPublisher:
             launch.last_error = None
             await db.commit()
 
-        client = self.client_factory(context["access_token"])
+        client = self.client_factory(
+            context["access_token"],
+            proxy=context.get("proxy_url"),
+            user_agent=context.get("user_agent"),
+        )
         try:
             campaign_id = await self._ensure_campaign(launch_uuid, context, client, actor)
             adset_ids = await self._ensure_adsets(
@@ -613,6 +617,8 @@ async def load_launch_context(db: AsyncSession, launch_id: uuid.UUID) -> dict | 
         "creatives": [(link, creative) for link, creative in rows],
         "workspace_id": launch.workspace_id,
         "access_token": decrypt_secret(connection.api_key_encrypted),
+        "proxy_url": connection.proxy_url,
+        "user_agent": connection.user_agent,
         "attribution_sub_id": connection.attribution_sub_id,
     }
 

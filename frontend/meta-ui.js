@@ -79,7 +79,10 @@
     rules: [],
     events: [],
     wizard: null,
-    form: null
+    form: null,
+    // Браузерная сессия Meta (токен EAAB): sessionId, полученный токен и таймер
+    // опроса. Одна на страницу — одновременно открыт только один диалог.
+    session: null
   };
 
   function byId(id) {
@@ -1174,8 +1177,8 @@
     {
       code: "session",
       label: "Токен сессии (EAAB)",
-      hint: "Токен из сессии собственного аккаунта. Права обычно полные, но живёт, " +
-        "пока жива сессия: смена пароля или выход из устройств его обнуляют."
+      hint: "Получается автоматически из браузерной сессии с cookies и прокси аккаунта. " +
+        "Живёт, пока жива сессия, и обновляется сам при синхронизации."
     },
     {
       code: "app_token",
@@ -1192,6 +1195,7 @@
         '><span><span class="meta-choice__title">' + escapeHtml(method.label) + "</span>" +
         '<span class="meta-choice__hint">' + escapeHtml(method.hint) + "</span></span></label>";
     }).join("");
+    renderSessionAuthUI("modal");
   }
 
   function authMethodValue() {
@@ -1202,15 +1206,21 @@
   function openModal() {
     var connection = state.connections[0] || null;
     var editing = !!connection;
+    sessionStop();
     byId("metaModalTitle").textContent = editing
       ? "Подключение Meta Ads"
       : "Новое подключение Meta Ads";
     byId("metaFieldName").value = editing ? connection.name : "";
     byId("metaFieldToken").value = "";
     byId("metaFieldBusiness").value = editing ? (connection.business_id || "") : "";
+    byId("metaFieldProxy").value = editing ? (connection.proxy_url || "") : "";
+    byId("metaFieldUserAgent").value = editing ? (connection.user_agent || "") : "";
     byId("metaFieldSub").value = editing && connection.attribution_sub_id
       ? String(connection.attribution_sub_id)
       : "";
+    byId("metaModalCookies").value = "";
+    byId("metaModalSessionToken").value = "";
+    sessionResetUi("modal");
     renderAuthMethods(editing ? (connection.auth_method || "system_user") : "system_user");
     byId("metaFieldInterval").value = editing ? connection.sync_interval_minutes : 30;
     byId("metaFieldLookback").value = editing ? connection.lookback_days : 3;
@@ -1225,6 +1235,7 @@
   }
 
   function closeModal() {
+    sessionStop();
     byId("metaModal").style.display = "none";
   }
 
@@ -1280,13 +1291,27 @@
 
   async function saveConnection() {
     var connection = state.connections[0] || null;
+    var method = authMethodValue();
     var token = byId("metaFieldToken").value.trim();
     var name = byId("metaFieldName").value.trim();
+    var proxy = byId("metaFieldProxy").value.trim();
     if (!name) {
       modalError("Укажите название подключения");
       return;
     }
-    if (!connection && !token) {
+    if (method === "session") {
+      // Токен сессии живёт только со своим прокси, а получается только из
+      // браузерной сессии — вставка готовой строки здесь не допускается.
+      if (!proxy) {
+        modalError("Токен сессии (EAAB) требует прокси — без него Meta заблокирует сессию и аккаунт");
+        return;
+      }
+      token = byId("metaModalSessionToken").value;
+      if (!connection && !token) {
+        modalError("Получите токен через браузер (блок «Браузер Facebook»)");
+        return;
+      }
+    } else if (!connection && !token) {
       modalError("Вставьте токен");
       return;
     }
@@ -1295,7 +1320,9 @@
       name: name,
       business_id: byId("metaFieldBusiness").value.trim() || null,
       attribution_sub_id: sub ? Number(sub) : null,
-      auth_method: authMethodValue(),
+      auth_method: method,
+      proxy_url: proxy || null,
+      user_agent: byId("metaFieldUserAgent").value.trim() || null,
       sync_interval_minutes: Number(byId("metaFieldInterval").value) || 30,
       lookback_days: Number(byId("metaFieldLookback").value) || 3
     };
@@ -1785,6 +1812,7 @@
         geo: "", daily_budget: "", spend_limit: "", start_date: "", end_date: "",
         link_url: "", primary_text: "", headline: "", description: "",
         call_to_action: "LEARN_MORE", page_id: "", pixel_id: "",
+        url_tags: "", display_link: "",
         activate_on_publish: true,
         // Блок «Время»: когда стартовать, когда заливать и что оставить на паузе.
         start_mode: "now", start_at: "",
@@ -1998,6 +2026,11 @@
       '<div style="margin-top:14px">' +
       uploadField("link_url", "Ссылка", 'placeholder="https://..."',
         "Пусто — возьмётся из связки") + "</div>" +
+      '<div class="meta-up-grid" style="margin-top:14px">' +
+      uploadField("url_tags", "Параметры URL", 'placeholder="utm_source=fb&utm_campaign={{campaign.id}}"',
+        "Уходят в url_tags объявления — Meta допишет их к ссылке сама") +
+      uploadField("display_link", "Отображаемый URL", 'maxlength="240" placeholder="example.com"',
+        "Что видно в объявлении вместо ссылки на трекер") + "</div>" +
       '<div class="meta-up-grid" style="margin-top:14px">' +
       uploadField("headline", "Заголовок", 'maxlength="240"') +
       uploadField("description", "Описание", 'maxlength="240"') + "</div>" +
@@ -2478,6 +2511,8 @@
       activate_on_publish: values.activate_on_publish,
       publish_at: values.publish_mode === "custom" ? localMoment(values.publish_at) : null,
       start_at: startMoment(values),
+      url_tags: (values.url_tags || "").trim() || null,
+      display_link: (values.display_link || "").trim() || null,
       pause_campaigns: values.pause_campaigns,
       pause_adsets: values.pause_adsets,
       pause_ads: values.pause_ads,
@@ -4575,6 +4610,205 @@
     }
   }
 
+  /* ---------- браузерная сессия для токена EAAB ----------
+   *
+   * Токен сессии нельзя вставлять готовой строкой: вытащенный в одном месте и
+   * использованный с другого IP, он мгновенно отзывается, а при повторах Meta
+   * банит сам аккаунт. Поэтому токен получается из живого браузера, который
+   * открывается с cookies аккаунта и его прокси — ровно как заходит человек.
+   */
+
+  var SESSION_STATUS_LABELS = {
+    idle: "Ожидание запуска",
+    starting: "Запуск браузера…",
+    waiting_login: "Ожидание входа…",
+    saved: "Сессия сохранена",
+    restoring: "Восстановление сессии…",
+    token: "Токен получен",
+    error: "Ошибка"
+  };
+
+  function sessionStatus(scope, text) {
+    var host = scope === "wizard" ? byId("metaWizSessionStatus") : byId("metaModalSessionStatus");
+    host.innerHTML = text;
+  }
+
+  function sessionError(scope, text) {
+    var host = scope === "wizard" ? byId("metaWizSessionStatus") : byId("metaModalSessionStatus");
+    host.innerHTML = '<span style="color:#B91414">' + escapeHtml(text) + "</span>";
+  }
+
+  function sessionTokenPreview(token) {
+    return escapeHtml(token.slice(0, 14)) + "…" +
+      '<span style="color:#9B9292"> (' + token.length + " симв.)</span>";
+  }
+
+  function setSessionButtons(scope, running) {
+    var start = scope === "wizard" ? byId("metaWizSessionStart") : byId("metaModalSessionStart");
+    var close = scope === "wizard" ? byId("metaWizSessionClose") : byId("metaModalSessionClose");
+    var cookies = scope === "wizard" ? byId("metaWizCookies") : byId("metaModalCookies");
+    if (running) {
+      start.style.display = "none";
+      close.style.display = "";
+      cookies.disabled = true;
+    } else {
+      start.style.display = "";
+      close.style.display = "none";
+      cookies.disabled = false;
+    }
+  }
+
+  function sessionStop() {
+    if (state.session && state.session.timer) {
+      window.clearInterval(state.session.timer);
+      state.session.timer = null;
+    }
+    if (state.session && state.session.sessionId) {
+      var id = state.session.sessionId;
+      api.post("/meta/session/" + id + "/close", {}).catch(function () {});
+    }
+    state.session = null;
+  }
+
+  function sessionResetUi(scope) {
+    sessionStatus(scope, "");
+    setSessionButtons(scope, false);
+  }
+
+  /* Показывает или прячет блок браузера в зависимости от выбранного способа. */
+  function renderSessionAuthUI(scope) {
+    var method = scope === "wizard" ? wizardMethodValue() : authMethodValue();
+    var isSession = method === "session";
+    if (scope === "wizard") {
+      byId("metaWizTokenField").style.display = isSession ? "none" : "";
+      byId("metaWizSessionBlock").style.display = isSession ? "" : "none";
+      byId("metaWizProxyHint").innerHTML = isSession
+        ? '<b style="color:#B91414">Обязателен:</b> токен сессии живёт только со своим прокси — без него Meta заблокирует сессию и аккаунт'
+        : "Нужен, если кабинеты живут за своим прокси. Поддерживаются http, https и socks5";
+    } else {
+      byId("metaModalTokenField").style.display = isSession ? "none" : "";
+      byId("metaModalSessionBlock").style.display = isSession ? "" : "none";
+      byId("metaFieldProxyHint").innerHTML = isSession
+        ? '<b style="color:#B91414">Обязателен:</b> токен сессии живёт только со своим прокси — без него Meta заблокирует сессию и аккаунт'
+        : "Через него пойдут все запросы этого подключения — синхронизация, заливы и автоправила";
+    }
+    if (!isSession) {
+      sessionStop();
+      sessionResetUi(scope);
+      // Токен, полученный в старой браузерной сессии, без неё уже не тот: при
+      // возврате на способ «Токен сессии» придётся запускать браузер заново.
+      if (scope === "wizard" && state.wizard) state.wizard.sessionToken = null;
+      if (scope === "modal") byId("metaModalSessionToken").value = "";
+    }
+  }
+
+  async function wizardCheckProxy() {
+    var proxy = byId("metaWizProxy").value.trim();
+    if (!proxy) {
+      sessionError("wizard", "Укажите прокси");
+      return;
+    }
+    sessionStatus("wizard", "Проверяем прокси…");
+    try {
+      var result = await api.post("/meta/proxy/check", { proxy_url: proxy });
+      sessionStatus("wizard", "Прокси работает: IP " + escapeHtml(result.ip || "—") +
+        ", пинг " + (result.latency_ms || "—") + " мс");
+    } catch (error) {
+      sessionError("wizard", error && error.message ? error.message : "Прокси не работает");
+    }
+  }
+
+  async function sessionStart(scope) {
+    var proxy = (scope === "wizard" ? byId("metaWizProxy") : byId("metaFieldProxy")).value.trim();
+    var cookies = (scope === "wizard" ? byId("metaWizCookies") : byId("metaModalCookies")).value.trim();
+    var userAgent = (scope === "wizard" ? byId("metaWizUserAgent") : byId("metaFieldUserAgent")).value.trim();
+    var connectionId = scope === "modal" && state.connections.length
+      ? state.connections[0].id : null;
+    if (!proxy) {
+      sessionError(scope, "Укажите прокси — без него браузер не запустится (защита от бана)");
+      return;
+    }
+    sessionStop();
+    if (scope === "wizard") state.wizard.sessionToken = null;
+    if (scope === "modal") byId("metaModalSessionToken").value = "";
+    state.session = { scope: scope, sessionId: null, token: null, timer: null };
+    sessionStatus(scope, "Запускаем браузер…");
+    setSessionButtons(scope, true);
+    try {
+      var payload = { cookies: cookies, proxy_url: proxy, user_agent: userAgent || null };
+      if (connectionId) payload.connection_id = connectionId;
+      var res = await api.post("/meta/session/start", payload);
+      state.session.sessionId = res.session_id;
+      if (res.status === "error") {
+        sessionError(scope, res.error || "Ошибка запуска");
+        setSessionButtons(scope, false);
+        return;
+      }
+      sessionPoll(scope);
+    } catch (error) {
+      sessionError(scope, error && error.message ? error.message : "Не удалось запустить браузер");
+      setSessionButtons(scope, false);
+    }
+  }
+
+  function sessionPoll(scope) {
+    if (!state.session || !state.session.sessionId) return;
+    if (state.session.timer) window.clearInterval(state.session.timer);
+    state.session.timer = window.setInterval(async function () {
+      var current = state.session;
+      if (!current || !current.sessionId) return;
+      var id = current.sessionId;
+      try {
+        var st = await api.get("/meta/session/" + id + "/status");
+        if (!state.session || state.session.sessionId !== id) return;
+        if (st.status === "error") {
+          window.clearInterval(current.timer);
+          current.timer = null;
+          sessionError(scope, st.error || "Ошибка сессии");
+          setSessionButtons(scope, false);
+          return;
+        }
+        if (st.status === "waiting_login" || st.status === "restoring") {
+          sessionStatus(scope, escapeHtml(SESSION_STATUS_LABELS[st.status] || st.status) +
+            " — если требуется ручной вход, выполните его через VNC (порт 5900)");
+          return;
+        }
+        if (st.status === "saved" || st.token_ready) {
+          var tokenRes = await api.post("/meta/session/" + id + "/token", {});
+          if (!state.session || state.session.sessionId !== id) return;
+          window.clearInterval(current.timer);
+          current.timer = null;
+          current.token = tokenRes.token;
+          onSessionToken(scope, tokenRes.token);
+          return;
+        }
+        sessionStatus(scope, escapeHtml(SESSION_STATUS_LABELS[st.status] || st.status));
+      } catch (error) {
+        if (!state.session || state.session.sessionId !== id) return;
+        window.clearInterval(current.timer);
+        current.timer = null;
+        sessionError(scope, error && error.message ? error.message : "Опрос статуса не удался");
+        setSessionButtons(scope, false);
+      }
+    }, 3000);
+  }
+
+  function onSessionToken(scope, token) {
+    if (!token) {
+      sessionError(scope, "Токен не найден — попробуйте зайти в Ads Manager в окне браузера и повторить");
+      return;
+    }
+    if (scope === "wizard") {
+      state.wizard.sessionToken = token;
+    } else {
+      byId("metaModalSessionToken").value = token;
+    }
+    sessionStatus(scope, '<span style="color:#0E7350;font-weight:700">✓ EAAB-токен получен:</span> ' +
+      sessionTokenPreview(token));
+    setSessionButtons(scope, false);
+    byId("metaWizNext").disabled = false;
+  }
+
   /* ---------- мастер подключения ---------- */
 
   var WIZARD_STEPS = ["Инструкции", "Токен", "Проверка", "Импорт", "Готово"];
@@ -4618,30 +4852,38 @@
     session: {
       needs: [
         "доступ к своему аккаунту Facebook с правами в Business Manager",
-        "браузер, в котором вы уже вошли в Ads Manager"
+        "cookies из браузера, в котором вы вошли в Ads Manager",
+        "прокси этого аккаунта — обязателен, иначе Meta заблокирует сессию"
       ],
       steps: [
         {
-          title: "Войдите в Ads Manager своим аккаунтом",
-          text: "Токен берётся из сессии этого аккаунта, поэтому доступ к кабинетам у " +
-            "него будет ровно такой же, как у вас глазами.",
-          link: { url: "https://business.facebook.com/", label: "Открыть Business Manager" }
+          title: "Достаньте cookies своей сессии Facebook",
+          text: "Войдите в Ads Manager в своём браузере и скопируйте cookies facebook.com " +
+            "(через DevTools или расширение). CRM откроет браузер с этими cookies и вашим " +
+            "прокси — для Meta это выглядит как обычный заход с вашего устройства."
         },
         {
-          title: "Достаньте токен из сессии",
-          text: "Токен начинается с EAAB и принадлежит официальному приложению Meta, " +
-            "поэтому права у него обычно полные — отдельно ничего выдавать не нужно."
+          title: "Вставьте cookies и укажите прокси",
+          text: "На следующем шаге укажите прокси, с которого обычно работаете, и нажмите " +
+            "«Запустить браузер». Прокси проверяется до запуска: если он не работает, " +
+            "браузер не откроется, и аккаунт не пострадает."
         },
         {
-          title: "Помните про срок",
-          text: "Токен живёт, пока жива сессия: смена пароля, выход из устройств или " +
-            "запрос подтверждения личности его обнуляют. Когда синхронизация встанет, " +
-            "получите новый тем же способом."
+          title: "Подтвердите вход, если нужно",
+          text: "Если cookies валидны, вход произойдёт сам. При капче или чекпойнте " +
+            "войдите вручную через VNC (порт 5900) — CRM сама увидит вход, сохранит " +
+            "сессию и извлечёт EAAB-токен."
+        },
+        {
+          title: "Дальше всё автоматически",
+          text: "Все запросы CRM пойдут через тот же прокси. Когда токен умрёт, " +
+            "синхронизация восстановит сохранённую сессию и получит новый EAAB сама."
         }
       ],
-      note: "Meta считает использование токенов своих внутренних приложений нарушением " +
-        "условий и блокирует при этом обычно не токен, а Business Manager. Способ " +
-        "рабочий, но основным лучше держать System User."
+      note: "Токен сессии живёт, пока жива сессия аккаунта: смена пароля, выход из " +
+        "устройств или запрос подтверждения личности его обнуляют. С сохранённой " +
+        "браузерной сессией токен обновляется автоматически, но при бане аккаунта " +
+        "придётся подключать заново."
     },
     app_token: {
       needs: [
@@ -4712,6 +4954,7 @@
         '<span class="meta-choice__hint">' + escapeHtml(method.hint) + "</span></span></label>";
     }).join("");
     renderWizardGuide(selected);
+    renderSessionAuthUI("wizard");
   }
 
   function wizardMethodValue() {
@@ -4720,20 +4963,26 @@
   }
 
   function openWizard() {
-    state.wizard = { step: 1, accounts: [], picked: [], payload: null };
+    sessionStop();
+    state.wizard = { step: 1, accounts: [], picked: [], payload: null, sessionToken: null };
     renderWizardMethods("system_user");
     byId("metaWizName").value = "";
     byId("metaWizToken").value = "";
+    byId("metaWizCookies").value = "";
     byId("metaWizBusiness").value = "";
+    byId("metaWizProxy").value = "";
+    byId("metaWizUserAgent").value = "";
     byId("metaWizSub").value = "";
     byId("metaWizInterval").value = 30;
     byId("metaWizLookback").value = 3;
+    sessionResetUi("wizard");
     wizardError("");
     renderWizard();
     byId("metaWizard").style.display = "flex";
   }
 
   function closeWizard() {
+    sessionStop();
     byId("metaWizard").style.display = "none";
     state.wizard = null;
   }
@@ -4779,12 +5028,28 @@
     if (wizard.step === 2) {
       var name = byId("metaWizName").value.trim();
       var token = byId("metaWizToken").value.trim();
+      var method = wizardMethodValue();
+      var proxy = byId("metaWizProxy").value.trim();
       if (!name) return wizardError("Укажите название подключения");
-      if (token.length < 20) return wizardError("Вставьте токен");
+      if (method === "session") {
+        // Токен сессии приходит только из браузерной сессии: без прокси браузер
+        // не запускается вовсе, и вставка готовой строки здесь не допускается.
+        if (!proxy) return wizardError(
+          "Токен сессии (EAAB) требует прокси — без него Meta заблокирует сессию и аккаунт"
+        );
+        if (!wizard.sessionToken) return wizardError(
+          "Сначала получите токен через браузер: cookies → прокси → «Запустить браузер»"
+        );
+        token = wizard.sessionToken;
+      } else if (token.length < 20) {
+        return wizardError("Вставьте токен");
+      }
       wizard.payload = {
         name: name,
         access_token: token,
-        auth_method: wizardMethodValue(),
+        auth_method: method,
+        proxy_url: proxy || null,
+        user_agent: byId("metaWizUserAgent").value.trim() || null,
         business_id: byId("metaWizBusiness").value.trim() || null,
         attribution_sub_id: byId("metaWizSub").value
           ? Number(byId("metaWizSub").value) : null,
@@ -4814,7 +5079,11 @@
     try {
       var result = await api.post("/meta/connections/preview", {
         access_token: wizard.payload.access_token,
-        business_id: wizard.payload.business_id
+        business_id: wizard.payload.business_id,
+        // Проверка идёт тем же маршрутом, что и работа: токен за прокси без
+        // него кабинетов не покажет.
+        proxy_url: wizard.payload.proxy_url,
+        user_agent: wizard.payload.user_agent
       });
       wizard.accounts = result.accounts || [];
       wizard.picked = wizard.accounts.filter(function (account) {
@@ -4879,6 +5148,14 @@
     try {
       var payload = Object.assign({}, wizard.payload, { import_accounts: wizard.picked });
       var connection = await api.post("/meta/connections", payload);
+      // Сохраняем браузерную сессию за подключением: когда EAAB умрёт,
+      // синхронизация восстановит её и получит новый токен сама.
+      if (wizard.payload.auth_method === "session" && state.session && state.session.sessionId) {
+        await api.post("/meta/session/" + state.session.sessionId + "/attach", {
+          connection_id: connection.id
+        }).catch(function () {});
+        sessionStop();
+      }
       await api.post("/meta/connections/" + connection.id + "/sync?mode=backfill", {});
       byId("metaWizDone").innerHTML = notice("#E4F7F0", "#16B57F",
         "Подключено: " + wizard.payload.name,
@@ -5050,7 +5327,30 @@
     byId("metaWizMethods").addEventListener("change", function (event) {
       if (event.target && event.target.name === "metaWizMethod") {
         renderWizardGuide(event.target.value);
+        renderSessionAuthUI("wizard");
       }
+    });
+    byId("metaAuthMethods").addEventListener("change", function (event) {
+      if (event.target && event.target.name === "metaAuthMethod") {
+        renderSessionAuthUI("modal");
+      }
+    });
+    byId("metaWizProxyCheck").addEventListener("click", function () {
+      wizardCheckProxy().catch(showFailure);
+    });
+    byId("metaWizSessionStart").addEventListener("click", function () {
+      sessionStart("wizard").catch(showFailure);
+    });
+    byId("metaWizSessionClose").addEventListener("click", function () {
+      sessionStop();
+      sessionResetUi("wizard");
+    });
+    byId("metaModalSessionStart").addEventListener("click", function () {
+      sessionStart("modal").catch(showFailure);
+    });
+    byId("metaModalSessionClose").addEventListener("click", function () {
+      sessionStop();
+      sessionResetUi("modal");
     });
     byId("metaWizNext").addEventListener("click", function () {
       wizardNext().catch(function (error) {

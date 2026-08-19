@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -13,11 +14,23 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    # Браузерные сессии Meta Ads: при остановке закрываем все открытые браузеры,
+    # чтобы не оставлять процессы Playwright висеть.
+    from app.services.meta_session import get_session_manager
+
+    await get_session_manager().shutdown()
+
+
 app = FastAPI(
     title="Celestial CRM API",
     version="0.1.0",
     openapi_url="/api/v1/openapi.json",
     docs_url="/api/docs",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,

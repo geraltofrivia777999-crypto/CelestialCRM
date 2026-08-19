@@ -250,6 +250,8 @@ class MetaClient:
         timeout: float = 60.0,
         max_attempts: int = 4,
         transport: httpx.AsyncBaseTransport | None = None,
+        proxy: str | None = None,
+        user_agent: str | None = None,
     ) -> None:
         self.version = version or settings.meta_graph_version
         base = (api_base or settings.meta_api_base).rstrip("/")
@@ -260,6 +262,12 @@ class MetaClient:
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
         }
+        # Через какой адрес ходить. Свой прокси у подключения нужен там, где
+        # кабинеты живут за ним: запрос из другой сети Meta просто не пустит к
+        # кабинету, привязанному к конкретной стране.
+        if user_agent:
+            self.headers["User-Agent"] = user_agent
+        self.proxy = proxy or None
         self.timeout = timeout
         self.max_attempts = max(max_attempts, 1)
         self.transport = transport
@@ -289,6 +297,9 @@ class MetaClient:
                     headers=self.headers,
                     timeout=self.timeout,
                     transport=self.transport,
+                    # Прокси не задаётся вместе с транспортом: транспорт бывает
+                    # только в тестах, и подменять его прокси нечем.
+                    **({"proxy": self.proxy} if self.proxy and not self.transport else {}),
                 ) as client:
                     response = await client.request(
                         method, path, params=params, data=data, files=files

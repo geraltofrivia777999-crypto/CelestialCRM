@@ -17,7 +17,12 @@ dependencies = [
   "passlib[bcrypt]==1.7.4",
   "bcrypt==4.0.1",
   "cryptography==45.0.5",
-  "httpx==0.28.1",
+  "httpx[socks]==0.28.1",
+  # Браузерные сессии для токена EAAB: токен берётся из живого браузера с
+  # cookies и прокси аккаунта — единственный способ не спалить сессию.
+  # >=1.52: greenlet>=3.1.1, у которого есть колёса под свежие Python.
+  "playwright==1.52.0",
+  "playwright-stealth==1.0.6",
   "celery[redis]==5.5.3",
   "redis==5.2.1",
   "python-multipart==0.0.20",
