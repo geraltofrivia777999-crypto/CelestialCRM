@@ -45,6 +45,8 @@ uploads/
 .design-qa/
 design-qa.md
 .thumbnail
+tmp/
+CRM Dashboard дизайн v2/
 
 # Editors and operating systems
 .vscode/
@@ -62,3 +64,4 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-store/
+.venv-ci/
