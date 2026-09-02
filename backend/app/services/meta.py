@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.services.meta_session import normalize_proxy_url
 
 ACCOUNT_FIELDS = [
     "id",
@@ -73,6 +74,19 @@ HOURLY_INSIGHT_FIELDS = [
 ]
 BUSINESS_FIELDS = ["id", "name", "verification_status", "created_time"]
 PAGE_FIELDS = ["id", "name", "category", "link"]
+# `from` Meta отдаёт только токену с правами на страницу: у рекламного токена
+# без `pages_read_engagement` автор приедет пустым, и это единственный внешний
+# признак, по которому видно, что прав не хватает.
+COMMENT_FIELDS = [
+    "id",
+    "message",
+    "created_time",
+    "from{id,name}",
+    "is_hidden",
+    "like_count",
+    "comment_count",
+    "parent{id}",
+]
 
 # Что Meta возвращает в account_status числом. Без расшифровки в CRM попадала бы
 # цифра, по которой невозможно понять, почему кабинет не откручивает.
@@ -216,6 +230,13 @@ ERROR_HINTS = {
         "Meta не приняла параметры запроса (код 100). Чаще всего это неверный ID "
         "кабинета или версия Graph API, которую Meta уже не поддерживает."
     ),
+    1: (
+        "Meta отклонила запрос (код 1 «Invalid request»). Для токена сессии это "
+        "обычно чекпойнт аккаунта: зайдите в браузере сессии на www.facebook.com, "
+        "войдите и пройдите проверку (код/подтверждение личности), затем получите "
+        "токен заново. Для токена системного пользователя проверьте, что приложение "
+        "в Business Manager не ограничено."
+    ),
 }
 
 
@@ -268,6 +289,16 @@ class MetaClient:
         if user_agent:
             self.headers["User-Agent"] = user_agent
         self.proxy = proxy or None
+        if self.proxy:
+            # Страховка на случай «сырого» формата host:port:user:pass (так
+            # пишут продавцы прокси): httpx такой адрес не примет. Канонический
+            # вид нормализуется ещё при сохранении подключения, здесь — для
+            # старых записей и прямых вызовов. Некорректный адрес пускаем как
+            # есть — httpx сам вернёт понятную ошибку.
+            try:
+                self.proxy = normalize_proxy_url(self.proxy)
+            except Exception:
+                pass
         self.timeout = timeout
         self.max_attempts = max(max_attempts, 1)
         self.transport = transport
@@ -473,6 +504,49 @@ class MetaClient:
             f"/{account_external_id}/promote_pages", {"fields": "id,name", "limit": 100}
         )
 
+    async def page_tokens(self) -> dict[str, str]:
+        """Токены страниц, доступных владельцу текущего токена.
+
+        Комментарии тёмных (рекламных) постов Graph отдаёт только в контексте
+        страницы: юзер-токен получает `total_count: 0` даже когда коммент
+        виден в интерфейсе Facebook. Токен страницы это ограничение снимает,
+        поэтому читаем комментарии им — там, где страница наша.
+        """
+        rows = await self._paged(
+            "/me/accounts", {"fields": "id,access_token", "limit": 100}, page_limit=5
+        )
+        return {row["id"]: row.get("access_token") or "" for row in rows}
+
+    async def page_ads_posts(self, page_external_id: str) -> list[dict]:
+        """Рекламные (в том числе тёмные) посты страницы.
+
+        Запасной путь для динамических объявлений: у них нет своего поста,
+        но пост страницы, под которым крутится реклама, существует.
+        """
+        return await self._paged(
+            f"/{page_external_id}/ads_posts",
+            {
+                "fields": "id,created_time,message,permalink_url,is_published",
+                "limit": 100,
+            },
+            page_limit=2,
+        )
+
+    async def dsa_recommendations(self, account_external_id: str) -> list[str]:
+        """Варианты «Бенефициар / Плательщик», которые подсказывает сам кабинет.
+
+        Meta по активности кабинета сама видит, чьё имя обычно стоит в
+        DSA-прозрачности, и отдаёт список строк — его и показываем в селекте
+        мастера залива. Пустой список не ошибка: кабинет мог ещё не рекламить.
+        """
+        payload = await self._request(
+            f"/{account_external_id}", {"fields": "dsa_recommendations"}
+        )
+        block = payload.get("dsa_recommendations") or {}
+        return [
+            str(item) for item in (block.get("recommendations") or []) if str(item).strip()
+        ]
+
     async def targeting_search(self, kind: str, query: str, limit: int = 25) -> list[dict]:
         """Поиск по справочникам таргетинга Meta — интересы и языки.
 
@@ -546,7 +620,11 @@ class MetaClient:
         bid_amount: Decimal | None = None,
         accelerated: bool = False,
         spend_cap: Decimal | None = None,
+        budget_min: Decimal | None = None,
+        budget_max: Decimal | None = None,
         currency: str | None = None,
+        dsa_beneficiary: str | None = None,
+        dsa_payor: str | None = None,
     ) -> dict:
         data = {
             "name": name,
@@ -570,6 +648,11 @@ class MetaClient:
             data["pacing_type"] = json.dumps(["no_pacing"])
         if spend_cap is not None:
             data["daily_spend_cap"] = money_to_minor(spend_cap, currency)
+        # Лимит адсета мин/макс — рамки дневного бюджета группы.
+        if budget_min is not None:
+            data["daily_budget_min"] = money_to_minor(budget_min, currency)
+        if budget_max is not None:
+            data["daily_budget_max"] = money_to_minor(budget_max, currency)
         if start_time:
             data["start_time"] = start_time
         if end_time:
@@ -578,6 +661,13 @@ class MetaClient:
             data["promoted_object"] = json.dumps(promoted_object)
         if attribution_spec:
             data["attribution_spec"] = json.dumps(attribution_spec)
+        # DSA-прозрачность: для рекламы на ЕС Meta требует бенефициара и
+        # платильщика на адсете. Без обоих полей создание адсета падает, если
+        # у кабинета не заданы значения по умолчанию.
+        if dsa_beneficiary:
+            data["dsa_beneficiary"] = dsa_beneficiary
+        if dsa_payor:
+            data["dsa_payor"] = dsa_payor
         return await self._send("POST", f"/{account_external_id}/adsets", data=data)
 
     async def create_ad_creative(
@@ -640,6 +730,29 @@ class MetaClient:
             },
         )
 
+    async def create_adlabel(self, account_external_id: str, name: str) -> dict:
+        """Adlabel (тег) кабинета: потом вешается на кампании/адсеты/объявления."""
+        return await self._send(
+            "POST", f"/{account_external_id}/adlabels", data={"name": name}
+        )
+
+    async def list_adlabels(self, account_external_id: str) -> list[dict]:
+        """Все adlabels кабинета — нужны для режима «убрать теги»."""
+        rows = await self._paged(
+            f"/{account_external_id}/adlabels", {"fields": "id,name", "limit": 100}
+        )
+        return [row for row in rows if row.get("id")]
+
+    async def attach_adlabel(self, object_external_id: str, adlabel_id: str) -> None:
+        await self._send(
+            "POST", f"/{object_external_id}/adlabels", data={"adlabel_id": adlabel_id}
+        )
+
+    async def detach_adlabel(self, object_external_id: str, adlabel_id: str) -> None:
+        await self._send(
+            "DELETE", f"/{object_external_id}/adlabels/{adlabel_id}"
+        )
+
     async def upload_image(
         self,
         account_external_id: str,
@@ -675,6 +788,43 @@ class MetaClient:
             files={"source": (file_name, content, mime_type)},
         )
 
+    async def get_object(self, external_id: str, params: dict | None = None) -> dict:
+        """Чтение одного объекта Graph API (например, превью загруженного видео)."""
+        return await self._request(f"/{external_id}", params=params)
+
+    # --- комментарии под постом объявления ------------------------------------
+
+    async def post_comments(self, post_external_id: str, *, pages: int = 5) -> list[dict]:
+        """Комментарии поста, с ответами в ветках.
+
+        `filter=stream` отдаёт плоским списком и корневые комментарии, и ответы:
+        спам чаще всего висит именно в ветке под чужим комментарием, и обходить
+        ветки отдельными запросами значило бы умножить их число на порядок.
+        Порядок обратно-хронологический — свежий мусор нужен первым, а глубину
+        ограничивает `pages`: у старого поста комментариев могут быть тысячи, и
+        выгребать их целиком ради ручной чистки незачем.
+        """
+        return await self._paged(
+            f"/{post_external_id}/comments",
+            {"fields": ",".join(COMMENT_FIELDS), "filter": "stream",
+             "order": "reverse_chronological", "limit": 100},
+            page_limit=max(pages, 1),
+        )
+
+    async def hide_comment(self, comment_external_id: str, hidden: bool) -> dict:
+        """Скрыть или вернуть комментарий.
+
+        Скрытый виден автору и его друзьям, но не остальным, — обратимая мера, в
+        отличие от удаления.
+        """
+        return await self._send(
+            "POST", f"/{comment_external_id}", data={"is_hidden": "true" if hidden else "false"}
+        )
+
+    async def delete_comment(self, comment_external_id: str) -> dict:
+        """Удалить комментарий. Необратимо: Meta не отдаёт его больше никогда."""
+        return await self._send("DELETE", f"/{comment_external_id}")
+
     async def update_object(self, external_id: str, data: dict) -> dict:
         return await self._send("POST", f"/{external_id}", data=data)
 
@@ -683,6 +833,25 @@ class MetaClient:
 
     async def set_daily_budget(self, external_id: str, budget: Decimal) -> dict:
         return await self.update_object(external_id, {"daily_budget": money_to_minor(budget)})
+
+
+def client_with_token(base: MetaClient, token: str) -> MetaClient:
+    """Клиент с другим токеном — в том же транспорте и с теми же настройками.
+
+    Нужен для токенов страниц: читаем комментарии тёмных постов токеном
+    страницы, но через тот же браузерный контекст сессии — сессионные
+    токены вне его Meta отклоняет.
+    """
+    return MetaClient(
+        token,
+        api_base=base.base_url.rsplit("/", 1)[0],
+        version=base.version,
+        timeout=base.timeout,
+        max_attempts=base.max_attempts,
+        transport=base.transport,
+        proxy=base.proxy,
+        user_agent=base.headers.get("User-Agent"),
+    )
 
 
 def uniquify(content: bytes, mime_type: str) -> bytes:
@@ -786,22 +955,18 @@ def build_targeting(template: object) -> dict:
     список — ошибку. По той же причине опускаются устройства и версии ОС: для
     Meta «не указано» означает «все», а пустой список — ошибку.
     """
-    from app.services.meta_bundle import DEFAULT_LOCATION_TYPE, LOCATION_TYPES
-
     adset = (getattr(template, "settings", None) or {}).get("adset") or {}
     countries = [str(code).upper()[:2] for code in (getattr(template, "geo", None) or []) if code]
     targeting: dict[str, Any] = {
         "age_min": int(getattr(template, "age_min", 18) or 18),
         "age_max": int(getattr(template, "age_max", 65) or 65),
     }
-    location_types = LOCATION_TYPES.get(
-        str(adset.get("location_type") or DEFAULT_LOCATION_TYPE),
-        LOCATION_TYPES[DEFAULT_LOCATION_TYPE],
-    )["types"]
     regions = [str(value) for value in (adset.get("geo_regions") or []) if value]
     cities = [str(value) for value in (adset.get("geo_cities") or []) if value]
     if countries or regions or cities:
-        geo_locations: dict[str, Any] = {"location_types": list(location_types)}
+        # location_types Meta удалила (ошибка 100/1870194) — «проживающие,
+        # путешествующие, недавно находившиеся» больше не выбираются.
+        geo_locations: dict[str, Any] = {}
         if countries:
             geo_locations["countries"] = countries
         if regions:
@@ -906,17 +1071,41 @@ def _os_version(family: str, minimum: object) -> str:
     return f"{family}_ver_{version}_and_above" if version else family
 
 
-def build_asset_feed_spec(texts: list[dict], creatives: list[object], *, cta: str) -> dict:
+def build_asset_feed_spec(
+    texts: list[dict],
+    creatives: list[object],
+    *,
+    cta: str,
+    locale_ids: dict[str, int] | None = None,
+) -> dict:
     """Мультиязычное объявление одним креативом.
 
     Meta показывает зрителю текст на его языке сама, если дать ей набор
     вариантов и правило соответствия. Поэтому языков много, а объявление в
     кабинете одно — по объявлению на язык означало бы делить бюджет между
     ними и учиться на каждом отдельно.
+
+    Правила Meta принимает только как `customization_spec.locales` с
+    числовыми ID словаря adlocale (коды вроде `en_US` она отбивает кодом 100),
+    плюс одно правило обязательно помечается `is_default` — запасной вариант
+    для тех, чей язык не попал ни в одно правило.
+
+    У каждого языка может быть свой креатив (`texts[i]["creatives"]` —
+    картинки/видео именно этого языка): тогда все ассеты помечаются
+    `adlabels` этого языка, а правило получает `image_label`/`video_label`.
+    Если своих креативов нет ни у кого — общий пул без меток, как раньше.
     """
+    per_text = any(item.get("creatives") for item in texts)
+    if per_text and any(not item.get("creatives") for item in texts):
+        raise ValueError(
+            "У части языков не задан свой креатив: либо у всех, либо общий"
+        )
     titles, bodies, descriptions, links, rules = [], [], [], [], []
+    images, videos = [], []
     for index, item in enumerate(texts):
-        label = str(index)
+        # Метка языка — его код («en_US»), а не номер: числовую строку Meta
+        # читает как id и отвечает «Label's id or name has to be present».
+        label = str(item.get("language") or "").strip() or f"text_{index}"
         titles.append({"text": str(item.get("headline") or ""), "adlabels": [{"name": label}]})
         bodies.append({"text": str(item.get("primary_text") or ""), "adlabels": [{"name": label}]})
         descriptions.append(
@@ -928,17 +1117,53 @@ def build_asset_feed_spec(texts: list[dict], creatives: list[object], *, cta: st
                 "adlabels": [{"name": label}],
             }
         )
-        language = str(item.get("language") or "").strip()
-        if language:
-            rules.append(
+        pool = item.get("creatives") or creatives
+        pool_images, pool_videos = [], []
+        for creative in pool:
+            asset = (
                 {
-                    "customization_spec": {"language": [language]},
-                    "title_label": {"name": label},
-                    "body_label": {"name": label},
-                    "description_label": {"name": label},
-                    "link_url_label": {"name": label},
+                    "video_id": str(getattr(creative, "external_id", "") or ""),
+                    "thumbnail_url": str(
+                        getattr(creative, "thumbnail_url", "") or ""
+                    ),
                 }
+                if str(getattr(creative, "kind", "image")) == "video"
+                else {"hash": str(getattr(creative, "external_hash", "") or "")}
             )
+            if per_text:
+                asset["adlabels"] = [{"name": label}]
+            if str(getattr(creative, "kind", "image")) == "video":
+                pool_videos.append(asset)
+            else:
+                pool_images.append(asset)
+        # Общий пул складываем один раз, свои — с лейблом языка.
+        if per_text or index == 0:
+            images.extend(pool_images)
+            videos.extend(pool_videos)
+        language = str(item.get("language") or "").strip()
+        if not language:
+            continue
+        locale_id = (locale_ids or {}).get(language)
+        if locale_id is None:
+            raise ValueError(
+                "Не удалось определить числовой ID языка "
+                f"«{item.get('language_name') or language}» для правил показа"
+            )
+        rule = {
+            "customization_spec": {"locales": [int(locale_id)]},
+            "title_label": {"name": label},
+            "body_label": {"name": label},
+            "description_label": {"name": label},
+            "link_url_label": {"name": label},
+            "is_default": index == 0,
+        }
+        # По одному изображению без метки работает на всех («общий креатив»),
+        # в per-language режиме каждое правило ссылается на картинку языка.
+        if per_text and pool_images:
+            rule["image_label"] = {"name": label}
+        elif per_text and pool_videos:
+            rule["video_label"] = {"name": label}
+        rules.append(rule)
     spec: dict[str, Any] = {
         "titles": titles,
         "bodies": bodies,
@@ -947,26 +1172,12 @@ def build_asset_feed_spec(texts: list[dict], creatives: list[object], *, cta: st
         "call_to_action_types": [cta],
         "ad_formats": ["SINGLE_IMAGE"],
     }
-    images, videos = [], []
-    for creative in creatives:
-        if str(getattr(creative, "kind", "image")) == "video":
-            videos.append(
-                {
-                    "video_id": str(getattr(creative, "external_id", "") or ""),
-                    "thumbnail_url": str(getattr(creative, "thumbnail_url", "") or ""),
-                }
-            )
-        else:
-            images.append({"hash": str(getattr(creative, "external_hash", "") or "")})
     if videos:
         spec["videos"] = videos
         spec["ad_formats"] = ["SINGLE_VIDEO"]
     if images:
         spec["images"] = images
-    # Правило соответствия отправляем только когда язык задан хотя бы у одного
-    # варианта: без него Meta считает набор обычным перебором и крутит всё
-    # подряд, а это уже не «текст на языке зрителя».
-    if len(rules) > 1:
+    if rules:
         spec["asset_customization_rules"] = rules
     return spec
 
@@ -1058,6 +1269,20 @@ def hour_of(row: dict) -> int | None:
     return hour if 0 <= hour <= 23 else None
 
 
+def creative_post_id(row: dict) -> str | None:
+    """Пост объявления — «<page_id>_<post_id>».
+
+    Именно под ним живут комментарии. У объявления без органического поста
+    (например, собранного из каталога) его нет, и это нормально: чистить там
+    нечего.
+    """
+    creative = row.get("creative")
+    if not isinstance(creative, dict):
+        return None
+    story = str(creative.get("effective_object_story_id") or "")
+    return story[:120] if "_" in story else None
+
+
 def creative_page_id(row: dict) -> str | None:
     """Фан-пейдж объявления.
 
@@ -1091,9 +1316,12 @@ def _int_or_none(value: object) -> int | None:
 
 def _error_message(error: dict) -> str:
     code = _int_or_none(error.get("code"))
+    message = error.get("error_user_msg") or error.get("message") or ""
+    clean = " ".join(str(message).split())[:240]
     hint = ERROR_HINTS.get(code) if code is not None else None
     if hint:
+        # Общий текст — для человека; точную фразу Meta — для понимания причины.
+        if clean and clean.lower() not in hint.lower():
+            return f"{hint} — Meta: «{clean}»"
         return hint
-    message = error.get("error_user_msg") or error.get("message") or "неизвестная ошибка"
-    clean = " ".join(str(message).split())[:240]
     return f"Meta вернула ошибку (код {code}): {clean}" if code else f"Meta вернула ошибку: {clean}"

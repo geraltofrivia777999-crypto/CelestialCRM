@@ -1,14 +1,17 @@
 import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from celery.utils.log import get_task_logger
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
-from app.core.database import SessionLocal
 from app.models import IntegrationConnection, Status, SyncRun, SyncStatus
 from app.services.alerts import AlertEngine
 from app.services.keitaro_sync import KeitaroSyncEngine
+from app.services.meta_comments import CommentJobEngine
 from app.services.meta_launch import MetaLaunchPublisher
 from app.services.meta_rules import MetaRuleEngine
 from app.services.meta_sync import MetaSyncEngine
@@ -16,14 +19,24 @@ from app.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
 
+# Воркер гоняет каждую задачу через asyncio.run() — то есть под новым event
+# loop'ом. Соединения asyncpg привязаны к loop'у, в котором созданы: пул из
+# общего движка отдал бы «мёртвое» соединение и RuntimeError «attached to a
+# different loop». NullPool создаёт соединение под каждый сеанс — медленнее,
+# но корректно при таком запуске.
+_worker_engine = create_async_engine(settings.database_url, poolclass=NullPool)
+WorkerSessionLocal = async_sessionmaker(
+    _worker_engine, expire_on_commit=False, class_=AsyncSession
+)
+
 
 async def _run_sync(connection_id: str, run_id: str, mode: str) -> dict:
-    engine = KeitaroSyncEngine(SessionLocal)
+    engine = KeitaroSyncEngine(WorkerSessionLocal)
     return await engine.run(connection_id, run_id, mode)
 
 
 async def _run_meta_sync(connection_id: str, run_id: str, mode: str) -> dict:
-    engine = MetaSyncEngine(SessionLocal)
+    engine = MetaSyncEngine(WorkerSessionLocal)
     return await engine.run(connection_id, run_id, mode)
 
 
@@ -85,7 +98,7 @@ def publish_meta_launch(self, launch_id: str, user_id: str | None = None):
     запуск делает человек, увидев, на чём именно всё остановилось.
     """
     logger.info("Publishing Meta launch=%s", launch_id)
-    return asyncio.run(MetaLaunchPublisher(SessionLocal).publish(launch_id, user_id))
+    return asyncio.run(MetaLaunchPublisher(WorkerSessionLocal).publish(launch_id, user_id))
 
 
 @celery_app.task
@@ -101,7 +114,31 @@ def publish_due_meta_launches() -> dict:
 async def _publish_due_launches() -> dict:
     from app.models import LaunchStatus, MetaLaunch
 
-    async with SessionLocal() as db:
+    async with WorkerSessionLocal() as db:
+        # Заливы, застрявшие в publishing (упавший воркер, недопоставленная
+        # задача) не должны висеть вечно: через пару часов переводим в failed,
+        # чтобы человек увидел проблему и мог перезапустить.
+        stuck = list(
+            (
+                await db.execute(
+                    select(MetaLaunch).where(
+                        MetaLaunch.status == LaunchStatus.publishing,
+                        MetaLaunch.updated_at < datetime.now(UTC) - timedelta(hours=2),
+                    )
+                )
+            ).scalars()
+        )
+        for launch in stuck:
+            launch.status = LaunchStatus.failed
+            launch.last_error = (
+                "Публикация зависла: воркер не завершил её за 2 часа. "
+                "Перезапустите публикацию."
+            )
+        if stuck:
+            await db.commit()
+            logger.warning("Released %s stuck publishing launch(es)", len(stuck))
+
+    async with WorkerSessionLocal() as db:
         rows = list(
             (
                 await db.execute(
@@ -115,17 +152,38 @@ async def _publish_due_launches() -> dict:
         )
         due = []
         for launch in rows:
-            # Время снимается сразу: иначе следующий тик планировщика поставит
-            # тот же залив второй раз, пока публикация ещё идёт.
-            launch.publish_at = None
             due.append((str(launch.id), str(launch.owner_id) if launch.owner_id else None))
-        await db.commit()
 
+    # Сначала ставим задачи, потом снимаем время и коммитим. Порядок «сначала
+    # коммит» терял залив при падении между коммитом и enqueue: publish_at уже
+    # пуст, статус draft — планировщик его больше не поднимет. При падении
+    # между enqueue и коммитом задача может прийти дважды — от двойной
+    # публикации защищает validate_launch (статус publishing), а зависшие
+    # publishing-заливы подметает _expire_stuck_launches.
     for launch_id, owner_id in due:
         publish_meta_launch.delay(launch_id, owner_id)
+
     if due:
+        async with WorkerSessionLocal() as db:
+            for launch_id, _owner_id in due:
+                launch = await db.get(MetaLaunch, uuid.UUID(launch_id))
+                if launch:
+                    launch.publish_at = None
+            await db.commit()
         logger.info("Queued %s scheduled Meta launches", len(due))
     return {"queued": len(due)}
+
+
+@celery_app.task(bind=True, acks_late=True)
+def run_meta_comment_job(self, job_id: str) -> dict:
+    """Загрузка или чистка комментариев одним заданием.
+
+    Автоповтора нет намеренно: удаление комментария необратимо, и слепой ретрай
+    после неясной ошибки прошёлся бы по списку второй раз. Задание помнит, что
+    уже обработано, — повторный запуск делает человек, увидев, на чём встало.
+    """
+    logger.info("Running Meta comment job=%s", job_id)
+    return asyncio.run(CommentJobEngine(WorkerSessionLocal).run(job_id))
 
 
 @celery_app.task
@@ -133,7 +191,21 @@ def run_meta_rules() -> dict:
     if not settings.meta_rules_enabled:
         logger.info("Meta auto-rules are disabled")
         return {"rules": 0, "triggered": 0, "applied": 0}
-    return asyncio.run(MetaRuleEngine(SessionLocal).run())
+    return asyncio.run(MetaRuleEngine(WorkerSessionLocal).run())
+
+
+@celery_app.task
+def apply_due_budget_increases() -> dict:
+    """Запланированные увеличения бюджета («Расширенный режим»)."""
+    from app.services.budget_increase import apply_due_budget_increases as _apply
+    from app.services.meta import MetaClient
+
+    return asyncio.run(
+        _apply(
+            WorkerSessionLocal,
+            lambda token, **kwargs: MetaClient(token, **kwargs),
+        )
+    )
 
 
 @celery_app.task
@@ -142,7 +214,7 @@ def run_alerts() -> dict:
     if not settings.alerts_enabled:
         logger.info("Utilities alerts are disabled")
         return {"alerts": 0, "caps": 0}
-    return asyncio.run(AlertEngine(SessionLocal).run())
+    return asyncio.run(AlertEngine(WorkerSessionLocal).run())
 
 
 STUCK_RUN_TIMEOUT_MINUTES = 120
@@ -179,7 +251,7 @@ async def _expire_stuck_runs(db, now: datetime) -> int:
 async def _schedule_connections(kind: str, task) -> int:
     queued = 0
     now = datetime.now(UTC)
-    async with SessionLocal() as db:
+    async with WorkerSessionLocal() as db:
         await _expire_stuck_runs(db, now)
         connections = list(
             (
@@ -234,3 +306,4 @@ def schedule_meta_syncs() -> int:
         logger.info("Scheduled Meta sync is disabled")
         return 0
     return asyncio.run(_schedule_connections("meta", sync_meta_connection))
+

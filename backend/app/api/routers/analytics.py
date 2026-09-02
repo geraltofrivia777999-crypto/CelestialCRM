@@ -4,11 +4,11 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook, load_workbook
 from redis.asyncio import Redis
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -30,7 +30,6 @@ from app.models import (
     Offer,
     OfferBuyer,
     OfferLead,
-    OfferStatus,
     Partner,
     Service,
     SpendProvider,
@@ -69,15 +68,28 @@ async def invalidate_dashboard_cache(workspace_id: uuid.UUID) -> None:
         pass
 
 
+def _many(value) -> list:
+    """Фильтр приходит и одним значением, и списком.
+
+    Медиаборд отдаёт набор («офферы вот этих трёх баеров»), а дашборд и ветки
+    дерева — ровно одно значение, поэтому принимать приходится оба вида.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [item for item in value if item is not None and item != ""]
+    return [value] if value != "" else []
+
+
 def _media_filters(
     workspace_id: uuid.UUID,
     allowed_buyer_ids: set[uuid.UUID],
     date_from: date | None,
     date_to: date | None,
-    buyer_id: uuid.UUID | None,
-    offer_id: uuid.UUID | None,
-    geo: str | None = None,
-    partner_id: uuid.UUID | None = None,
+    buyer_id: uuid.UUID | list[uuid.UUID] | None,
+    offer_id: uuid.UUID | list[uuid.UUID] | None,
+    geo: str | list[str] | None = None,
+    partner_id: uuid.UUID | list[uuid.UUID] | None = None,
     exclude_offers_group: bool = False,
 ) -> list:
     filters = [
@@ -96,14 +108,18 @@ def _media_filters(
         filters.append(MediaRecord.record_date >= date_from)
     if date_to:
         filters.append(MediaRecord.record_date <= date_to)
-    if buyer_id:
-        filters.append(MediaRecord.buyer_id == buyer_id)
-    if offer_id:
-        filters.append(MediaRecord.offer_id == offer_id)
-    if geo:
-        filters.append(Offer.geo == geo.upper())
-    if partner_id:
-        filters.append(Offer.partner_id == partner_id)
+    buyers = _many(buyer_id)
+    if buyers:
+        filters.append(MediaRecord.buyer_id.in_(buyers))
+    offers = _many(offer_id)
+    if offers:
+        filters.append(MediaRecord.offer_id.in_(offers))
+    geos = [str(item).upper() for item in _many(geo)]
+    if geos:
+        filters.append(Offer.geo.in_(geos))
+    partners = _many(partner_id)
+    if partners:
+        filters.append(Offer.partner_id.in_(partners))
     return filters
 
 
@@ -169,10 +185,10 @@ def _group_head(row) -> dict:
 async def media_record_groups(
     date_from: date | None = None,
     date_to: date | None = None,
-    buyer_id: uuid.UUID | None = None,
-    offer_id: uuid.UUID | None = None,
-    geo: str | None = None,
-    partner_id: uuid.UUID | None = None,
+    buyer_id: list[uuid.UUID] | None = Query(None),
+    offer_id: list[uuid.UUID] | None = Query(None),
+    geo: list[str] | None = Query(None),
+    partner_id: list[uuid.UUID] | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("media.view")),
 ) -> dict:
@@ -342,10 +358,10 @@ async def media_record_groups(
 async def list_media_records(
     date_from: date | None = None,
     date_to: date | None = None,
-    buyer_id: uuid.UUID | None = None,
-    offer_id: uuid.UUID | None = None,
-    geo: str | None = None,
-    partner_id: uuid.UUID | None = None,
+    buyer_id: list[uuid.UUID] | None = Query(None),
+    offer_id: list[uuid.UUID] | None = Query(None),
+    geo: list[str] | None = Query(None),
+    partner_id: list[uuid.UUID] | None = Query(None),
     limit: int = 200,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
@@ -1330,34 +1346,37 @@ async def export_finance(
 
 
 async def _offers_widget(db: AsyncSession, current: User) -> dict[uuid.UUID, dict]:
-    """Виджет «Рабочие оффера» — то, что ждёт действия именно этого человека.
+    """Виджет «Ваши оффера» — тот же справочник, что в разделе «Оффера».
 
     Роль читается по правам, а не по названию: скопированная или переименованная
     роль (ТЗ 7.1) должна вести себя так же.
 
-    * полный доступ — оффера в статусе «Не занят»: их ещё некому раздать;
-    * `offers.manage` (тимлид) — назначенные лично ему и уже «Активные»;
-    * остальные (баер) — назначенные лично ему и ушедшие «В работу».
+    * полный доступ и `offers.view_all` — весь справочник;
+    * остальные — только назначенные им, тимлиду или баеру.
+
+    Статус здесь не фильтр: виджет показывает не «что ждёт действия», а то же,
+    что человек увидит, открыв раздел, — иначе на дашборде и в разделе у него
+    разные списки. Синхронизированные из Keitaro офферы не в счёт: раздел ведёт
+    свой справочник, а трекерные строки в него не входят.
     """
-    if await has_full_access(db, current):
-        condition = Offer.status == OfferStatus.free
-    elif has_permission(current, "offers.manage"):
-        condition = and_(
-            Offer.status == OfferStatus.active,
-            Offer.id.in_(select(OfferLead.offer_id).where(OfferLead.user_id == current.id)),
-        )
-    else:
-        condition = and_(
-            Offer.status == OfferStatus.working,
-            Offer.id.in_(
-                select(OfferBuyer.offer_id).where(OfferBuyer.user_id == current.id)
-            ),
+    conditions = [Offer.workspace_id == current.workspace_id, Offer.connection_id.is_(None)]
+    if not (await has_full_access(db, current)
+            or has_permission(current, "offers.view_all")):
+        conditions.append(
+            or_(
+                Offer.id.in_(
+                    select(OfferLead.offer_id).where(OfferLead.user_id == current.id)
+                ),
+                Offer.id.in_(
+                    select(OfferBuyer.offer_id).where(OfferBuyer.user_id == current.id)
+                ),
+            )
         )
     rows = (
         await db.execute(
             select(Offer.id, Offer.name, Offer.geo, Offer.cap, Partner.name)
             .outerjoin(Partner, Partner.id == Offer.partner_id)
-            .where(Offer.workspace_id == current.workspace_id, condition)
+            .where(*conditions)
             .order_by(Offer.is_starred.desc(), Offer.name, Offer.id)
             .limit(50)
         )

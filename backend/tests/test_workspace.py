@@ -1409,3 +1409,94 @@ async def test_a_field_created_from_a_card_shows_in_every_task(workspace) -> Non
 
     stored = [row for column in board["columns"] for row in column["tasks"]][0]
     assert stored["field_ids"] == [field["id"]]
+
+
+async def test_children_are_assigned_from_the_parent_card(database) -> None:
+    """Иерархию задают с обеих сторон: «мои начальники» и «мои подчинённые».
+
+    В базе связь одна, поэтому подчинённые пишутся как родитель у каждого из
+    них — и снятие подчинённого не должно трогать остальных его начальников.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    created: list[str] = []
+
+    def _all_users(client):
+        payload = client.get("/api/v1/users").json()
+        return payload["items"] if isinstance(payload, dict) else payload
+
+    with _admin_client() as client:
+        role_id = client.get("/api/v1/roles").json()[0]["id"]
+
+        def make(login: str, **extra) -> str:
+            response = client.post(
+                "/api/v1/users",
+                json={"name": f"Child test {login}", "login": f"{login}-{suffix}",
+                      "password": "test-password", "role_id": role_id, **extra},
+            )
+            assert response.status_code == 201, response.text
+            created.append(response.json()["id"])
+            return response.json()["id"]
+
+        chief = make("chief")
+        first = make("first")
+        second = make("second")
+
+        assigned = client.patch(
+            f"/api/v1/users/{chief}", json={"child_ids": [first, second]}
+        )
+        assert assigned.status_code == 200
+
+        people = {row["id"]: row for row in _all_users(client)}
+        assert [p["id"] for p in people[first]["parents"]] == [chief]
+        assert [p["id"] for p in people[second]["parents"]] == [chief]
+
+        # Снимаем одного — второй остаётся на месте.
+        client.patch(f"/api/v1/users/{chief}", json={"child_ids": [second]})
+        people = {row["id"]: row for row in _all_users(client)}
+        assert people[first]["parents"] == []
+        assert [p["id"] for p in people[second]["parents"]] == [chief]
+
+        # Кольцо не пропускаем: начальник не может стать подчинённым своего же
+        # подчинённого.
+        cycle = client.patch(f"/api/v1/users/{second}", json={"child_ids": [chief]})
+        assert cycle.status_code == 422
+
+        for user_id in reversed(created):
+            client.delete(f"/api/v1/users/{user_id}")
+
+
+async def test_a_task_keeps_its_start_date(workspace) -> None:
+    """Дата начала — отдельная от срока: по ней видно, когда задачу берут.
+
+    И начать позже срока нельзя: это не задача, а опечатка.
+    """
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/workspace/tasks",
+            json={"title": "Спланировать залив", "start_date": "2026-09-10",
+                  "due_date": "2026-09-20"},
+        )
+        assert created.status_code == 201
+        task = created.json()
+        assert task["start_date"] == "2026-09-10"
+
+        columns = await _columns(client)
+        card = columns[0]["tasks"][0]
+        assert card["start_date"] == "2026-09-10"
+
+        moved = client.patch(
+            f"/api/v1/workspace/tasks/{task['id']}", json={"start_date": "2026-09-12"}
+        )
+        assert moved.status_code == 200
+
+        wrong = client.patch(
+            f"/api/v1/workspace/tasks/{task['id']}", json={"start_date": "2026-09-25"}
+        )
+        assert wrong.status_code == 422
+
+        backwards = client.post(
+            "/api/v1/workspace/tasks",
+            json={"title": "Задом наперёд", "start_date": "2026-09-20",
+                  "due_date": "2026-09-10"},
+        )
+        assert backwards.status_code == 422

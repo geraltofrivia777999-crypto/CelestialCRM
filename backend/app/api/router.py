@@ -8,6 +8,8 @@ from app.api.routers import (
     integrations,
     knowledge,
     meta,
+    partner_integrations,
+    recruitment,
     references,
     salary,
     tasks,
@@ -28,4 +30,6 @@ api_router.include_router(tasks.router)
 api_router.include_router(knowledge.router)
 api_router.include_router(salary.router)
 api_router.include_router(utilities.router)
+api_router.include_router(recruitment.router)
+api_router.include_router(partner_integrations.router)
 

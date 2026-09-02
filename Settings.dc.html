@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Alumni+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Alumni+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;background:#F4F1F1;color:#070505;-webkit-font-smoothing:antialiased}
@@ -69,6 +69,70 @@
   .field-label{display:block;color:#6A6161;font-size:11.5px;font-weight:700;margin-bottom:7px}
   .form-input{width:100%;height:44px;border:1px solid #E5DFDF;border-radius:11px;padding:0 13px;outline:none;color:#2A2020;background:#fff;font-size:13px}
   .form-input:focus{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.09)}
+  /* Кнопки экрана. Раньше каждая описывалась инлайном, и блок партнёрских
+     интеграций, написанный словарём Meta Ads (.meta-action, .meta-control),
+     оставался вообще без стилей: на этой странице таких классов нет. Классы
+     повторяют ровно ту геометрию, что уже стоит в разметке инлайном. */
+  .settings-btn{height:39px;padding:0 14px;border:1px solid #E5DFDF;border-radius:10px;background:#fff;color:#6A6161;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap;transition:background .18s,border-color .18s,color .18s}
+  .settings-btn:hover{background:#FAF8F8;color:#3A3030}
+  .settings-btn:disabled{opacity:.55;cursor:default}
+  .settings-btn:disabled:hover{background:#fff;color:#6A6161}
+  .settings-btn--primary{border-color:#B91414;background:#B91414;color:#fff}
+  .settings-btn--primary:hover{background:#A21212;color:#fff}
+  .settings-btn--primary:disabled:hover{background:#B91414;color:#fff}
+  .settings-btn--danger{border-color:#F1D9D9;color:#B91414}
+  .settings-btn--danger:hover{background:#FCF1F1;color:#B91414}
+  .settings-btn--tall{height:42px;padding:0 18px;font-size:12.5px}
+  .settings-btn--icon{width:34px;height:34px;padding:0;font-size:15px}
+  /* Статус-плашка и плитка факта — те же, что у карточек Keitaro и Meta выше. */
+  .settings-chip{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:6px 9px;font-size:10.5px;font-weight:700;white-space:nowrap}
+  .settings-chip i{width:6px;height:6px;border-radius:50%;background:currentColor;font-style:normal}
+  .settings-chip--ok{color:#16B57F;background:#E4F7F0}
+  .settings-chip--warn{color:#E8912B;background:#FFF2E0}
+  .settings-chip--bad{color:#B91414;background:#FCF1F1}
+  .settings-chip--idle{color:#9B9292;background:#F7F4F4}
+  .settings-tile{background:#FAF8F8;border-radius:11px;padding:11px;min-width:0}
+  .settings-tile b{display:block;font-size:10px;color:#9B9292;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+  .settings-tile span{display:block;font-size:12px;font-weight:700;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* Плитки фактов не должны выдавливать карточку на узком экране. */
+  .settings-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+  .settings-empty{border:1px dashed #DDD5D5;border-radius:14px;padding:26px 22px;text-align:center}
+  .settings-empty b{display:block;font-size:12.5px;font-weight:700;color:#3A3030}
+  .settings-empty span{display:block;font-size:11px;color:#9B9292;margin-top:5px;line-height:1.55}
+  /* Скелет вместо строки «Загружаем…»: карточки не должны схлопываться в текст. */
+  .settings-skeleton{display:grid;gap:12px}
+  .settings-skeleton i{display:block;height:104px;border-radius:18px;background:linear-gradient(90deg,#F4F0F0 25%,#EDE7E7 37%,#F4F0F0 63%);background-size:400% 100%;animation:settings-shimmer 1.3s ease-in-out infinite}
+  @keyframes settings-shimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
+  @media(prefers-reduced-motion:reduce){.settings-skeleton i{animation:none}}
+  /* Партнёрские интеграции */
+  .pi-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}
+  .pi-id{display:flex;align-items:center;gap:12px;min-width:0}
+  .pi-mark{width:48px;height:48px;flex-shrink:0;border-radius:14px;background:linear-gradient(135deg,#B91414,#C41616);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;font-weight:800}
+  .pi-name{font-size:16px;font-weight:700}
+  .pi-sub{font-size:10.5px;color:#9B9292;margin-top:3px;overflow-wrap:anywhere}
+  .pi-actions{display:flex;gap:9px;margin-top:18px;flex-wrap:wrap}
+  .pi-actions .settings-btn--primary{flex:1 1 190px}
+  .pi-pills{display:flex;gap:6px;flex-wrap:wrap}
+  .pi-section-title{font-size:10.5px;color:#857D7D;font-weight:700;margin-bottom:8px}
+  .pi-map-row{display:flex;gap:10px;align-items:center;padding:9px 0;border-top:1px solid #F7F4F4}
+  .pi-map-row .data-pill{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pi-map-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:10px;align-items:end}
+  @media(max-width:640px){.pi-map-form{grid-template-columns:1fr}}
+  .pi-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:6px;border-radius:9px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;font-size:10px;font-weight:600}
+  /* Тег, которому не нашлось баера: это зависшие деньги, поэтому строка
+     подсвечена и решается прямо в ней, без перехода куда-то ещё. */
+  .pi-pending{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:11px 13px;border:1px solid #F3DEDE;background:#FDF7F7;border-radius:12px;margin-bottom:8px}
+  .pi-pending__tag{font-size:13px;font-weight:700;color:#3A3030}
+  .pi-pending__meta{font-size:11px;color:#9B9292;font-weight:600;margin-top:3px}
+  @media(max-width:640px){.pi-pending{grid-template-columns:1fr}}
+  /* Середина модалки прокручивается, шапка и подвал остаются на месте. */
+  .modal-scroll{max-height:min(60vh,520px);overflow-y:auto}
+  .pi-runs{width:100%;border-collapse:collapse}
+  .pi-runs th{padding:10px 12px;text-align:left;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9B9292;border-bottom:1px solid #F0EBEB;white-space:nowrap}
+  .pi-runs td{padding:11px 12px;border-bottom:1px solid #F7F4F4;font-size:12.5px;font-weight:600;color:#3A3030;vertical-align:top;white-space:nowrap}
+  .pi-runs tr:last-child td{border-bottom:0}
+  .pi-runs td:nth-child(4){text-align:right;font-variant-numeric:tabular-nums}
+  .pi-runs th:nth-child(4){text-align:right}
   .toast{position:fixed;right:26px;bottom:26px;z-index:50;display:none;align-items:center;gap:10px;background:#070505;color:#fff;border-radius:12px;padding:13px 16px;box-shadow:0 14px 34px rgba(16,10,10,.24);font-size:12.5px;font-weight:700}
   .toast.show{display:flex}
   .sync-spin{animation:settings-spin .8s linear infinite}
@@ -113,6 +177,7 @@
       <a href="Offers.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20.6 8.5 12 4 3.4 8.5 12 13l8.6-4.5Z" stroke="#9B9292" stroke-width="2"/><path d="M3.4 15.5 12 20l8.6-4.5" stroke="#9B9292" stroke-width="2"/></svg>Оффера</a>
       <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:16px 12px 8px">Рабочее</div>
       <a href="Team.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#9B9292" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#9B9292" stroke-width="2"/></svg>Команда</a>
+      <a href="Recruitment.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="10" cy="8" r="3.5" stroke="#9B9292" stroke-width="2"/><path d="M3.5 20a6.5 6.5 0 0 1 13 0" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/><circle cx="17" cy="16" r="3" stroke="#9B9292" stroke-width="2"/><path d="m19.5 18.5 2 2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>Рекрутинг</a>
       <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>Задачи</div>
       <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v14H6.5A2.5 2.5 0 0 0 4 19.5V5.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M8 7.5h7M8 11h5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>База знаний</div>
       <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#9B9292" stroke-width="2"/><circle cx="12" cy="12" r="3.5" stroke="#9B9292" stroke-width="2"/></svg>Утилиты</div>
@@ -129,21 +194,23 @@
   <!-- MAIN -->
   <main class="settings-main" style="flex:1;min-width:0;padding:26px 34px 40px">
     <div class="settings-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:24px">
-      <div><div style="font-size:13px;color:#9B9292;font-weight:600">Системные параметры</div><h1 class="settings-heading" style="font-size:27px;font-weight:700;letter-spacing:-.6px;margin-top:5px">Настройки</h1></div>
+      <div><h1 class="settings-heading" style="font-size:27px;font-weight:700;letter-spacing:-.6px">Настройки</h1></div>
       <div class="settings-header-actions" style="display:flex;align-items:center;gap:10px">
         <label class="settings-search" style="display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #EBE6E6;border-radius:12px;padding:0 14px;height:44px;width:250px"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="#9B9292" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#9B9292" stroke-width="2"/></svg><input id="settingsSearch" type="search" placeholder="Поиск в настройках..." style="border:0;outline:0;background:transparent;width:100%;min-width:0;color:#3A3030;font-size:13px"></label>
-        <button id="openEntityModal" type="button" style="height:44px;border:0;border-radius:12px;background:#B91414;color:#fff;padding:0 17px;display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;box-shadow:0 8px 18px rgba(185,20,20,.28)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg><span id="entityButtonLabel">Добавить сервис</span></button>
+        <button id="openEntityModal" type="button" style="height:44px;border:0;border-radius:12px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 17px;display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;box-shadow:0 8px 18px rgba(185,20,20,.28)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg><span id="entityButtonLabel">Добавить сервис</span></button>
       </div>
     </div>
 
-    <div class="stat-grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:22px">
+    <div class="stat-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:22px">
       <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:20px;display:flex;align-items:center;gap:15px"><div style="width:46px;height:46px;border-radius:13px;background:#E4F7F0;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2.5" stroke="#16B57F" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#16B57F" stroke-width="2"/></svg></div><div><div id="settingsProvidersTotal" class="settings-heading" style="font-size:26px;font-weight:700">6</div><div style="font-size:12.5px;color:#6A6161;font-weight:600">Агентов и платёжек</div></div></div>
-      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:20px;display:flex;align-items:center;gap:15px"><div style="width:46px;height:46px;border-radius:13px;background:#FFF2E0;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8" stroke="#E8912B" stroke-width="2" stroke-linecap="round"/></svg></div><div><div id="settingsConnectionsTotal" class="settings-heading" style="font-size:26px;font-weight:700">2</div><div style="font-size:12.5px;color:#6A6161;font-weight:600">Интеграции</div></div></div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:20px;display:flex;align-items:center;gap:15px"><div style="width:46px;height:46px;border-radius:13px;background:#FFF2E0;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8" stroke="#E8912B" stroke-width="2" stroke-linecap="round"/></svg></div><div><div id="settingsConnectionsTotal" class="settings-heading" style="font-size:26px;font-weight:700">2</div><div style="font-size:12.5px;color:#6A6161;font-weight:600">Подключений трекера</div></div></div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:20px;display:flex;align-items:center;gap:15px"><div style="width:46px;height:46px;border-radius:13px;background:#FCF1F1;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 3v18M5 8h9a3 3 0 0 1 0 6H7" stroke="#B91414" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div><div id="settingsPartnersTotal" class="settings-heading" style="font-size:26px;font-weight:700">0</div><div style="font-size:12.5px;color:#6A6161;font-weight:600">Партнёрских интеграций</div></div></div>
     </div>
 
     <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:6px;display:flex;align-items:center;gap:4px;margin-bottom:16px;overflow-x:auto">
       <button class="settings-tab active" type="button" data-settings-tab="agents">Агенты и платёжки <span id="settingsProvidersTabCount" style="margin-left:5px;color:#9B9292">6</span></button>
-      <button class="settings-tab" type="button" data-settings-tab="integrations">Интеграции <span id="settingsConnectionsTabCount" style="margin-left:5px;color:#9B9292">2</span></button>
+      <button class="settings-tab" type="button" data-settings-tab="tracker">Интеграция трекера <span id="settingsConnectionsTabCount" style="margin-left:5px;color:#9B9292">0</span></button>
+      <button class="settings-tab" type="button" data-settings-tab="partners">Интеграция ПП <span id="settingsPartnersTabCount" style="margin-left:5px;color:#9B9292">0</span></button>
       <button class="settings-tab" type="button" data-settings-tab="salary">Расчет ЗП <span id="settingsSalaryTabCount" style="margin-left:5px;color:#9B9292">0</span></button>
       <button class="settings-tab" type="button" data-settings-tab="tiers">Тиры стран <span id="settingsTiersTabCount" style="margin-left:5px;color:#9B9292">0</span></button>
     </div>
@@ -164,15 +231,15 @@
       </div>
     </section>
 
-    <!-- INTEGRATIONS -->
-    <section id="integrationsPanel" class="settings-panel" data-settings-panel="integrations">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px"><div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Интеграции</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Подключения внешних систем и синхронизация</div></div><button id="addConnection" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;padding:0 15px;font-size:12px;font-weight:700">+ Добавить подключение</button></div>
+    <!-- INTEGRATIONS: TRACKER -->
+    <section id="integrationsPanel" class="settings-panel" data-settings-panel="tracker">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px"><div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Интеграция трекера</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Keitaro: подключения и синхронизация статистики</div></div><button id="addConnection" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 15px;font-size:13.5px;font-weight:600">+ Добавить подключение</button></div>
       <div id="integrationsGrid" class="integration-grid" style="display:grid;grid-template-columns:1fr;gap:12px">
         <article class="integration-card">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px"><div style="display:flex;align-items:center;gap:12px"><div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#B91414,#C41616);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:800">K</div><div><div class="settings-heading" style="font-size:16px;font-weight:700">Keitaro Main</div><div style="font-size:10.5px;color:#9B9292;margin-top:3px">tracker.celestial.team</div></div></div><span style="display:inline-flex;align-items:center;gap:6px;color:#16B57F;background:#E4F7F0;border-radius:8px;padding:6px 9px;font-size:10.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:#16B57F"></span>Подключено</span></div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:19px"><div style="background:#FAF8F8;border-radius:11px;padding:11px"><div style="font-size:10px;color:#9B9292;font-weight:700">ПОСЛЕДНЯЯ СИНХРОНИЗАЦИЯ</div><div style="font-size:12px;font-weight:700;margin-top:5px">Сегодня, 12:42</div></div><div style="background:#FAF8F8;border-radius:11px;padding:11px"><div style="font-size:10px;color:#9B9292;font-weight:700">РАСПИСАНИЕ</div><div style="font-size:12px;font-weight:700;margin-top:5px">Каждые 15 минут</div></div></div>
           <div style="margin-top:16px"><div style="font-size:10.5px;color:#857D7D;font-weight:700;margin-bottom:8px">Синхронизируемые данные</div><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="data-pill">Кампании</span><span class="data-pill">Офферы</span><span class="data-pill">Клики</span><span class="data-pill">Конверсии</span><span class="data-pill">Доход</span><span class="data-pill">+3</span></div></div>
-          <div style="display:flex;gap:9px;margin-top:19px"><button class="sync-connection" type="button" style="flex:1;height:39px;border:0;border-radius:10px;background:#B91414;color:#fff;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:7px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 0 1 14-5M20 12a8 8 0 0 1-14 5M18 3v4h-4M6 21v-4h4" stroke="currentColor" stroke-width="2"/></svg><span>Синхронизировать</span></button><button type="button" style="height:39px;border:1px solid #E5DFDF;border-radius:10px;background:#fff;color:#6A6161;padding:0 13px;font-size:11.5px;font-weight:700">Настроить</button></div>
+          <div style="display:flex;gap:9px;margin-top:19px"><button class="sync-connection" type="button" style="flex:1;height:39px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;font-size:11.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:7px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 0 1 14-5M20 12a8 8 0 0 1-14 5M18 3v4h-4M6 21v-4h4" stroke="currentColor" stroke-width="2"/></svg><span>Синхронизировать</span></button><button type="button" style="height:39px;border:1px solid #E5DFDF;border-radius:10px;background:#fff;color:#6A6161;padding:0 13px;font-size:11.5px;font-weight:700">Настроить</button></div>
         </article>
         <article class="integration-card">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px"><div style="display:flex;align-items:center;gap:12px"><div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#4267B2,#5B8DEF);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:800">M</div><div><div class="settings-heading" style="font-size:16px;font-weight:700">Meta Ads</div><div style="font-size:10.5px;color:#9B9292;margin-top:3px">Business Manager API</div></div></div><span style="display:inline-flex;align-items:center;gap:6px;color:#E8912B;background:#FFF2E0;border-radius:8px;padding:6px 9px;font-size:10.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:#E8912B"></span>Настройка</span></div>
@@ -180,6 +247,12 @@
         </article>
       </div>
       <div style="margin-top:16px;background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:17px 20px;display:flex;align-items:center;gap:13px"><div style="width:38px;height:38px;border-radius:11px;background:#F7F4F4;display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 4h11l3 3v13H5V4Z" stroke="#857D7D" stroke-width="2"/><path d="M8 10h8M8 14h8M8 18h5" stroke="#857D7D" stroke-width="2"/></svg></div><div style="flex:1"><div style="font-size:12.5px;font-weight:700">Состояние синхронизации</div><div id="settingsSyncSummary" style="font-size:10.5px;color:#9B9292;margin-top:3px">Синхронизации ещё не запускались</div></div><button type="button" disabled title="Отдельный экран логов не входит в MVP" style="height:36px;border:1px solid #E5DFDF;border-radius:9px;background:#FAF8F8;color:#9B9292;padding:0 12px;font-size:11px;font-weight:700">Журнал запусков</button></div>
+    </section>
+
+    <!-- INTEGRATIONS: PARTNERS -->
+    <section id="partnerIntegrationsPanel" class="settings-panel" data-settings-panel="partners">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px;flex-wrap:wrap"><div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Интеграция ПП</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Депозиты из партнёрских программ — сразу в финансы байера, по тегу</div></div><div id="partnerIntegrationsActions" style="display:flex;align-items:center;gap:9px;flex-wrap:wrap"><button id="partnerIntegrationCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 15px;font-size:13.5px;font-weight:600">+ Новая интеграция</button></div></div>
+      <div id="partnerIntegrationsRoot" style="display:grid;gap:12px"></div>
     </section>
 
     <!-- РАСЧЕТ ЗП -->
@@ -192,7 +265,7 @@
         <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
           <input id="salaryPeriod" type="month" class="form-input" style="width:170px" aria-label="Расчётный период">
           <button id="salaryCalculate" type="button" style="height:40px;border:1px solid #E5DFDF;border-radius:10px;background:#fff;color:#3A3030;padding:0 15px;font-size:12px;font-weight:700">Рассчитать</button>
-          <button id="salaryRuleCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;padding:0 15px;font-size:12px;font-weight:700">+ Новое правило</button>
+          <button id="salaryRuleCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 15px;font-size:13.5px;font-weight:600">+ Новое правило</button>
         </div>
       </div>
       <div id="salaryRules" style="display:grid;gap:12px"></div>

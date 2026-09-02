@@ -796,17 +796,16 @@
           var pct = LADDER[step].pct;
           return { salary: profitSum < 0 ? 0 : q4(profitSum * pct / 100), percent: pct };
         })();
-    renderSettlement(profitSum, computed.salary, computed.percent, computed.salary);
+    renderSettlement(profitSum, computed.salary, computed.salary);
 
     spark(byId("finSparkIncome"), seriesOf(income), "#7E7070");
     spark(byId("finSparkSpend"), seriesOf(spend), "#7E7070");
     spark(byId("finSparkProfit"), seriesOf(profit), profitSum < 0 ? "#BE2317" : "#0E7350");
   }
 
-  function renderSettlement(profitValue, salary, salaryPct, payout) {
+  function renderSettlement(profitValue, salary, payout) {
     var step = salaryStep(profitValue);
     byId("finCardSalary").textContent = withSign(money(salary));
-    byId("finCardStep").textContent = salaryPct + "% · " + ladder()[step].range;
     byId("finPaySalary").textContent = money(salary);
     byId("finPayTotal").textContent = money(payout);
 
@@ -820,7 +819,6 @@
     renderSettlement(
       num(total.profit),
       num(total.salary),
-      num(total.salary_percent),
       Math.max(num(total.payout), 0)
     );
   }
@@ -1184,31 +1182,52 @@
     });
   }
 
-  function summaryCell(key, value) {
+  /* Полоса колонки — та же группировка, что в книге и в Медиаборде: что
+     потрачено, что заработано. Числа в семь столбцов без этого читаются как
+     одна сплошная простыня. */
+  var SUMMARY_BANDS = {
+    spend: "cost", costs: "cost", salary: "cost", payout: "cost",
+    income: "result", profit: "result", roi: "result"
+  };
+
+  function bandClass(key, previousKey) {
+    var band = SUMMARY_BANDS[key];
+    if (!band) return "";
+    var opens = SUMMARY_BANDS[previousKey] !== band;
+    return " fin-col--" + band + (opens ? " is-band-start" : "");
+  }
+
+  function summaryCell(key, value, previousKey) {
     var formatted = key === "roi" ? summaryPercent(value) : summaryMoney(value);
     var tone = key === "profit" || key === "roi"
       ? (num(value) < 0 ? " fin-neg" : num(value) > 0 ? " fin-pos" : "")
       : "";
-    return '<td class="' + tone.trim() + '">' + escapeHtml(formatted) + "</td>";
+    return '<td class="' + (tone + bandClass(key, previousKey)).trim() + '">' +
+      escapeHtml(formatted) + "</td>";
   }
 
   function summaryTable(columns, rows, total) {
-    var head = columns.map(function (column) {
-      return "<th>" + escapeHtml(column.label) + "</th>";
+    var head = columns.map(function (column, index) {
+      var band = index === 0 || column.text
+        ? ""
+        : bandClass(column.key, index ? (columns[index - 1] || {}).key : null);
+      return '<th class="' + band.trim() + '">' + escapeHtml(column.label) + "</th>";
     }).join("");
     var body = rows.map(function (row) {
       return "<tr>" + columns.map(function (column, index) {
         if (index === 0 || column.text) {
           return "<td>" + escapeHtml(row[column.key]) + "</td>";
         }
-        return summaryCell(column.key, row[column.key]);
+        return summaryCell(column.key, row[column.key],
+          (columns[index - 1] || {}).key);
       }).join("") + "</tr>";
     }).join("");
     if (total) {
       body += '<tr class="fin-summary-total"><td>ИТОГО</td>' +
-        columns.slice(1).map(function (column) {
+        columns.slice(1).map(function (column, index) {
           if (column.text) return "<td></td>";
-          return summaryCell(column.key, total[column.key]);
+          return summaryCell(column.key, total[column.key],
+            (columns[index] || {}).key);
         }).join("") + "</tr>";
     }
     // Шапку из пустых ячеек не рисуем: в таблице «имя — сумма» подписи не
@@ -1248,7 +1267,9 @@
           '</span><span class="fin-day-w">' + flags.weekday + "</span></th>";
       }).join("");
     var body = lines.map(function (line) {
-      return '<tr class="fin-calc"><td class="fin-c-name"><span class="fin-r-lab">' +
+      var band = SUMMARY_BANDS[line.key];
+      return '<tr class="fin-calc' + (band ? " fin-row--" + band : "") +
+        '"><td class="fin-c-name"><span class="fin-r-lab">' +
         escapeHtml(line.label) + '</span></td><td class="fin-c-sum">' +
         escapeHtml(line.format(total[line.key])) + "</td>" +
         rows.map(function (row) {
@@ -1288,9 +1309,6 @@
     byId("finSaved").hidden = summaryMode;
     byId("finCardSalary").closest(".fin-card").hidden = summaryMode;
     var buyerSheet = state.sheet.indexOf("buyer:") === 0;
-    byId("finEyebrow").textContent = summaryMode
-      ? (buyerSheet ? "Финансы · общая сводка баера" : "Финансы · сводка месяца")
-      : "Финансы · таблица " + (state.bookTab === "T1" ? "Tier1" : "Tier2/3");
   }
 
   /* Фонд по ролям — той же таблицей, что команда вела в своей: колонка на
@@ -1620,6 +1638,71 @@
 
   /* ---------- сборка ---------- */
 
+
+  /* ---------- депозиты из партнёрок ----------
+   *
+   * Сервис партнёрок ничего не собирает сам: он идёт в ПП только когда его
+   * попросят. Поэтому кнопка живёт здесь, рядом с таблицей, — период берётся
+   * из открытого месяца, офферы и теги из неё же. Ничего указывать не нужно:
+   * ID оффера у партнёрки стоит в разделе «Оффера», тег уже заведён в книге.
+   */
+
+  async function syncPartners() {
+    if (!state.buyerId) return;
+    var button = byId("finPartnerSync");
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    var label = button.querySelector("span");
+    var before = label ? label.textContent : "";
+    if (label) label.textContent = "Тянем из ПП…";
+    status("busy", "Тянем депозиты из партнёрок…");
+    try {
+      var result = await api.post(
+        "/finance/book/sync-partners?buyer_id=" + encodeURIComponent(state.buyerId) +
+        "&year=" + state.year + "&month=" + state.month + "&tier=" + state.bookTab,
+        {}
+      );
+      var text = "Депозитов записано: " + result.upserted;
+      if (result.pending) {
+        text += ", без строки в таблице: " + result.pending;
+      }
+      if (result.skipped) text += ", пропущено: " + result.skipped;
+      notify(text, result);
+      // Таблица могла заполниться — перечитываем её.
+      await loadBook();
+      status("ok", "Сохранено");
+    } catch (error) {
+      status("error", error && error.message ? error.message : "Синк не удался");
+    } finally {
+      button.disabled = false;
+      if (label) label.textContent = before;
+    }
+  }
+
+  function notify(text, result) {
+    var details = [];
+    (result && result.errors ? result.errors : []).forEach(function (row) {
+      details.push(row);
+    });
+    if (result && result.pending) {
+      details.push(
+        "Депозиты без строки: заведите тег под нужным оффером в книге — " +
+        "следующий синк за тот же период разложит их сам."
+      );
+    }
+    (result && result.reasons ? result.reasons : []).slice(0, 5).forEach(function (row) {
+      details.push(row);
+    });
+    if (window.CelestialShell && window.CelestialShell.notify) {
+      window.CelestialShell.notify({
+        title: text,
+        message: details.join("\n")
+      });
+      return;
+    }
+    window.alert(text + (details.length ? "\n\n" + details.join("\n") : ""));
+  }
+
   function bind() {
     var grid = byId("finGrid");
     grid.addEventListener("keydown", onKeydown);
@@ -1641,6 +1724,13 @@
       if (document.activeElement === event.target) event.target.blur();
     }, { passive: true });
 
+    var partnerSync = byId("finPartnerSync");
+    if (partnerSync) {
+      partnerSync.style.display = state.canManage ? "" : "none";
+      partnerSync.addEventListener("click", function () {
+        syncPartners();
+      });
+    }
     byId("finPrevMonth").addEventListener("click", function () {
       switchMonth(-1).catch(fail);
     });

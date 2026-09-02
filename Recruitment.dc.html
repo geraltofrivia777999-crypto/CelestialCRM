@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Рекрутинг — Celestial Group</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Alumni+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="/assets/logo-mark-white.png">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+  a{color:#B91414;text-decoration:none}
+    body{font-family:'Inter',sans-serif;background:#F7F4F4;color:#070505;font-size:14px}
+    .rec-sidebar{width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #EBE6E6;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+    @media(max-width:1100px){.rec-sidebar{width:224px!important}}
+    @media(max-width:900px){.rec-sidebar{display:none!important}}
+    .rec-main{flex:1;min-width:0;padding:26px 30px 40px}
+    .rec-heading{font-family:'Alumni Sans',Inter,sans-serif;letter-spacing:-.6px}
+    .rec-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+    .rec-tab{height:38px;padding:0 16px;border:1px solid #E8E2E2;border-radius:11px;background:#fff;color:#3A3030;font-size:12.5px;font-weight:700;cursor:pointer}
+    .rec-tab--active{background:#B91414;border-color:#B91414;color:#fff;box-shadow:0 8px 18px rgba(185,20,20,.28)}
+    .rec-card{background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px}
+    .rec-note{background:#fff;border:1px solid #EBE6E6;border-radius:12px;padding:10px 13px;font-size:12px;color:#6A6161;font-weight:600;line-height:1.5}
+    .rec-chip{display:inline-flex;align-items:center;gap:5px;background:#F4F0F0;border-radius:8px;padding:4px 9px;font-size:11px;font-weight:700;color:#3A3030}
+    .rec-empty{padding:44px 24px;text-align:center;color:#9B9292;font-size:13px;font-weight:600}
+    /* Кнопки и поля. Скрипт раздела написан словарём Meta Ads (.meta-action,
+       .meta-control) — на этой странице таких классов не было вовсе, поэтому
+       кнопки и поля рисовались системными. Здесь та же геометрия, что и на
+       остальных экранах CRM. */
+    .meta-action{height:34px;padding:0 13px;border:1px solid #E8E2E2;border-radius:9px;background:#fff;color:#3A3030;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;cursor:pointer;transition:background .18s,border-color .18s,color .18s}
+    .meta-action:hover{background:#FAF8F8}
+    .meta-action:disabled{opacity:.55;cursor:default}
+    .meta-action--primary{border-color:#B91414;background:#B91414;color:#fff}
+    .meta-action--primary:hover{background:#A21212}
+    .meta-action--danger{border-color:#F1D9D9;color:#B91414}
+    .meta-action--danger:hover{background:#FCF1F1}
+    .meta-control{height:38px;border:1px solid #E8E2E2;background:#fff;border-radius:10px;color:#3A3030;font-size:12.5px;font-weight:600;font-family:inherit;outline:none;transition:border-color .2s,box-shadow .2s}
+    .meta-control:focus{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.10)}
+    .meta-select{appearance:none;padding:0 34px 0 11px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 11px center}
+    /* Доска найма: колонка на этап, карточки внутри. Горизонтальная прокрутка
+       у самой доски — колонок пять, и на ноутбуке они не помещаются. */
+    .rec-board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(198px,1fr);gap:12px;overflow-x:auto;padding-bottom:6px;align-items:start}
+    .rec-col{background:#FAF8F8;border:1px solid #F0EBEB;border-radius:14px;min-width:0}
+    .rec-col__head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px;border-bottom:1px solid #F0EBEB;font-size:12px;font-weight:700;color:#3A3030}
+    .rec-col__count{font-size:11px;font-weight:700;color:#9B9292}
+    .rec-col__body{display:grid;gap:10px;padding:11px}
+    .rec-col__empty{font-size:11.5px;color:#C6BDBD;font-weight:600;text-align:center;padding:14px 0}
+    .rec-cand{background:#fff;border:1px solid #EBE6E6;border-radius:12px;padding:11px 12px;min-width:0}
+    .rec-cand__title{font-size:12.5px;font-weight:700;line-height:1.35;overflow-wrap:anywhere}
+    .rec-cand__meta{font-size:10.5px;color:#9B9292;font-weight:600;margin-top:3px;overflow-wrap:anywhere}
+    .rec-cand__note{width:100%;height:auto;min-height:52px;margin-top:8px;padding:8px 10px;font-size:12px;font-weight:500;line-height:1.45;resize:vertical}
+    .rec-cand__foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;padding-top:8px;border-top:1px solid #F4F0F0;font-size:10.5px;color:#9B9292;font-weight:600}
+    .rec-cand__foot a{font-weight:700}
+    .rec-cand__drop{width:24px;height:24px;flex-shrink:0;border:1px solid #F1D9D9;border-radius:7px;background:#fff;color:#B91414;font-size:14px;line-height:1;cursor:pointer}
+    .rec-cand__drop:hover{background:#FCF1F1}
+  </style>
+</head>
+<body>
+  <div style="display:flex;min-height:100vh">
+    <aside class="rec-sidebar">
+      <div style="padding:26px 24px 22px;display:flex;align-items:center;gap:11px">
+        <div style="width:38px;height:38px;border-radius:11px;background:#070505;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(7,5,5,.26)"><img src="/assets/logo-mark-white.png" alt="Celestial Group" style="width:23px;height:auto;display:block"></div>
+        <div>
+          <div style="font-family:'Alumni Sans';font-weight:700;font-size:24px;line-height:.95;letter-spacing:.4px;text-transform:uppercase">Celestial</div>
+          <div style="font-size:9.5px;color:#9B9292;font-weight:600;letter-spacing:1.3px;text-transform:uppercase">Group · Traffic CRM</div>
+        </div>
+      </div>
+
+      <nav style="flex:1;padding:6px 14px;overflow-y:auto">
+        <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:10px 12px 8px">Основное</div>
+        <a href="Dashboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>Dashboard</a>
+        <a href="Mediaboard.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#9B9292" stroke-width="2"/><path d="M3 9h18M8 4v16" stroke="#9B9292" stroke-width="2"/></svg>Медиаборд</a>
+        <a href="MetaAds.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3 2 8l10 5 10-5-10-5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M2 16l10 5 10-5M2 12l10 5 10-5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/></svg>Meta Ads</a>
+        <a href="Finance.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2.5" stroke="#9B9292" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#9B9292" stroke-width="2"/><path d="M6 9v6M18 9v6" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>Финансы</a>
+        <a href="Offers.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20.6 8.5 12 4 3.4 8.5 12 13l8.6-4.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M3.4 15.5 12 20l8.6-4.5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/></svg>Оффера</a>
+
+        <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:16px 12px 8px">Рабочее</div>
+        <a href="Team.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#9B9292" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>Команда</a>
+        <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;background:#B91414;color:#fff;font-weight:600;font-size:14px;box-shadow:0 8px 18px rgba(185,20,20,.28)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="10" cy="8" r="3.5" stroke="#fff" stroke-width="2"/><path d="M3.5 20a6.5 6.5 0 0 1 13 0" stroke="#fff" stroke-width="2" stroke-linecap="round"/><circle cx="17" cy="16" r="3" stroke="#fff" stroke-width="2"/><path d="m19.5 18.5 2 2" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>Рекрутинг</div>
+        <a href="Tasks.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>Задачи</a>
+        <a href="Knowledge.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v14H6.5A2.5 2.5 0 0 0 4 19.5V5.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M8 7.5h7M8 11h5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>База знаний</a>
+        <a href="Utilities.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" stroke="#9B9292" stroke-width="2"/></svg>Утилиты</a>
+        <a href="Settings.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#9B9292" stroke-width="2"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 3h-4l-.4 2.2a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 21h4l.4-2.2a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" stroke="#9B9292" stroke-width="1.6" stroke-linejoin="round"/></svg>Настройки</a>
+      </nav>
+
+      <div id="celestialAccountButton" style="margin:0 14px 16px;padding:11px 12px;border:1px solid #EBE6E6;border-radius:13px;display:flex;align-items:center;gap:11px;cursor:pointer;background:#fff">
+        <div style="width:36px;height:36px;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:15px">A</div>
+        <div style="min-width:0">
+          <div style="font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Administrator</div>
+          <div style="font-size:10.5px;color:#9B9292;font-weight:600">Administrator</div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="rec-main">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap">
+        <div>
+          <h1 class="rec-heading" style="font-size:27px;font-weight:700">Рекрутинг</h1>
+        </div>
+        <div id="recHeaderNote" class="rec-note" style="max-width:420px"></div>
+      </div>
+
+      <div class="rec-tabs" id="recTabs">
+        <button class="rec-tab rec-tab--active" type="button" data-rec-tab="search">Поиск кандидатов</button>
+        <button class="rec-tab" type="button" data-rec-tab="responses">Отклики</button>
+        <button class="rec-tab" type="button" data-rec-tab="candidates">Кандидаты</button>
+        <button class="rec-tab" type="button" data-rec-tab="settings">Настройки</button>
+      </div>
+
+      <div id="recError" role="alert" style="display:none;margin-top:14px;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600"></div>
+      <div id="recBody" style="margin-top:16px"></div>
+    </main>
+  </div>
+</body>
+</html>

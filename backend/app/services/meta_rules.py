@@ -33,13 +33,14 @@ from app.models import (
     MetaRuleEvent,
     MetaStatDaily,
 )
-from app.services.meta import MetaClient
+from app.services.meta import MetaClient, money_to_minor
 from app.services.meta_metrics import (
     REVENUE_METRICS,
     ZERO,
     keitaro_by_campaign,
     metrics,
 )
+from app.services.meta_session import get_session_manager, open_session_access
 
 ClientFactory = Callable[..., MetaClient]
 ACTIONS = {
@@ -48,6 +49,8 @@ ACTIONS = {
     "resume": "Запустить",
     "increase_budget": "Поднять бюджет",
     "decrease_budget": "Снизить бюджет",
+    "change_budget": "Изменить бюджет",
+    "change_bid": "Изменить ставку",
 }
 LEVELS = {"campaign": "Кампания", "adset": "Адсет", "ad": "Объявление"}
 # У объявления бюджета нет — он живёт на адсете или на кампании.
@@ -56,9 +59,13 @@ ENTITY_STATUSES = {"active": "Активные", "paused": "На паузе", "a
 WINDOWS = {
     "today": "Сегодня",
     "yesterday": "Вчера",
+    "last_2d": "Последние 2 дня",
     "last_3d": "Последние 3 дня",
     "last_7d": "Последние 7 дней",
+    "last_14d": "Последние 14 дней",
+    "last_28d": "Последние 28 дней",
     "last_30d": "Последние 30 дней",
+    "month": "Текущий месяц",
 }
 OPERATORS = {
     "lt": "<",
@@ -66,7 +73,85 @@ OPERATORS = {
     "gt": ">",
     "gte": "≥",
     "eq": "=",
+    "ne": "!=",
+    "in": "∈",
+    "nin": "∉",
 }
+# Курсы к USD, чтобы конвертировать деньги кабинетов в валюту правила.
+CURRENCY_RATES = {
+    "USD": 1,
+    "EUR": 0.92,
+    "GBP": 0.79,
+    "PLN": 0.23,
+    "UAH": 0.024,
+    "KZT": 0.0021,
+    "TRY": 0.029,
+    "BRL": 0.18,
+    "INR": 0.012,
+    "IDR": 0.000063,
+    "ARS": 0.0011,
+    "MXN": 0.052,
+    "AED": 0.27,
+    "SAR": 0.27,
+    "NGN": 0.00065,
+    "BDT": 0.0084,
+    "VND": 0.000039,
+    "THB": 0.028,
+    "MYR": 0.21,
+    "PHP": 0.017,
+    "PKR": 0.0036,
+    "EGP": 0.02,
+    "COP": 0.00024,
+    "CLP": 0.0011,
+    "PEN": 0.27,
+    "NZD": 0.6,
+    "AUD": 0.65,
+    "CAD": 0.73,
+    "CHF": 1.08,
+    "SEK": 0.095,
+    "NOK": 0.094,
+    "DKK": 0.135,
+    "CZK": 0.042,
+    "HUF": 0.0026,
+    "RON": 0.2,
+    "BGN": 0.47,
+    "HKD": 0.128,
+    "SGD": 0.74,
+    "KRW": 0.00073,
+    "JPY": 0.0067,
+    "CNY": 0.14,
+}
+
+
+def _convert_money(amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
+    """Пересчёт суммы из валюты кабинета в валюту правила (через USD)."""
+    to = CURRENCY_RATES.get(str(to_currency or "USD").upper())
+    frm = CURRENCY_RATES.get(str(from_currency or "USD").upper())
+    if not to or not frm:
+        return amount
+    return (amount / Decimal(str(frm)) * Decimal(str(to))).quantize(Decimal("0.01"))
+
+
+def schedule_allows(rule: MetaRule, now: datetime) -> bool:
+    """Расписание правила: когда ему разрешено смотреть на объекты."""
+    if rule.schedule_kind == "custom":
+        payload = rule.schedule or {}
+        days = set(int(value) for value in (payload.get("days") or []))
+        if days and now.isoweekday() not in days:
+            return False
+        current = f"{now.hour:02d}:{now.minute:02d}"
+        intervals = payload.get("intervals") or []
+        if intervals:
+            return any(
+                str(item.get("begin") or "") <= current <= str(item.get("end") or "")
+                and bool(str(item.get("end") or ""))
+                for item in intervals
+            )
+        return True
+    if rule.schedule_kind == "daily_midnight":
+        # «Каждую полночь»: окно первого прогона суток — 00:00–00:09.
+        return now.hour == 0 and now.minute < 10
+    return True
 FREQUENCIES = {
     15: "Каждые 15 минут",
     60: "Каждый час",
@@ -74,12 +159,17 @@ FREQUENCIES = {
     720: "Каждые 12 часов",
     1440: "Раз в сутки",
 }
-WRITE_ACTIONS = {"pause", "resume", "increase_budget", "decrease_budget"}
-BUDGET_ACTIONS = {"increase_budget", "decrease_budget"}
+WRITE_ACTIONS = {
+    "pause", "resume", "increase_budget", "decrease_budget",
+    "change_budget", "change_bid",
+}
+BUDGET_ACTIONS = {"increase_budget", "decrease_budget", "change_budget"}
+BID_ACTIONS = {"change_bid"}
 # Ниже этого Meta дневной бюджет не принимает (для дешёвых валют порог свой, но
 # меньше единицы он не бывает нигде). Автоправило не должно уводить бюджет туда,
 # откуда кампания уже не поднимется.
 MIN_DAILY_BUDGET = Decimal("1.00")
+MIN_BID_AMOUNT = Decimal("0.01")
 
 
 class MetaRuleEngine:
@@ -115,6 +205,8 @@ class MetaRuleEngine:
             rule = await db.get(MetaRule, rule_id)
             if not rule or not rule.is_enabled:
                 return {"triggered": 0, "applied": 0}
+            if not schedule_allows(rule, datetime.now(UTC)):
+                return {"triggered": 0, "applied": 0}
             candidates = await collect_candidates(db, rule)
             recent = await self._recent_campaigns(db, rule)
             access = await _rule_token(db, rule)
@@ -127,33 +219,53 @@ class MetaRuleEngine:
         if not pending:
             return {"triggered": 0, "applied": 0}
 
-        client = (
-            self.client_factory(
-                access["token"],
-                proxy=access["proxy_url"],
-                user_agent=access["user_agent"],
+        session_access = None
+        if access and rule.action in WRITE_ACTIONS:
+            if access.get("auth_method") == "session":
+                # Запись через токен сессии Meta принимает только из браузерного
+                # контекста живой сессии.
+                session_access = await open_session_access(
+                    self.session_factory,
+                    access["connection_id"],
+                    proxy_url=access.get("proxy_url"),
+                    user_agent=access.get("user_agent"),
+                )
+        try:
+            client = (
+                self.client_factory(
+                    session_access["token"] if session_access else access["token"],
+                    proxy=access["proxy_url"],
+                    user_agent=access["user_agent"],
+                    transport=session_access["transport"] if session_access else None,
+                )
+                if access and rule.action in WRITE_ACTIONS
+                else None
             )
-            if access and rule.action in WRITE_ACTIONS
-            else None
-        )
-        applied = 0
-        for row in pending:
-            error: str | None = None
-            done = False
-            if rule.action in WRITE_ACTIONS:
-                if not client:
-                    error = (
-                        "Нет активного подключения Meta с токеном — действие не выполнено, "
-                        "правило сработало как уведомление."
-                    )
-                else:
-                    try:
-                        await self._apply(rule, row, client)
-                        done = True
-                    except Exception as exc:  # noqa: BLE001 - текст ошибки уходит в событие
-                        error = " ".join(str(exc).split())[:500]
-            await self._record(rule, row, applied=done, error=error)
-            applied += int(done)
+            applied = 0
+            for row in pending:
+                error: str | None = None
+                done = False
+                if rule.action in WRITE_ACTIONS:
+                    if not client:
+                        error = (
+                            "Нет активного подключения Meta с токеном — действие не выполнено, "
+                            "правило сработало как уведомление."
+                        )
+                    else:
+                        try:
+                            await self._apply(rule, row, client)
+                            done = True
+                        except Exception as exc:  # noqa: BLE001 - текст ошибки уходит в событие
+                            error = " ".join(str(exc).split())[:500]
+                await self._record(rule, row, applied=done, error=error)
+                applied += int(done)
+        finally:
+            if session_access and session_access["owned"]:
+                # Браузер, восстановленный ради правила, закрываем.
+                try:
+                    await get_session_manager().close(access["connection_id"])
+                except Exception:  # noqa: BLE001 — очистка не маскирует результат
+                    pass
 
         async with self.session_factory() as db:
             stored = await db.get(MetaRule, rule_id)
@@ -174,6 +286,13 @@ class MetaRuleEngine:
                              lambda: client.set_status(target, "ACTIVE"))
             return
 
+        if rule.action == "change_budget":
+            await self._apply_budget_change(rule, row, client, target, level)
+            return
+        if rule.action == "change_bid":
+            await self._apply_bid_change(rule, row, client, target)
+            return
+
         if level not in BUDGET_LEVELS:
             raise RuntimeError(
                 "У объявления нет собственного бюджета — он живёт на адсете или "
@@ -190,18 +309,87 @@ class MetaRuleEngine:
             100 - percent
         ) / 100
         for adset_id, budget in adsets:
-            target = (budget * factor).quantize(MIN_DAILY_BUDGET)
-            if target < MIN_DAILY_BUDGET:
-                target = MIN_DAILY_BUDGET
+            target_budget = (budget * factor).quantize(MIN_DAILY_BUDGET)
+            if target_budget < MIN_DAILY_BUDGET:
+                target_budget = MIN_DAILY_BUDGET
             await self._call(
                 rule,
                 row,
                 f"adset_{rule.action}",
                 adset_id,
-                lambda adset_id=adset_id, target=target: client.set_daily_budget(
-                    adset_id, target
+                lambda adset_id=adset_id, target_budget=target_budget: client.set_daily_budget(
+                    adset_id, target_budget
                 ),
             )
+
+    async def _apply_budget_change(
+        self, rule: MetaRule, row: dict, client: MetaClient, target: str, level: str
+    ) -> None:
+        """Изменить бюджет кампании или адсета: +/-, % или сумма, с максимумом."""
+        base = row["metrics"].get(
+            "daily_budget" if rule.budget_kind == "daily" else "lifetime_budget"
+        )
+        if not base:
+            raise RuntimeError(
+                "У объекта не задан бюджет нужного вида — менять нечего."
+            )
+        value = Decimal(str(rule.action_value or 0))
+        if rule.action_mode == "pct":
+            factor = Decimal("1") + value / Decimal("100")
+            if rule.action_sign == "minus":
+                factor = Decimal("1") - value / Decimal("100")
+            new_base = Decimal(str(base)) * factor
+        else:
+            new_base = Decimal(str(base)) + (
+                value if rule.action_sign == "plus" else -value
+            )
+        if rule.action_max is not None:
+            new_base = min(new_base, Decimal(str(rule.action_max)))
+        new_base = max(new_base, MIN_DAILY_BUDGET)
+        new_base = new_base.quantize(MIN_DAILY_BUDGET)
+        kind = "adset" if level == "adset" else "campaign"
+        if rule.budget_kind == "lifetime":
+            await self._call(
+                rule, row, f"{kind}_lifetime_budget", target,
+                lambda target=target, new_base=new_base: client.update_object(
+                    target, {"lifetime_budget": money_to_minor(new_base)}
+                ),
+            )
+        else:
+            await self._call(
+                rule, row, f"{kind}_daily_budget", target,
+                lambda target=target, new_base=new_base: client.set_daily_budget(
+                    target, new_base
+                ),
+            )
+
+    async def _apply_bid_change(
+        self, rule: MetaRule, row: dict, client: MetaClient, target: str
+    ) -> None:
+        """Изменить ставку адсета: +/-, % или сумма, с максимумом."""
+        fields = await client.object_fields(target, ["bid_amount"])
+        current = fields.get("bid_amount")
+        if current is None:
+            raise RuntimeError("Meta не вернула текущую ставку адсета.")
+        value = Decimal(str(rule.action_value or 0))
+        base = Decimal(str(current))
+        if rule.action_mode == "pct":
+            factor = Decimal("1") + value / Decimal("100")
+            if rule.action_sign == "minus":
+                factor = Decimal("1") - value / Decimal("100")
+            new_base = base * factor
+        else:
+            new_base = base + (value if rule.action_sign == "plus" else -value)
+        if rule.action_max is not None:
+            new_base = min(new_base, Decimal(str(rule.action_max)))
+        new_base = max(new_base, MIN_BID_AMOUNT)
+        new_base = new_base.quantize(MIN_DAILY_BUDGET)
+        await self._call(
+            rule, row, "adset_bid", target,
+            lambda target=target, new_base=new_base: client.update_object(
+                target, {"bid_amount": money_to_minor(new_base)}
+            ),
+        )
 
     async def _call(
         self,
@@ -301,7 +489,7 @@ async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
     if not accounts:
         return []
 
-    only_campaign: str | None = None
+    only_campaigns: set[str] = set()
     launch_by_campaign: dict[str, uuid.UUID] = {}
     launches = list(
         (
@@ -319,7 +507,14 @@ async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
         launch = await db.get(MetaLaunch, rule.launch_id)
         if not launch or not launch.campaign_external_id:
             return []
-        only_campaign = launch.campaign_external_id
+        only_campaigns = {launch.campaign_external_id}
+        # Несколько кампаний залива («Расширенный режим»): правило смотрит
+        # на все кампании, созданные его заливом.
+        only_campaigns.update(
+            str(value)
+            for value in ((launch.external_payload or {}).get("campaign_ids") or [])
+            if value
+        )
 
     stats = list(
         (
@@ -339,7 +534,7 @@ async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
     }[level]
     grouped: dict[str, list[MetaStatDaily]] = {}
     for stat in stats:
-        if only_campaign and stat.campaign_external_id != only_campaign:
+        if only_campaigns and stat.campaign_external_id not in only_campaigns:
             continue
         key = getattr(stat, key_column)
         if key:
@@ -389,7 +584,15 @@ async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
         entity = entities.get(external_id)
         if not _status_allowed(rule.entity_status, entity):
             continue
+        # Scope «только кампания»: для adsets/ads пропускаем чужие кампании.
+        if rule.scope_kind == "campaign" and rule.campaign_external_id:
+            if str(entity_stats[0].campaign_external_id) != str(
+                rule.campaign_external_id
+            ):
+                continue
         spend = sum((stat.spend or ZERO for stat in entity_stats), ZERO)
+        if rule.convert_currency and rule.currency:
+            spend = _convert_money(spend, entity_stats[0].currency or "USD", rule.currency)
         if spend < (rule.min_spend or ZERO):
             continue
         campaign_id = entity_stats[0].campaign_external_id
@@ -418,10 +621,49 @@ async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
                         (stat.pixel_leads or 0) + (stat.pixel_purchases or 0)
                         for stat in entity_stats
                     ),
+                    reach=sum(stat.reach or 0 for stat in entity_stats),
+                    pixel_leads=sum(stat.pixel_leads or 0 for stat in entity_stats),
+                    pixel_purchases=sum(
+                        stat.pixel_purchases or 0 for stat in entity_stats
+                    ),
+                    actions=(entity_stats[0].actions or {}) if entity_stats else None,
+                    entity_name=(
+                        entity.name if entity else f"{LEVELS[level]} {external_id}"
+                    ),
+                    campaign_name=(
+                        entities.get(campaign_id).name if campaign_id and entities.get(campaign_id) else ""
+                    ),
+                    objective=(
+                        entities.get(campaign_id).objective or ""
+                        if campaign_id and entities.get(campaign_id)
+                        else ""
+                    ),
+                    buying_type=_buying_type(entities.get(campaign_id)),
+                    spend_cap=_entity_money(entities.get(campaign_id), "spend_cap"),
+                    bid_amount=(
+                        _entity_money(entity, "bid_amount") if level == "adset" else None
+                    ),
+                    daily_budget=_entity_money(entity, "daily_budget"),
+                    lifetime_budget=_entity_money(entity, "lifetime_budget"),
                 ),
             }
         )
     return rows
+
+
+def _buying_type(entity: MetaEntity | None) -> str:
+    payload = (entity.external_payload or {}) if entity else {}
+    return str(payload.get("buying_type") or "") if isinstance(payload, dict) else ""
+
+
+def _entity_money(entity: MetaEntity | None, field: str):
+    if entity is None:
+        return None
+    payload = entity.external_payload or {}
+    if isinstance(payload, dict) and payload.get(field) is not None:
+        return payload[field]
+    value = getattr(entity, field, None)
+    return value
 
 
 def _status_allowed(wanted: str, entity: MetaEntity | None) -> bool:
@@ -446,7 +688,17 @@ def window_range(window: str, today: date) -> tuple[date, date]:
     if window == "yesterday":
         day = today - timedelta(days=1)
         return day, day
-    days = {"today": 1, "last_3d": 3, "last_7d": 7, "last_30d": 30}.get(window, 1)
+    days = {
+        "today": 1,
+        "last_2d": 2,
+        "last_3d": 3,
+        "last_7d": 7,
+        "last_14d": 14,
+        "last_28d": 28,
+        "last_30d": 30,
+    }.get(window, 1)
+    if window == "month":
+        return today.replace(day=1), today
     return today - timedelta(days=days - 1), today
 
 
@@ -462,16 +714,29 @@ def matches_condition(condition: dict, values: dict) -> bool:
     """Одно условие. None означает «неизвестно», а не ноль.
 
     Без настроенной атрибуции ROI не посчитан, и правило по ROI обязано
-    промолчать, а не остановить кампанию.
+    промолчать, а не остановить кампанию. Строковые значения (название
+    кампании, цель и т.п.) сравниваются как строки: =, !=, ∈, ∉.
     """
     value = values.get(str(condition.get("metric") or ""))
+    operator = str(condition.get("operator") or "lt")
+    raw = condition.get("value")
+    if isinstance(value, str):
+        threshold = "" if raw is None else str(raw)
+        if operator == "eq":
+            return value == threshold
+        if operator == "ne":
+            return value != threshold
+        if operator == "in":
+            return threshold in value
+        if operator == "nin":
+            return threshold not in value
+        return value == threshold
     if value is None:
         return False
     try:
-        threshold = float(condition.get("value") or 0)
+        threshold = float(raw or 0)
     except (TypeError, ValueError):
         return False
-    operator = str(condition.get("operator") or "lt")
     if operator == "lt":
         return value < threshold
     if operator == "lte":
@@ -480,6 +745,12 @@ def matches_condition(condition: dict, values: dict) -> bool:
         return value > threshold
     if operator == "gte":
         return value >= threshold
+    if operator == "ne":
+        return value != threshold
+    if operator == "in":
+        return str(value) == str(threshold) or abs(value - threshold) < 1e-9
+    if operator == "nin":
+        return str(value) != str(threshold) and abs(value - threshold) >= 1e-9
     return value == threshold
 
 
@@ -558,6 +829,8 @@ async def _rule_token(db: AsyncSession, rule: MetaRule) -> dict | None:
         return None
     return {
         "token": decrypt_secret(connection.api_key_encrypted),
+        "connection_id": str(connection.id),
+        "auth_method": connection.auth_method,
         "proxy_url": connection.proxy_url,
         "user_agent": connection.user_agent,
     }

@@ -1,12 +1,17 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, null, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.deps import accessible_user_ids, has_full_access, require_permission
+from app.core.deps import (
+    accessible_user_ids,
+    has_full_access,
+    has_permission,
+    require_permission,
+)
 from app.models import (
     CapRule,
     CountryTier,
@@ -18,6 +23,7 @@ from app.models import (
     OfferLead,
     OfferStatus,
     Partner,
+    PartnerIntegration,
     Status,
     User,
 )
@@ -182,14 +188,19 @@ async def list_campaigns(
 async def _buyer_offer_scope(
     db: AsyncSession, current: User, for_buyer_id: uuid.UUID | None
 ):
-    """«Оффера этого человека» — его группа Keitaro плюс назначенное ему лично.
+    """«Оффера этого человека» — только назначенные ему и его ветке.
 
-    Назначений теперь два: оффер сначала отдают тимлиду, потом тимлид раздаёт
-    его баерам, — поэтому в область видимости входят обе связи.
+    Назначений два: оффер сначала отдают тимлиду, потом тимлид раздаёт его
+    баерам, — поэтому в область видимости входят обе связи. Баер видит свои,
+    тимлид — свои и офферы своих баеров.
 
-    Без `for_buyer_id` берётся вся видимая ветка: баер видит свои офферы, тимлид —
-    свои и офферы своих баеров. Полный доступ не сужаем: администратор ведёт
-    справочник целиком, и офферы, за которыми никто не закреплён, ему тоже нужны.
+    Группа Keitaro больше не расширяет видимость: по ней баеру показывались
+    офферы всей его группы, а не выданные лично, — и «свои офферы» означало
+    не то, что человек ожидает увидеть.
+
+    Полный доступ и `offers.view_all` не сужаем: администратор ведёт справочник
+    целиком, СМО смотрит за всеми командами, и офферы, за которыми никто не
+    закреплён, нужны обоим.
     """
     if for_buyer_id:
         visible = await accessible_user_ids(db, current)
@@ -197,44 +208,45 @@ async def _buyer_offer_scope(
             raise HTTPException(status_code=404, detail="User not found")
         user_ids = {for_buyer_id}
     else:
-        if await has_full_access(db, current):
+        if await _sees_every_offer(db, current):
             return None
         user_ids = await accessible_user_ids(db, current)
-    groups = set(
-        (
-            await db.scalars(
-                select(func.lower(User.keitaro_offer_group))
-                .where(User.id.in_(user_ids), User.keitaro_offer_group.isnot(None))
-            )
-        ).all()
-    )
-    groups.discard("")
-    conditions = [
+    return or_(
         Offer.id.in_(select(OfferBuyer.offer_id).where(OfferBuyer.user_id.in_(user_ids))),
         Offer.id.in_(select(OfferLead.offer_id).where(OfferLead.user_id.in_(user_ids))),
-    ]
-    if groups:
-        conditions.append(func.lower(func.trim(Offer.group_name)).in_(groups))
-    return or_(*conditions)
+    )
+
+
+async def _sees_every_offer(db: AsyncSession, current: User) -> bool:
+    """Кому справочник виден целиком — админу и тому, у кого есть view_all."""
+    return await has_full_access(db, current) or has_permission(current, "offers.view_all")
 
 
 async def _people(db: AsyncSession, offer_ids: list[uuid.UUID]) -> tuple[dict, dict]:
-    """Тимлиды и баеры сразу по всем офферам страницы — двумя запросами."""
+    """Тимлиды и баеры сразу по всем офферам страницы — двумя запросами.
+
+    У тимлида едет ещё и его капа по этому офферу: общий лимит партнёрки
+    тимлиды делят между собой, и в списке каждый должен видеть свою цифру.
+    """
     if not offer_ids:
         return {}, {}
     result: list[dict[uuid.UUID, list[dict]]] = []
     for table in (OfferLead, OfferBuyer):
+        cap_column = table.cap if table is OfferLead else null().label("cap")
         rows = (
             await db.execute(
-                select(table.offer_id, User.id, User.name)
+                select(table.offer_id, User.id, User.name, cap_column)
                 .join(User, User.id == table.user_id)
                 .where(table.offer_id.in_(offer_ids))
                 .order_by(User.name)
             )
         ).all()
         grouped: dict[uuid.UUID, list[dict]] = {}
-        for offer_id, user_id, name in rows:
-            grouped.setdefault(offer_id, []).append({"id": str(user_id), "name": name})
+        for offer_id, user_id, name, cap in rows:
+            person = {"id": str(user_id), "name": name}
+            if table is OfferLead:
+                person["cap"] = cap
+            grouped.setdefault(offer_id, []).append(person)
         result.append(grouped)
     return result[0], result[1]
 
@@ -317,6 +329,7 @@ async def list_offers(
     manual: bool | None = None,
     scope_offers: bool = False,
     for_buyer_id: uuid.UUID | None = None,
+    for_spend: bool = False,
     lead_id: uuid.UUID | None = None,
     starred: bool | None = None,
     limit: int = 50,
@@ -354,10 +367,19 @@ async def list_offers(
             != settings.keitaro_offers_group.strip().lower()
         )
         filters.append(Offer.connection_id.isnot(None))
-    if scope_offers or for_buyer_id:
+    if scope_offers or for_buyer_id or for_spend:
         scope = await _buyer_offer_scope(db, current, for_buyer_id)
         if scope is not None:
             filters.append(scope)
+    # В фиксации расхода служебной группы OFFERS нет совсем: это витрина
+    # модуля «Оффера», а спенд относят на рабочие офферы — синхронизированные
+    # и заведённые вручную. Поэтому здесь, в отличие от Медиаборда, ручные
+    # офферы не отсекаются.
+    if for_spend:
+        filters.append(
+            func.lower(func.coalesce(Offer.group_name, ""))
+            != settings.keitaro_offers_group.strip().lower()
+        )
     stmt = select(Offer).where(*filters)
     if buyer_id:
         stmt = stmt.join(OfferBuyer).where(OfferBuyer.user_id == buyer_id)
@@ -379,6 +401,15 @@ async def list_offers(
     )
     offer_ids = [offer.id for offer in offers]
     leads, buyers = await _people(db, offer_ids)
+    integrations = dict(
+        (
+            await db.execute(
+                select(PartnerIntegration.id, PartnerIntegration.partner_name).where(
+                    PartnerIntegration.workspace_id == current.workspace_id
+                )
+            )
+        ).all()
+    )
     # Капа держит офферы списком в JSON, поэтому считаем на стороне Python:
     # выражения по массиву в JSON расходятся между PostgreSQL и SQLite.
     caps: dict[uuid.UUID, int] = {}
@@ -408,6 +439,11 @@ async def list_offers(
                 "leads": leads.get(offer.id, []),
                 "buyers": buyers.get(offer.id, []),
                 "caps_count": caps.get(offer.id, 0),
+                "partner_integration_id": (
+                    str(offer.partner_integration_id)
+                    if offer.partner_integration_id else None
+                ),
+                "partner_integration": integrations.get(offer.partner_integration_id),
             }
             for offer in offers
         ],
@@ -443,11 +479,66 @@ async def offers_reference(
             .order_by(Partner.name)
         )
     ).all()
+    integrations = (
+        await db.execute(
+            select(PartnerIntegration.id, PartnerIntegration.partner_name)
+            .where(PartnerIntegration.workspace_id == current.workspace_id)
+            .order_by(PartnerIntegration.partner_name)
+        )
+    ).all()
     return {
         "geos": geos,
         "partners": [{"id": str(row_id), "name": name} for row_id, name in partners],
+        # Интеграции с ПП — для поля «ID ПП»: через какую из них приходят
+        # депозиты по этому офферу.
+        "partner_integrations": [
+            {"id": str(row_id), "name": name} for row_id, name in integrations
+        ],
         "statuses": [status.value for status in OfferStatus],
     }
+
+
+async def _valid_partner_integration(
+    db: AsyncSession, current: User, integration_id: uuid.UUID | None
+) -> uuid.UUID | None:
+    """Интеграция должна быть своей: чужая увела бы депозиты в другой воркспейс."""
+    if not integration_id:
+        return None
+    found = await db.scalar(
+        select(PartnerIntegration.id).where(
+            PartnerIntegration.id == integration_id,
+            PartnerIntegration.workspace_id == current.workspace_id,
+        )
+    )
+    if not found:
+        raise HTTPException(status_code=422, detail="Интеграция с ПП не найдена")
+    return found
+
+
+async def _check_partner_offer_id(
+    db: AsyncSession, current: User, external_id: str | None, *, exclude_id=None
+) -> None:
+    """ID оффера у партнёрки должен быть один на весь воркспейс.
+
+    Два оффера с одним номером означали бы, что депозиты партнёрки приезжают
+    сразу на оба, — доход задвоился бы молча, и заметили бы это не скоро.
+    """
+    clean = (external_id or "").strip()
+    if not clean:
+        return
+    filters = [
+        Offer.workspace_id == current.workspace_id,
+        Offer.connection_id.is_(None),
+        Offer.external_id == clean,
+    ]
+    if exclude_id is not None:
+        filters.append(Offer.id != exclude_id)
+    twin = await db.scalar(select(Offer).where(*filters))
+    if twin:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ID «{clean}» уже стоит у оффера «{twin.name}»",
+        )
 
 
 @router.post("/offers", response_model=dict, status_code=201)
@@ -459,10 +550,12 @@ async def create_offer(
 ) -> dict:
     leads = await _valid_users(db, current, payload.lead_ids)
     buyers = await _valid_users(db, current, payload.buyer_ids)
+    await _check_partner_offer_id(db, current, payload.external_id)
     geo = normalize_geo(payload.geo)
     offer = Offer(
         workspace_id=current.workspace_id,
         name=payload.name.strip(),
+        external_id=(payload.external_id or "").strip() or None,
         geo=geo[:12] if geo else None,
         cap=(payload.cap or "").strip() or None,
         cpa=payload.cpa,
@@ -470,6 +563,9 @@ async def create_offer(
         kpi=(payload.kpi or "").strip() or None,
         comment=(payload.comment or "").strip() or None,
         partner_id=payload.partner_id,
+        partner_integration_id=await _valid_partner_integration(
+            db, current, payload.partner_integration_id
+        ),
         status=workflow_status(OfferStatus.free, bool(leads), bool(buyers)),
     )
     db.add(offer)
@@ -501,8 +597,10 @@ async def update_offer(
     offer = await _manual_offer(db, current, offer_id)
     leads = await _valid_users(db, current, payload.lead_ids)
     buyers = await _valid_users(db, current, payload.buyer_ids)
+    await _check_partner_offer_id(db, current, payload.external_id, exclude_id=offer.id)
     geo = normalize_geo(payload.geo)
     offer.name = payload.name.strip()
+    offer.external_id = (payload.external_id or "").strip() or None
     offer.geo = geo[:12] if geo else None
     offer.cap = (payload.cap or "").strip() or None
     offer.cpa = payload.cpa
@@ -510,9 +608,26 @@ async def update_offer(
     offer.kpi = (payload.kpi or "").strip() or None
     offer.comment = (payload.comment or "").strip() or None
     offer.partner_id = payload.partner_id
+    offer.partner_integration_id = await _valid_partner_integration(
+        db, current, payload.partner_integration_id
+    )
+    # Капы тимлидов ставят отдельной ручкой, а карточка оффера переписывает
+    # назначения целиком — без этого сохранение карточки молча стирало бы их.
+    kept_caps = dict(
+        (
+            await db.execute(
+                select(OfferLead.user_id, OfferLead.cap).where(
+                    OfferLead.offer_id == offer.id
+                )
+            )
+        ).all()
+    )
     await db.execute(delete(OfferLead).where(OfferLead.offer_id == offer.id))
     await db.execute(delete(OfferBuyer).where(OfferBuyer.offer_id == offer.id))
-    db.add_all([OfferLead(offer_id=offer.id, user_id=user.id) for user in leads])
+    db.add_all([
+        OfferLead(offer_id=offer.id, user_id=user.id, cap=kept_caps.get(user.id))
+        for user in leads
+    ])
     db.add_all([OfferBuyer(offer_id=offer.id, user_id=user.id) for user in buyers])
     await pull_offer_to_books(db, offer, [user.id for user in buyers])
     offer.status = workflow_status(offer.status, bool(leads), bool(buyers))
@@ -631,8 +746,16 @@ async def assign_leads(
     if not offer or offer.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Offer not found")
     users = await _valid_users(db, current, payload.lead_ids)
+    caps = {key: (value or "").strip()[:160] for key, value in payload.caps.items()}
     await db.execute(delete(OfferLead).where(OfferLead.offer_id == offer.id))
-    db.add_all([OfferLead(offer_id=offer.id, user_id=user.id) for user in users])
+    db.add_all(
+        [
+            OfferLead(
+                offer_id=offer.id, user_id=user.id, cap=caps.get(user.id) or None
+            )
+            for user in users
+        ]
+    )
     await db.flush()
     await _refresh_status(db, offer)
     await audit(

@@ -74,11 +74,24 @@ def _write_handler(request: httpx.Request) -> httpx.Response:
         if path.endswith("/advideos"):
             return httpx.Response(200, json={"id": "video-1"})
         return httpx.Response(200, json={"success": True})
+    if path.endswith("/search") and request.url.params.get("type") == "adlocale":
+        # Словарь локалей для правил мультиязычности: числа — ключи adlocale.
+        query = request.url.params.get("q", "").lower()
+        locales = {
+            "en": [{"key": 6, "name": "English (US)"}, {"key": 24, "name": "English (UK)"}],
+            "deutsch": [{"key": 3, "name": "Deutsch"}],
+            "français": [{"key": 32, "name": "Français"}],
+        }
+        rows = [
+            row for key, entries in locales.items() if key in query for row in entries
+        ]
+        return httpx.Response(200, json={"data": rows})
     return httpx.Response(200, json={"data": []})
 
 
 def _client_factory(handler=_write_handler):
     def factory(access_token: str, **kwargs) -> MetaClient:
+        kwargs.pop("transport", None)
         return MetaClient(access_token, transport=httpx.MockTransport(handler), **kwargs)
 
     return factory
@@ -198,6 +211,138 @@ def test_budgets_go_to_meta_in_minor_units() -> None:
     assert money_to_minor(0) == "0"
 
 
+async def test_instagram_is_dropped_when_page_has_no_ig_link(launch_setup) -> None:
+    """Страница без связи с IG → Instagram из платформ убирается, а не падает
+    залив с «Выберите IG-аккаунт или Page»."""
+    from app.services.meta_launch import MetaLaunchPublisher
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.params.get("fields") and "instagram" in request.url.params["fields"]:
+            return httpx.Response(
+                200, json={"id": "900100", "name": "Page", "instagram_business_account": None}
+            )
+        return _write_handler(request)
+
+    def factory(token, **kwargs):
+        kwargs.pop("transport", None)
+        return MetaClient(
+            token, transport=httpx.MockTransport(handler), **kwargs
+        )
+
+    publisher = MetaLaunchPublisher(SessionLocal, factory)
+    # Планы залива: обычные (без языков) — цепочка без изменения.
+    async with SessionLocal() as db:
+        launch = await db.get(MetaLaunch, launch_setup["launch"])
+        launch.adset_count = 1
+        await db.commit()
+    await publisher.publish(str(launch_setup["launch"]), str(launch_setup["admin"]))
+
+    async with SessionLocal() as db:
+        requests = list(
+            (
+                await db.execute(
+                    select(MetaOperation.kind, MetaOperation.request).where(
+                        MetaOperation.launch_id == launch_setup["launch"]
+                    )
+                )
+            ).all()
+        )
+    adset_request = {
+        kind: request for kind, request in requests
+    }["adset_create"]
+    targeting = adset_request["targeting"]
+    platforms = targeting.get("publisher_platforms") or []
+    lowered = [str(item).lower() for item in platforms]
+    assert "instagram" not in lowered
+    assert "facebook" in lowered
+
+
+def test_multi_language_rule_requires_a_numeric_locale() -> None:
+    """Правило без числового ID локали не должно уйти в Meta: это тот самый
+    код 100, из-за которого падал залив «языками»."""
+    from app.services.meta import build_asset_feed_spec
+
+    texts = [
+        {"language": "en_US", "headline": "Buy", "primary_text": "Text",
+         "link_url": "https://track.example/en"},
+    ]
+    with pytest.raises(ValueError) as raised:
+        build_asset_feed_spec(texts, [], cta="LEARN_MORE")
+    assert "числовой ID языка" in str(raised.value)
+
+
+async def test_scheduled_budget_increase_applies_once(launch_setup) -> None:
+    """Период увеличения бюджета: применяется один раз, к последнему значению."""
+    from datetime import datetime, timedelta
+
+    from app.services.budget_increase import apply_due_budget_increases
+    from app.services.meta_launch import MetaLaunchPublisher
+
+    await MetaLaunchPublisher(SessionLocal, client_factory=_client_factory()).publish(
+        str(launch_setup["launch"]), str(launch_setup["admin"])
+    )
+    now = datetime.utcnow()
+    budget_sets = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and "daily_budget" in request.content.decode():
+            budget_sets.append(dict(httpx.QueryParams(request.content.decode())))
+        return _write_handler(request)
+
+    async with SessionLocal() as db:
+        launch = await db.get(MetaLaunch, launch_setup["launch"])
+        launch.budget_increases = [
+            {
+                "start_at": (now - timedelta(minutes=5)).isoformat() + "Z",
+                "end_at": (now + timedelta(hours=1)).isoformat() + "Z",
+                "kind": "sum",
+                "amount": 10,
+                "applied": False,
+            }
+        ]
+        await db.commit()
+
+    from app.services.meta import MetaClient
+
+    def factory(token, **kwargs):
+        kwargs.pop("transport", None)
+        return MetaClient(
+            token, transport=httpx.MockTransport(handler), **kwargs
+        )
+
+    report = await apply_due_budget_increases(SessionLocal, factory)
+    assert report["increased"] == 1
+    # Базовый бюджет 50 + 10 = 60 долларов = 6000 центов.
+    assert budget_sets and budget_sets[0]["daily_budget"] == "6000"
+
+    report_again = await apply_due_budget_increases(SessionLocal, factory)
+    assert report_again["increased"] == 0
+    assert len(budget_sets) == 1
+
+    async with SessionLocal() as db:
+        launch = await db.get(MetaLaunch, launch_setup["launch"])
+        payload = launch.external_payload or {}
+        assert payload.get("current_budget") == "60.00"
+        assert launch.budget_increases[0]["applied"] is True
+
+
+def test_multi_language_rule_uses_locales_and_default_flag() -> None:
+    from app.services.meta import build_asset_feed_spec
+
+    texts = [
+        {"language": "en_US", "headline": "Buy", "primary_text": "Text",
+         "link_url": "https://track.example/en"},
+        {"language": "de_DE", "headline": "Kaufen", "primary_text": "Text DE",
+         "link_url": "https://track.example/de"},
+    ]
+    spec = build_asset_feed_spec(texts, [], cta="LEARN_MORE", locale_ids={"en_US": 6, "de_DE": 3})
+    rules = spec["asset_customization_rules"]
+    assert rules[0]["customization_spec"] == {"locales": [6]}
+    assert rules[0]["is_default"] is True
+    assert rules[1]["customization_spec"] == {"locales": [3]}
+    assert rules[1]["is_default"] is False
+
+
 def test_targeting_omits_empty_placements() -> None:
     template = MetaTemplate(
         workspace_id=uuid.uuid4(),
@@ -211,10 +356,8 @@ def test_targeting_omits_empty_placements() -> None:
         interests=[],
     )
     targeting = build_targeting(template)
-    # Тип локации проставляется всегда: по умолчанию бьём по проживающим, для
-    # товарки турист в стране бесполезен.
+    # location_types Meta удалила (ошибка 100/1870194) — в таргетинг не уходит.
     assert targeting["geo_locations"] == {
-        "location_types": ["home"],
         "countries": ["DE", "AT"],
     }
     assert targeting["genders"] == [1]
@@ -715,6 +858,7 @@ async def test_connection_preview_lists_accounts_without_saving(launch_setup, mo
                 },
             )
 
+        kwargs.pop("transport", None)
         return MetaClient(access_token, transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(meta_router, "MetaClient", factory)
@@ -732,6 +876,61 @@ async def test_connection_preview_lists_accounts_without_saving(launch_setup, mo
     assert accounts[0]["amount_spent"] == 250.0
     assert accounts[1]["account_status"] == "DISABLED"
     assert await _connection_count() == before
+
+    # Сводка шага «Проверка»: столько кабинетов, БМов, страниц и кампаний
+    # реально видно этим токеном.
+    summary = response.json()["summary"]
+    assert summary["ad_accounts"] == 2
+    assert summary["active_ad_accounts"] == 1
+    assert summary["currencies"] == ["EUR", "USD"]
+    assert summary["campaigns_partial"] is False
+    assert summary["campaigns"] == 4
+
+
+async def test_the_preview_survives_a_token_without_business_rights(
+    launch_setup, monkeypatch
+) -> None:
+    """Без business_management БМы и страницы не отдаются вовсе.
+
+    Это не сломанное подключение: кабинеты видны, работать можно. Поэтому шаг
+    «Проверка» должен показать прочерк в этих плитках, а не упасть целиком.
+    """
+    import app.api.routers.meta as meta_router
+
+    def factory(access_token: str, **kwargs) -> MetaClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/me"):
+                return httpx.Response(200, json={"id": "1", "name": "SU"})
+            if request.url.path.endswith(("/businesses", "/accounts")):
+                return httpx.Response(
+                    403,
+                    json={"error": {"message": "(#200) business_management", "code": 200}},
+                )
+            if request.url.path.endswith("/campaigns"):
+                return httpx.Response(200, json={"data": [{"id": "c1", "name": "К"}]})
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "act_1", "name": "Один", "account_status": 1,
+                                "currency": "USD"}]},
+            )
+
+        kwargs.pop("transport", None)
+        return MetaClient(access_token, transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(meta_router, "MetaClient", factory)
+
+    with _admin_client() as client:
+        response = client.post(
+            "/api/v1/meta/connections/preview",
+            json={"access_token": "a-token-long-enough-for-schema"},
+        )
+
+    assert response.status_code == 200
+    summary = response.json()["summary"]
+    assert summary["ad_accounts"] == 1
+    assert summary["businesses"] is None
+    assert summary["pages"] is None
+    assert summary["campaigns"] == 1
 
 
 async def test_the_import_step_disables_the_accounts_nobody_picked(
@@ -755,6 +954,7 @@ async def test_the_import_step_disables_the_accounts_nobody_picked(
                 },
             )
 
+        kwargs.pop("transport", None)
         return MetaClient(access_token, transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(meta_router, "MetaClient", factory)
@@ -830,6 +1030,90 @@ async def test_budget_rules_require_a_percent() -> None:
             },
         )
     assert response.status_code == 422
+
+
+async def test_rule_conditions_accept_the_whole_form_vocabulary() -> None:
+    """Форма правил предлагает настройки объекта и «содержит» — API их принимает.
+
+    Раньше схема условия знала четырнадцать метрик и пять операторов, а форма
+    показывала все, что умеет движок: половина выбранного отдавала 422 уже на
+    сохранении.
+    """
+    with _admin_client() as client:
+        good = client.post(
+            "/api/v1/meta/rules",
+            json={
+                "name": "Стоп по названию кампании",
+                "level": "campaign",
+                "action": "pause",
+                "conditions": [
+                    {"metric": "campaign_name", "operator": "in", "value": "test"},
+                    {"metric": "result_cr", "operator": "lt", "value": "1.5"},
+                ],
+            },
+        )
+        text_with_number_operator = client.post(
+            "/api/v1/meta/rules",
+            json={
+                "name": "Текст с числовым оператором",
+                "action": "pause",
+                "conditions": [
+                    {"metric": "campaign_name", "operator": "lt", "value": "test"}
+                ],
+            },
+        )
+        empty_threshold = client.post(
+            "/api/v1/meta/rules",
+            json={
+                "name": "Пустой порог",
+                "action": "pause",
+                "conditions": [{"metric": "roi", "operator": "lt", "value": ""}],
+            },
+        )
+    assert good.status_code == 201
+    assert text_with_number_operator.status_code == 422
+    assert empty_threshold.status_code == 422
+
+    async with SessionLocal() as db:
+        await db.execute(
+            delete(MetaRule).where(MetaRule.name == "Стоп по названию кампании")
+        )
+        await db.commit()
+
+
+async def test_rules_reject_actions_the_level_cannot_perform() -> None:
+    """Бюджет и ставка живут не на каждом уровне — форма и API согласны в этом."""
+    with _admin_client() as client:
+        budget_on_ad = client.post(
+            "/api/v1/meta/rules",
+            json={
+                "name": "Бюджет объявления",
+                "level": "ad",
+                "action": "change_budget",
+                "action_value": "20",
+            },
+        )
+        bid_on_campaign = client.post(
+            "/api/v1/meta/rules",
+            json={
+                "name": "Ставка кампании",
+                "level": "campaign",
+                "action": "change_bid",
+                "action_value": "5",
+            },
+        )
+        campaign_without_id = client.post(
+            "/api/v1/meta/rules",
+            json={
+                "name": "Кампания не выбрана",
+                "scope_kind": "campaign",
+                "level": "adset",
+                "action": "pause",
+            },
+        )
+    assert budget_on_ad.status_code == 422
+    assert bid_on_campaign.status_code == 422
+    assert campaign_without_id.status_code == 422
 
 
 async def test_sync_pulls_the_campaign_status_back_into_the_launch(launch_setup) -> None:
@@ -1033,6 +1317,155 @@ async def test_a_failing_account_does_not_cancel_the_rest(
         assert len(stored) == 2
 
 
+async def test_batch_string_budget_override_is_coerced(launch_setup, monkeypatch) -> None:
+    """Бюджет кабинета приходит строкой из формы — валидация не должна падать."""
+    from app.api.routers import meta as meta_router
+
+    queued: list[str] = []
+    monkeypatch.setattr(
+        meta_router.publish_meta_launch,
+        "delay",
+        lambda launch_id, user_id=None: queued.append(launch_id),
+    )
+    with _admin_client() as client:
+        response = client.post(
+            "/api/v1/meta/launches/batch",
+            json={
+                "name": "Override budget",
+                "account_ids": [str(launch_setup["account"])],
+                "creatives_by_account": {
+                    str(launch_setup["account"]): [str(launch_setup["creative"])]
+                },
+                "overrides": {
+                    str(launch_setup["account"]): {"daily_budget": "25.5"},
+                },
+                "template_id": str(launch_setup["template"]),
+                "geo": "DE",
+                "daily_budget": "40",
+                "link_url": "https://track.example/click",
+                "primary_text": "Текст",
+                "headline": "Заголовок",
+                "publish": True,
+            },
+        )
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["queued"] == 1
+    assert all(row["ok"] for row in payload["results"])
+
+
+async def test_batch_overrides_persist_naming_and_dsa_fields(
+    launch_setup, monkeypatch
+) -> None:
+    """Дополнительные поля мастера («Кастомный нейминг», «Параметры URL»,
+    «Отображаемый URL», «Бенефициар») доезжают до залива каждого кабинета."""
+    from app.api.routers import meta as meta_router
+
+    queued: list[str] = []
+    monkeypatch.setattr(
+        meta_router.publish_meta_launch,
+        "delay",
+        lambda launch_id, user_id=None: queued.append(launch_id),
+    )
+    with _admin_client() as client:
+        response = client.post(
+            "/api/v1/meta/launches/batch",
+            json={
+                "name": "DE Nervio extras",
+                "account_ids": [str(launch_setup["account"])],
+                "creatives_by_account": {
+                    str(launch_setup["account"]): [str(launch_setup["creative"])]
+                },
+                "overrides": {
+                    str(launch_setup["account"]): {
+                        "campaign_name": "{{cab.name}} — test 1",
+                        "url_tags": "utm_source=fb&utm_campaign={{campaign.id}}",
+                        "display_link": "example.com",
+                        "beneficiary": "Falasca Ryleigh Brannock",
+                    },
+                },
+                "template_id": str(launch_setup["template"]),
+                "geo": "DE",
+                "daily_budget": "40",
+                "link_url": "https://track.example/click",
+                "primary_text": "Текст",
+                "headline": "Заголовок",
+                "publish": True,
+            },
+        )
+    assert response.status_code == 201
+    assert all(row["ok"] for row in response.json()["results"])
+
+    async with SessionLocal() as db:
+        stored = await db.get(MetaLaunch, uuid.UUID(queued[0]))
+        assert stored.campaign_name == "{{cab.name}} — test 1"
+        assert stored.url_tags == "utm_source=fb&utm_campaign={{campaign.id}}"
+        assert stored.display_link == "example.com"
+        assert stored.beneficiary == "Falasca Ryleigh Brannock"
+
+
+async def test_publish_sends_dsa_beneficiary_and_custom_campaign_name(
+    launch_setup,
+) -> None:
+    """Бенефициар уходит в оба DSA-поля адсета, а кастомный нейминг сильнее
+    шаблона связки: макросы в нём разворачиваются."""
+    async with SessionLocal() as db:
+        launch = await db.get(MetaLaunch, launch_setup["launch"])
+        launch.campaign_name = "{{cab.name}} — test 1"
+        launch.beneficiary = "Falasca Ryleigh Brannock"
+        await db.commit()
+
+    await MetaLaunchPublisher(SessionLocal, client_factory=_client_factory()).publish(
+        str(launch_setup["launch"]), str(launch_setup["admin"])
+    )
+
+    async with SessionLocal() as db:
+        requests = list(
+            (
+                await db.execute(
+                    select(MetaOperation.kind, MetaOperation.request).where(
+                        MetaOperation.launch_id == launch_setup["launch"]
+                    )
+                )
+            ).all()
+        )
+    by_kind = {kind: request for kind, request in requests}
+    # Одно значение из мастера — оба поля DSA-прозрачности на адсете.
+    assert by_kind["adset_create"]["dsa_beneficiary"] == "Falasca Ryleigh Brannock"
+    assert by_kind["adset_create"]["dsa_payor"] == "Falasca Ryleigh Brannock"
+    # Кастомный нейминг перекрыл шаблон связки, макрос кабинета развёрнут.
+    assert by_kind["campaign_create"]["name"] == "Launch account — test 1"
+
+
+async def test_dsa_recommendations_come_from_the_ad_account(
+    launch_setup, monkeypatch
+) -> None:
+    """Селект «Бенефициар / Плательщик» питается подсказками самого кабинета."""
+    from app.api.routers import meta as meta_router
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/v23.0/{ACCOUNT_ID}"
+        assert "dsa_recommendations" in request.url.params["fields"]
+        return httpx.Response(
+            200,
+            json={
+                "dsa_recommendations": {
+                    "recommendations": ["Falasca Ryleigh Brannock", "ACME GmbH"]
+                }
+            },
+        )
+
+    monkeypatch.setattr(meta_router, "MetaClient", _client_factory(handler))
+    with _admin_client() as client:
+        response = client.get(
+            f"/api/v1/meta/accounts/{launch_setup['account']}/dsa-recommendations"
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "recommendations": ["Falasca Ryleigh Brannock", "ACME GmbH"]
+    }
+
+
 async def test_the_queue_lists_operations_with_their_launch(launch_setup) -> None:
     await MetaLaunchPublisher(SessionLocal, client_factory=_client_factory()).publish(
         str(launch_setup["launch"]), str(launch_setup["admin"])
@@ -1188,7 +1621,9 @@ async def test_the_rule_reference_lists_levels_windows_and_operators() -> None:
     assert set(reference["rule_levels"]) == {"campaign", "adset", "ad"}
     assert set(reference["rule_statuses"]) == {"active", "paused", "any"}
     assert "last_7d" in reference["rule_windows"]
-    assert set(reference["rule_operators"]) == {"lt", "lte", "gt", "gte", "eq"}
+    assert set(reference["rule_operators"]) == {
+        "lt", "lte", "gt", "gte", "eq", "ne", "in", "nin"
+    }
     assert "60" in reference["rule_frequencies"]
 
 

@@ -39,6 +39,12 @@ celery_app.conf.update(
             "task": "app.workers.tasks.run_alerts",
             "schedule": max(settings.alerts_interval_minutes, 1) * 60,
         },
+        # Запланированные увеличения бюджета: окно периодов с точностью до
+        # минуты, поэтому проверяем часто и применяем ровно один раз.
+        "apply-due-budget-increases": {
+            "task": "app.workers.tasks.apply_due_budget_increases",
+            "schedule": 60,
+        },
     },
 )
 celery_app.autodiscover_tasks(["app.workers"])

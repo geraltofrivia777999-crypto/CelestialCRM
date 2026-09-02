@@ -45,6 +45,7 @@
     canLaunch: false,
     canFixSpend: false,
     connections: [],
+    connectionId: "",
     accounts: [],
     campaigns: [],
     buyers: [],
@@ -55,13 +56,20 @@
     levelSearch: "",
     hour: null,
     levelRows: [],
-    // Фиксация расхода за отрезок дня: что отмечено в таблице кампаний и что
-    // насчитала Meta по этим кампаниям за выбранное окно.
+    // Каскад структуры: владельцы подключений сужают Meta-аккаунты, а выбранные
+    // Meta-аккаунты — все уровни под ними.
+    levelFilterPick: {},
+    // Фиксация расхода за отрезок времени: что отмечено в таблице кампаний и
+    // что насчитала Meta по этим кампаниям за выбранное окно.
     spendPick: {},
     spend: { rows: [], commits: [], loading: false },
     spendRefs: null,
     busy: false,
     pollTimer: null,
+    // Опрос статусов заливов: пока есть «публикуется»/«в очереди», таблица и
+    // журнал публикаций обновляются сами — без перезагрузки страницы.
+    launchPollTimer: null,
+    launchPollBusy: false,
     tab: "overview",
     reference: null,
     launches: [],
@@ -84,6 +92,11 @@
     // опроса. Одна на страницу — одновременно открыт только один диалог.
     session: null
   };
+
+  // Локальные object URL живут столько же, сколько открытый мастер. Один и тот
+  // же File может попасть в несколько объявлений, поэтому освобождаем ссылки
+  // только при закрытии всего мастера, а не при удалении одной карточки.
+  var uploadPreviewUrls = new Map();
 
   function byId(id) {
     return document.getElementById(id);
@@ -175,23 +188,20 @@
 
   function renderKpi(payload) {
     var totals = payload.totals || {};
-    byId("metaSpend").textContent = money(totals.spend);
+    var spend = byId("metaSpend");
+    spend.textContent = money(totals.spend);
     var currencies = payload.currencies || [];
-    byId("metaSpendHint").textContent = currencies.length > 1
-      // Складывать евровый кабинет с долларовым нельзя молча — пусть видно, что итог смешанный.
-      ? "внимание: кабинеты в разных валютах (" + currencies.join(", ") + ")"
-      : "за период" + (currencies.length ? " · " + currencies[0] : "");
+    // Складывать евровый кабинет с долларовым нельзя молча. Подписи под числом
+    // больше нет, поэтому оговорка живёт подсказкой на самой сумме: экран
+    // остаётся чистым, а смешанный итог не выдаёт себя за одну валюту.
+    spend.title = currencies.length > 1
+      ? "Внимание: кабинеты в разных валютах (" + currencies.join(", ") + ")"
+      : "Расход за период" + (currencies.length ? " · " + currencies[0] : "");
     byId("metaClicks").textContent = num(totals.clicks);
-    byId("metaCtr").textContent = "CTR " + percent(totals.ctr) +
-      " · CPC " + money(totals.cpc);
     byId("metaLeads").textContent = num(totals.leads);
-    byId("metaCpl").textContent = "CPL " + money(totals.cpl);
     var profit = byId("metaProfit");
     profit.textContent = money(totals.profit);
     profit.style.color = toneForNumber(totals.profit);
-    byId("metaRoi").textContent = totals.roi === null || totals.roi === undefined
-      ? "ROI считается по доходу из Keitaro"
-      : "ROI " + percent(totals.roi);
   }
 
   /* Плашек про доход здесь больше нет: команда не тянет доход из трекера в
@@ -231,12 +241,43 @@
      а не восемь почти одинаковых рендеров.
      ========================================================== */
 
+  /* Уровни обзора сверху вниз. Порядок здесь — не украшение: отметки на любом
+     уровне сужают всё, что ниже него, и ничего выше. Пользователь → его
+     аккаунты → БМы этих аккаунтов → фан-пейджи этих БМов → кабинеты, в которых
+     крутилась реклама с этих страниц, → кампании и дальше. */
+  var LEVEL_CHAIN = ["users", "socials", "businesses", "fanpages", "accounts",
+    "campaigns", "adsets", "ads"];
+
+  /* Уровни, строки которых отмечают галочкой, и параметр, которым отметка
+     уезжает на сервер. Кампании и ниже в фильтр не входят: там галочка уже
+     занята фиксацией расхода. */
+  var FILTER_LEVELS = ["users", "socials", "businesses", "fanpages", "accounts"];
+  var FILTER_PARAM = {
+    users: "connection_owner_id",
+    socials: "social_id",
+    businesses: "business_id",
+    fanpages: "page_id",
+    accounts: "ad_account_id"
+  };
+  var FILTER_TITLES = {
+    users: "пользователей",
+    socials: "аккаунтов",
+    businesses: "БМов",
+    fanpages: "фан-пейджей",
+    accounts: "кабинетов"
+  };
+
+  function levelBelow(level, source) {
+    return LEVEL_CHAIN.indexOf(level) > LEVEL_CHAIN.indexOf(source);
+  }
+
   var LEVEL_HEADS = {
     users: [
       { key: "name", label: "Пользователь", wide: true }
     ],
     socials: [
       { key: "name", label: "Аккаунт", wide: true },
+      { key: "connection", label: "Подключение", text: true },
       { key: "businesses", label: "БМы", count: true },
       { key: "fan_pages", label: "Фан-пейджи", count: true },
       { key: "ad_accounts", label: "Кабинеты", count: true }
@@ -317,7 +358,13 @@
     }
     if (column.owner) return ownerControl(row);
     if (column.wide) {
-      return '<div style="font-weight:700;font-size:13px">' + escapeHtml(value) + "</div>";
+      // Под именем показываем ID объекта в Meta: по нему ищут и его же копируют,
+      // когда из комментариев или чужой ссылки известно только его число.
+      return '<div style="font-weight:700;font-size:13px">' + escapeHtml(value) + "</div>" +
+        (row.external_id
+          ? '<div style="font-size:10.5px;color:#9B9292;font-weight:600;margin-top:3px;' +
+            'font-variant-numeric:tabular-nums">' + escapeHtml(row.external_id) + "</div>"
+          : "");
     }
     return value
       ? escapeHtml(String(value))
@@ -454,21 +501,37 @@
     return level === "campaigns" && state.canFixSpend;
   }
 
+  function hasFilterPickColumn(level) {
+    return FILTER_LEVELS.indexOf(level) >= 0;
+  }
+
+  function filterPicks(level) {
+    if (!state.levelFilterPick[level]) state.levelFilterPick[level] = {};
+    return state.levelFilterPick[level];
+  }
+
   function renderLevelTable(payload) {
     var columns = levelColumns(payload);
     var rows = payload.rows || [];
-    var pick = hasPickColumn(payload.level);
+    var spendPick = hasPickColumn(payload.level);
+    var filterPick = hasFilterPickColumn(payload.level);
+    var pick = spendPick || filterPick;
     // Первая колонка отступает от края таблицы. С чекбоксами первый — он.
     var lead = function (index) { return index === 0 && !pick ? "padding-left:24px;" : ""; };
+    var pickedRows = filterPick ? filterPicks(payload.level) : state.spendPick;
     var allPicked = pick && rows.length && rows.every(function (row) {
-      return !!state.spendPick[row.id];
+      return !!pickedRows[row.id];
     });
     byId("metaLevelHead").innerHTML =
       '<tr style="border-top:1px solid #F0EBEB;border-bottom:1px solid #F0EBEB">' +
-      (pick
+      (spendPick
         ? '<th class="meta-th meta-check" style="padding-left:24px">' +
           '<input type="checkbox" data-spend-all aria-label="Выбрать все кампании"' +
           (allPicked ? " checked" : "") + "></th>"
+        : filterPick
+          ? '<th class="meta-th meta-check" style="padding-left:24px">' +
+            '<input type="checkbox" data-level-filter-all="' + payload.level + '" ' +
+            'aria-label="Выбрать все строки"' + (allPicked ? " checked" : "") + "></th>"
         : "") +
       columns.map(function (column, index) {
         var align = column.wide || column.text || column.status || column.kind
@@ -489,17 +552,30 @@
       return;
     }
     var clickable = canOpenHours(payload.level);
+    // Подключения живут здесь же: строка аккаунта открывает сохранённые
+    // настройки того подключения, через которое этот аккаунт виден.
+    var opensConnection = payload.level === "socials";
     body.innerHTML = rows.map(function (row) {
-      return '<tr class="meta-row' + (clickable ? " meta-row--clickable" : "") + '"' +
+      var link = opensConnection && row.connection_id;
+      return '<tr class="meta-row' + (clickable || link ? " meta-row--clickable" : "") + '"' +
+        (link ? ' data-connection-row="' + escapeHtml(row.connection_id) + '" tabindex="0" ' +
+          'title="Настройки подключения"' : "") +
         (clickable ? ' data-hour-row="' + escapeHtml(row.id) + '" tabindex="0" ' +
           'title="Расход по часам"' : "") +
         ' style="border-bottom:1px solid #F7F4F4">' +
-        (pick
+        (spendPick
           ? '<td class="meta-cell meta-check" style="padding-left:24px">' +
             '<input type="checkbox" data-spend-pick="' + escapeHtml(row.id) + '"' +
             ' data-spend-name="' + escapeHtml(row.name) + '"' +
             (state.spendPick[row.id] ? " checked" : "") +
             ' aria-label="Выбрать кампанию"></td>'
+          : filterPick
+            ? '<td class="meta-cell meta-check" style="padding-left:24px">' +
+              '<input type="checkbox" data-level-filter-pick="' +
+              escapeHtml(row.id) + '" data-level-filter-kind="' + payload.level + '"' +
+              ' data-level-filter-name="' + escapeHtml(row.name) + '"' +
+              (filterPicks(payload.level)[row.id] ? " checked" : "") +
+              ' aria-label="Добавить в фильтр"></td>'
           : "") +
         columns.map(function (column, index) {
           var align = column.wide || column.text || column.status || column.kind
@@ -535,7 +611,7 @@
     // надо объяснить, чего не хватает, в первом — просто что ничего не нашлось.
     if (state.levelSearch) return "Ничего не найдено — измените запрос";
     if (level === "users") {
-      return "Ни за кем не закреплён кабинет — назначьте ответственных на уровне «Кабинеты»";
+      return "Нет пользователей с подключением Meta Ads";
     }
     if (level === "socials" || level === "businesses" || level === "fanpages") {
       return "Пусто. Аккаунты, БМы и фан-пейджи приходят из Meta — " +
@@ -553,10 +629,26 @@
         "здесь только числа кабинета.";
     } else if (level === "fanpages") {
       text = "Строка собирается по объявлениям: фан-пейдж получает расход той рекламы, " +
-        "которая крутится от его лица.";
+        "которая крутится от его лица. Отметьте страницы — ниже останутся " +
+        "кабинеты, в которых такая реклама была.";
     } else if (level === "users") {
-      text = "Считается по кабинетам, закреплённым за человеком.";
+      text = "Здесь пользователи, которые создали подключение Meta Ads. " +
+        "Отметьте нужных — следующие уровни покажут только их данные.";
+    } else if (level === "socials") {
+      text = "Отметьте аккаунты — БМы, фан-пейджи, кабинеты и реклама ниже " +
+        "останутся только для выбранных аккаунтов.";
+    } else if (level === "businesses") {
+      text = "Отметьте БМы — ниже останутся только их фан-пейджи и кабинеты.";
+    } else if (level === "accounts") {
+      text = "Отметьте кабинеты — кампании, адсеты и объявления ниже " +
+        "останутся только по ним.";
     }
+    FILTER_LEVELS.forEach(function (source) {
+      if (!levelBelow(level, source)) return;
+      var count = Object.keys(filterPicks(source)).length;
+      if (!count) return;
+      text += (text ? " " : "") + "Выбрано " + FILTER_TITLES[source] + ": " + count + ".";
+    });
     host.style.display = text ? "" : "none";
     host.textContent = text;
   }
@@ -576,6 +668,12 @@
       (state.accountId ? "&account_id=" + encodeURIComponent(state.accountId) : "") +
       (state.ownerId ? "&owner_id=" + encodeURIComponent(state.ownerId) : "") +
       (state.levelSearch ? "&search=" + encodeURIComponent(state.levelSearch) : "");
+    FILTER_LEVELS.forEach(function (source) {
+      if (!levelBelow(state.level, source)) return;
+      Object.keys(filterPicks(source)).forEach(function (id) {
+        query += "&" + FILTER_PARAM[source] + "=" + encodeURIComponent(id);
+      });
+    });
     var payload = await api.get("/meta/overview/levels/" + state.level + query);
     state.levelRows = payload.rows || [];
     renderLevelTabs();
@@ -617,7 +715,7 @@
   }
 
 
-  /* ---------- фиксация расхода за отрезок дня (ТЗ 2.4.4) ---------- */
+  /* ---------- фиксация расхода за отрезок времени (ТЗ 2.4.4) ---------- */
 
   /*
    * Баер льёт один оффер с 12:00 до 16:00, потом другой. Дневная статистика
@@ -636,18 +734,37 @@
     }).join("");
   }
 
-  /* День и часы задаются в фильтрах, рядом с таблицей: расход относят на оффер
-     по часам, и выбирают их до того, как отмечают кампании. Модалка эти
-     значения только показывает. */
-  function spendDay() {
-    var input = byId("metaWindowDate");
-    return input && input.value ? input.value : periodRange(state.period).to;
+  /* Начало, конец и часы задаются в фильтрах, рядом с таблицей: окно может
+     переходить через полночь — от часа одного дня до часа другого. Модалка эти
+     значения только показывает, а расход относят по часам кабинета. */
+  function defaultWindowDay() {
+    return periodRange(state.period).to;
   }
 
-  function spendWindow() {
+  function spendRange() {
+    var fromInput = byId("metaWindowDate");
+    var toInput = byId("metaWindowDateTo");
+    var day = fromInput && fromInput.value ? fromInput.value : defaultWindowDay();
+    var lastDay = toInput && toInput.value ? toInput.value : day;
+    if (lastDay < day) lastDay = day;
     var from = Number(byId("metaWindowFrom").value);
     var to = Number(byId("metaWindowTo").value);
-    return { from: from, to: to };
+    return { date_from: day, hour_from: from, date_to: lastDay, hour_to: to };
+  }
+
+  /* Точка во времени для сравнения окон: час 24 сам перекатывается в полночь
+     следующего дня, поэтому «до 24:00» и «полночь следующего дня» совпадают. */
+  function windowStamp(day, hour) {
+    var parts = String(day).split("-");
+    return new Date(
+      Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]),
+      Number(hour) || 0
+    ).getTime();
+  }
+
+  function windowOpens(range_) {
+    return windowStamp(range_.date_from, range_.hour_from) <
+      windowStamp(range_.date_to, range_.hour_to);
   }
 
   function renderWindowBox() {
@@ -656,7 +773,12 @@
     box.hidden = !hasPickColumn(state.level);
     if (box.hidden) return;
     if (!byId("metaWindowDate").value) {
-      byId("metaWindowDate").value = periodRange(state.period).to;
+      byId("metaWindowDate").value = defaultWindowDay();
+    }
+    if (!byId("metaWindowDateTo").value) {
+      // Конец по умолчанию совпадает с началом: чаще фиксируют один день,
+      // а второй нужен только когда окно действительно длинное.
+      byId("metaWindowDateTo").value = byId("metaWindowDate").value;
     }
     if (!byId("metaWindowFrom").options.length) {
       hourOptions(byId("metaWindowFrom"), rangeOf(0, 23), 12);
@@ -664,9 +786,13 @@
     }
   }
 
-  function windowLabel() {
-    var window_ = spendWindow();
-    return spendDay() + " · " + pad(window_.from) + ":00–" + pad(window_.to) + ":00";
+  function windowLabel(range_) {
+    var value = range_ || spendRange();
+    var start = value.date_from + " · " + pad(value.hour_from) + ":00";
+    if (value.date_from === value.date_to) {
+      return start + "–" + pad(value.hour_to) + ":00";
+    }
+    return start + " – " + value.date_to + " · " + pad(value.hour_to) + ":00";
   }
 
   function pad(hour) {
@@ -713,16 +839,49 @@
     else delete state.spendPick[id];
   }
 
+  function syncLevelFilterChecks(level) {
+    var boxes = document.querySelectorAll('[data-level-filter-kind="' + level + '"]');
+    Array.prototype.forEach.call(boxes, function (box) {
+      box.checked = !!filterPicks(level)[box.getAttribute("data-level-filter-pick")];
+    });
+    var all = document.querySelector('[data-level-filter-all="' + level + '"]');
+    if (all) {
+      all.checked = boxes.length > 0 && Array.prototype.every.call(boxes, function (box) {
+        return box.checked;
+      });
+    }
+  }
+
+  function toggleLevelFilterPick(box, on) {
+    var level = box.getAttribute("data-level-filter-kind");
+    var id = box.getAttribute("data-level-filter-pick");
+    if (!level || !id) return;
+    if (on) {
+      filterPicks(level)[id] = box.getAttribute("data-level-filter-name") || id;
+    } else {
+      delete filterPicks(level)[id];
+    }
+    // Состав нижних уровней зависит от верхних: после смены отметки выше
+    // прежние отметки ниже указывают на строки, которых в списке уже нет.
+    FILTER_LEVELS.forEach(function (source) {
+      if (levelBelow(source, level)) state.levelFilterPick[source] = {};
+    });
+  }
+
+  function resetLevelFilters() {
+    state.levelFilterPick = {};
+  }
+
   function openSpendModal() {
     if (!selectedIds().length) return;
-    var window_ = spendWindow();
-    if (!(window_.from < window_.to)) {
+    var range_ = spendRange();
+    if (!windowOpens(range_)) {
       return notify({
         title: "Проверьте окно",
         message: "Конец окна должен быть позже начала."
       });
     }
-    byId("metaSpendWindowValue").textContent = windowLabel();
+    byId("metaSpendWindowValue").textContent = windowLabel(range_);
     state.spend = { rows: [], commits: [], loading: false };
     byId("metaSpendCommits").innerHTML = "";
     byId("metaSpendWindowHint").textContent =
@@ -745,11 +904,13 @@
     host.innerHTML = '<div style="font-size:12px;color:#9B9292;font-weight:600">' +
       "Загружаем справочники…</div>";
     if (!state.spendRefs) {
-      // Офферы берём все, а не только заведённые руками: расход относят и на
-      // офферы Keitaro — по ним и льют. Постранично, потому что справочник
-      // трекера длиннее любого разумного лимита.
+      // Справочник для фиксирования: сервер сам сужает офферы по роли
+      // (баер — свои, тимлид — своих баеров, СМО и админ — все) и убирает
+      // служебную группу OFFERS — это витрина модуля «Оффера», к расходу
+      // она отношения не имеет. Постранично, потому что справочник трекера
+      // длиннее любого разумного лимита.
       var loaded = await Promise.all([
-        api.getAll("/offers?scope_offers=true"),
+        api.getAll("/offers?for_spend=true"),
         api.get("/spend-providers?status=active&limit=200")
       ]);
       state.spendRefs = {
@@ -765,6 +926,14 @@
     });
     if (!people.length && state.user) people = [{ id: state.user.id, name: state.user.name }];
     host.innerHTML =
+      '<label class="spend-field"><span>Баер</span>' +
+      '<select class="meta-control meta-select" data-spend-field="buyer_id"' +
+      (people.length > 1 ? "" : " disabled") + ">" +
+      people.map(function (buyer) {
+        return '<option value="' + escapeHtml(buyer.id) + '"' +
+          (state.user && buyer.id === state.user.id ? " selected" : "") + ">" +
+          escapeHtml(buyer.name) + "</option>";
+      }).join("") + "</select></label>" +
       '<label class="spend-field"><span>Оффер</span>' +
       '<select class="meta-control meta-select" data-spend-field="offer_id">' +
       '<option value="">Не выбран</option>' +
@@ -780,14 +949,6 @@
         return '<option value="' + escapeHtml(provider.id) + '">' +
           escapeHtml(provider.name) + (percent ? " · " + percent + " %" : "") +
           "</option>";
-      }).join("") + "</select></label>" +
-      '<label class="spend-field"><span>Баер</span>' +
-      '<select class="meta-control meta-select" data-spend-field="buyer_id"' +
-      (people.length > 1 ? "" : " disabled") + ">" +
-      people.map(function (buyer) {
-        return '<option value="' + escapeHtml(buyer.id) + '"' +
-          (state.user && buyer.id === state.user.id ? " selected" : "") + ">" +
-          escapeHtml(buyer.name) + "</option>";
       }).join("") + "</select></label>";
   }
 
@@ -804,8 +965,8 @@
   async function loadSpendWindow(refresh) {
     var ids = selectedIds();
     if (!ids.length) return;
-    var window_ = spendWindow();
-    if (!(window_.from < window_.to)) {
+    var range_ = spendRange();
+    if (!windowOpens(range_)) {
       byId("metaSpendWindowHint").textContent = "Конец окна должен быть позже начала.";
       return;
     }
@@ -817,20 +978,25 @@
     try {
       // Часы спрашиваем только по отмеченным кампаниям: остальные к этой
       // фиксации отношения не имеют, а каждый лишний поход — запрос в Meta.
-      var query = "?day=" + encodeURIComponent(spendDay()) +
-        "&hour_from=" + window_.from + "&hour_to=" + window_.to +
+      var query = "?from=" + encodeURIComponent(range_.date_from) +
+        "&to=" + encodeURIComponent(range_.date_to) +
+        "&hour_from=" + range_.hour_from + "&hour_to=" + range_.hour_to +
         ids.map(function (id) {
           return "&campaign_ids=" + encodeURIComponent(id);
         }).join("") +
         (refresh ? "&refresh=true" : "");
       var payload = await api.get("/meta/spend/window" + query);
       state.spend.rows = payload.rows || [];
-      var commits = await api.get("/meta/spend/commits?day=" + encodeURIComponent(spendDay()));
+      var commits = await api.get("/meta/spend/commits?from=" +
+        encodeURIComponent(range_.date_from) + "&to=" + encodeURIComponent(range_.date_to));
       state.spend.commits = commits.items || [];
       byId("metaSpendWindowHint").textContent = (payload.timezones || []).length
         ? "Часы считает Meta по таймзоне кабинета: " + payload.timezones.join(", ") +
-          ". Окно берёт часы " + window_.from + "–" + (window_.to - 1) + " включительно."
-        : "За этот день у выбранных кампаний расхода не было.";
+          ". Окно: " + windowLabel(range_) +
+          (range_.date_from === range_.date_to
+            ? " — часы " + range_.hour_from + "–" + (range_.hour_to - 1) + " включительно."
+            : ".")
+        : "За этот период у выбранных кампаний расхода не было.";
       renderSpendRows();
       renderSpendCommits();
     } catch (error) {
@@ -846,10 +1012,14 @@
   }
 
   // Часы, уже отнесённые на оффер: иначе про занятое окно узнаёшь только из
-  // отказа при сохранении.
-  function spendClash(row, window_) {
-    return (row.taken_hours || []).some(function (hour) {
-      return hour >= window_.from && hour < window_.to;
+  // отказа при сохранении. Пересечение сравнивается точками во времени —
+  // и новое окно, и занятые отрезки могут переходить через полночь.
+  function spendClash(row, range_) {
+    return (row.taken_windows || []).some(function (taken) {
+      var takenStart = windowStamp(taken.date, taken.from);
+      var takenEnd = windowStamp(taken.date, taken.to);
+      return takenStart < windowStamp(range_.date_to, range_.hour_to) &&
+        windowStamp(range_.date_from, range_.hour_from) < takenEnd;
     });
   }
 
@@ -860,7 +1030,7 @@
       host.innerHTML = "";
       return;
     }
-    var window_ = spendWindow();
+    var range_ = spendRange();
     var known = {};
     state.spend.rows.forEach(function (row) { known[row.campaign_id] = row; });
     host.innerHTML = '<div class="spend-title">Выбранные кампании</div>' +
@@ -868,7 +1038,7 @@
         // Пока Meta не ответила, строка уже на месте — с именем из таблицы.
         var row = known[id] ||
           { campaign_id: id, name: state.spendPick[id] || id, spend: null, day_spend: null };
-        var clash = spendClash(row, window_);
+        var clash = spendClash(row, range_);
         return '<div class="spend-row' + (clash ? " spend-row--taken" : "") + '">' +
           '<span style="flex:1;min-width:0"><span class="spend-row__name">' +
           escapeHtml(row.name) + "</span>" +
@@ -876,7 +1046,8 @@
           (row.status ? " · " + escapeHtml(row.status) : "") +
           (clash ? " · окно уже занято" : "") + "</span></span>" +
           '<span><span class="spend-row__money">' + money(row.spend) +
-          '</span><span class="spend-row__day">за день ' +
+          '</span><span class="spend-row__day">' +
+          (range_.date_from === range_.date_to ? "за день " : "за дни окна ") +
           money(row.day_spend) + "</span></span>" +
           '<button class="spend-drop" type="button" data-spend-remove="' +
           escapeHtml(id) + '" aria-label="Убрать кампанию">×</button></div>';
@@ -889,7 +1060,7 @@
       host.innerHTML = "";
       return;
     }
-    host.innerHTML = '<div class="spend-title">Уже зафиксировано за этот день</div>' +
+    host.innerHTML = '<div class="spend-title">Уже зафиксировано за этот период</div>' +
       state.spend.commits.map(function (commit) {
         return '<div class="spend-commit"><span style="flex:1;min-width:0">' +
           "<b>" + escapeHtml(commit.campaign_name || commit.campaign_id) + "</b> · " +
@@ -902,9 +1073,9 @@
 
   function renderSpendTotal() {
     var rows = state.spend.rows || [];
-    var window_ = spendWindow();
+    var range_ = spendRange();
     var total = rows.reduce(function (sum, row) { return sum + Number(row.spend || 0); }, 0);
-    var taken = rows.filter(function (row) { return spendClash(row, window_); });
+    var taken = rows.filter(function (row) { return spendClash(row, range_); });
     byId("metaSpendTotal").textContent =
       "Выбрано: " + selectedIds().length + " · " + money(total);
     // Пересечение окон сервер и так отклонит — лучше сказать об этом до клика,
@@ -954,14 +1125,15 @@
     if (!values.provider_id) return spendError("Выберите агента — от него считается процент");
     if (!values.buyer_id) return spendError("Не удалось определить баера");
     spendError("");
-    var window_ = spendWindow();
+    var range_ = spendRange();
     var button = byId("metaSpendCommit");
     button.disabled = true;
     try {
       var result = await api.post("/meta/spend/commit", {
-        record_date: spendDay(),
-        hour_from: window_.from,
-        hour_to: window_.to,
+        date_from: range_.date_from,
+        hour_from: range_.hour_from,
+        date_to: range_.date_to,
+        hour_to: range_.hour_to,
         campaign_ids: selectedIds(),
         offer_id: values.offer_id,
         buyer_id: values.buyer_id,
@@ -996,17 +1168,42 @@
     byId("metaSpendLoad").addEventListener("click", function () {
       loadSpendWindow(true).catch(function () {});  // ошибку рисует сам загрузчик
     });
-    // День и часы живут в фильтрах. Если их поменяли при открытой форме,
+    // Окно живёт в фильтрах. Если его поменяли при открытой форме,
     // пересчитываем: иначе на экране остаются числа прежнего окна, а кнопка
     // отправляет уже новое.
-    ["metaWindowDate", "metaWindowFrom", "metaWindowTo"].forEach(function (id) {
-      byId(id).addEventListener("change", function () {
-        renderSpendButton();
-        if (byId("metaSpendModal").style.display !== "flex") return;
-        byId("metaSpendWindowValue").textContent = windowLabel();
-        loadSpendWindow().catch(function () {});
-      });
-    });
+    ["metaWindowDate", "metaWindowFrom", "metaWindowDateTo", "metaWindowTo"].forEach(
+      function (id) {
+        // Safari после закрытия списка «вписывает» поле в видимую область и
+        // докручивает страницу — как у нативных селектов в мастере залива.
+        // Запоминаем позицию на клик и возвращаем её после выбора.
+        byId(id).addEventListener("mousedown", function () {
+          byId(id)._windowScrollY = window.scrollY;
+        });
+        byId(id).addEventListener("change", function () {
+          var field = byId(id);
+          var saved = field._windowScrollY;
+          field._windowScrollY = undefined;
+          var restore = function () {
+            if (saved !== undefined && window.scrollY !== saved) {
+              window.scrollTo(0, saved);
+            }
+          };
+          restore();
+          window.setTimeout(restore, 50);
+          // Конец не бывает раньше начала: короткое окно смысла не имеет,
+          // и сервер такое отклонил бы, поэтому поправляем сразу.
+          var fromInput = byId("metaWindowDate");
+          var toInput = byId("metaWindowDateTo");
+          if (toInput.value && toInput.value < fromInput.value) {
+            toInput.value = fromInput.value;
+          }
+          renderSpendButton();
+          if (byId("metaSpendModal").style.display !== "flex") return;
+          byId("metaSpendWindowValue").textContent = windowLabel();
+          loadSpendWindow().catch(function () {});
+        });
+      }
+    );
     byId("metaSpendRows").addEventListener("click", function (event) {
       var drop = event.target.closest ? event.target.closest("[data-spend-remove]") : null;
       if (!drop) return;
@@ -1037,8 +1234,7 @@
     if (!state.accountId) {
       accountSelect.innerHTML = '<option value="">Все кабинеты</option>' +
         accounts.map(function (account) {
-          return '<option value="' + escapeHtml(account.id) + '">' +
-            escapeHtml(account.name) + "</option>";
+          return accountOptionHtml(account, "");
         }).join("");
       var owners = [];
       accounts.forEach(function (account) {
@@ -1085,7 +1281,9 @@
     host.title = run && run.error ? run.error : "";
 
     var button = byId("metaSync");
-    button.style.display = state.canManage && state.connections.length ? "" : "none";
+    // Синхронизацию своего подключения может запустить любой пользователь
+    // Meta Ads; тимлид также может обновить видимые подключения команды.
+    button.style.display = state.connections.length ? "" : "none";
     button.disabled = state.busy || !!(run && (run.status === "queued" || run.status === "running"));
     button.style.opacity = button.disabled ? ".6" : "1";
   }
@@ -1103,11 +1301,26 @@
     try {
       var page = await api.get("/meta/connections");
       state.connections = page.items || [];
+      if (!state.connections.some(function (connection) {
+        return connection.id === state.connectionId;
+      })) {
+        var own = state.connections.find(function (connection) {
+          return connection.owner_id === (state.user && state.user.id);
+        });
+        state.connectionId = (own || state.connections[0] || {}).id || "";
+      }
     } catch (error) {
       // Право meta.view есть, а подключений может не быть вовсе — это не ошибка экрана.
       if (!error || error.status !== 403) throw error;
       state.connections = [];
+      state.connectionId = "";
     }
+  }
+
+  function currentConnection() {
+    return state.connections.find(function (connection) {
+      return connection.id === state.connectionId;
+    }) || state.connections[0] || null;
   }
 
   async function load() {
@@ -1203,30 +1416,39 @@
     return picked ? picked.value : "system_user";
   }
 
-  function openModal() {
-    var connection = state.connections[0] || null;
+  function openModal(connectionId) {
+    // Список подключений переехал в уровень «Аккаунты»: сюда приходят уже за
+    // конкретным подключением, а не выбирать его из выпадающего списка.
+    if (connectionId) state.connectionId = connectionId;
+    var connection = currentConnection();
+    if (!connection) return openWizard();
     var editing = !!connection;
     sessionStop();
-    byId("metaModalTitle").textContent = editing
-      ? "Подключение Meta Ads"
-      : "Новое подключение Meta Ads";
+    byId("metaModalTitle").textContent = connection.name || "Подключение Meta Ads";
+    state.connectionId = connection.id;
     byId("metaFieldName").value = editing ? connection.name : "";
     byId("metaFieldToken").value = "";
-    byId("metaFieldBusiness").value = editing ? (connection.business_id || "") : "";
     byId("metaFieldProxy").value = editing ? (connection.proxy_url || "") : "";
     byId("metaFieldUserAgent").value = editing ? (connection.user_agent || "") : "";
-    byId("metaFieldSub").value = editing && connection.attribution_sub_id
-      ? String(connection.attribution_sub_id)
-      : "";
     byId("metaModalCookies").value = "";
     byId("metaModalSessionToken").value = "";
     sessionResetUi("modal");
     renderAuthMethods(editing ? (connection.auth_method || "system_user") : "system_user");
-    byId("metaFieldInterval").value = editing ? connection.sync_interval_minutes : 30;
-    byId("metaFieldLookback").value = editing ? connection.lookback_days : 3;
     byId("metaTokenHint").style.display = editing ? "" : "none";
-    byId("metaModalDelete").style.display = editing ? "" : "none";
+    var editable = connection.can_edit !== false;
+    byId("metaConnectionOwner").textContent = connection.owner_name
+      ? "Владелец: " + connection.owner_name : "Старое подключение без владельца";
+    byId("metaConnectionReadonly").style.display = editable ? "none" : "";
+    byId("metaModalSave").style.display = editable ? "" : "none";
+    byId("metaModalDelete").style.display = editing && editable ? "" : "none";
     byId("metaModalCheck").style.display = editing ? "" : "none";
+    Array.prototype.forEach.call(
+      byId("metaModal").querySelectorAll("input, textarea, select"),
+      function (field) { field.disabled = !editable; }
+    );
+    ["metaModalSessionStart", "metaModalSessionClose"].forEach(function (id) {
+      byId(id).disabled = !editable;
+    });
     byId("metaModalChecks").style.display = "none";
     modalError("");
     byId("metaModalStatus").textContent = "";
@@ -1257,7 +1479,7 @@
   };
 
   async function checkConnection() {
-    var connection = state.connections[0];
+    var connection = currentConnection();
     if (!connection) return;
     var host = byId("metaModalChecks");
     var button = byId("metaModalCheck");
@@ -1290,7 +1512,8 @@
   }
 
   async function saveConnection() {
-    var connection = state.connections[0] || null;
+    var connection = currentConnection();
+    if (connection && connection.can_edit === false) return;
     var method = authMethodValue();
     var token = byId("metaFieldToken").value.trim();
     var name = byId("metaFieldName").value.trim();
@@ -1315,18 +1538,20 @@
       modalError("Вставьте токен");
       return;
     }
-    var sub = byId("metaFieldSub").value;
+    // Business ID, sub_id, интервал и глубина перечитывания из карточки убраны,
+    // и в payload их нет намеренно: PATCH меняет только присланные поля, так
+    // что у существующих подключений эти значения остаются прежними.
     var payload = {
       name: name,
-      business_id: byId("metaFieldBusiness").value.trim() || null,
-      attribution_sub_id: sub ? Number(sub) : null,
       auth_method: method,
       proxy_url: proxy || null,
-      user_agent: byId("metaFieldUserAgent").value.trim() || null,
-      sync_interval_minutes: Number(byId("metaFieldInterval").value) || 30,
-      lookback_days: Number(byId("metaFieldLookback").value) || 3
+      user_agent: byId("metaFieldUserAgent").value.trim() || null
     };
     if (token) payload.access_token = token;
+    if (method === "session" && state.session && state.session.sessionId) {
+      // Проверка нового токена сессии на сервере идёт через живую сессию браузера.
+      payload.session_id = state.session.sessionId;
+    }
 
     modalError("");
     // Токен проверяется на сервере запросом в Meta — это заметная пауза, и без
@@ -1351,8 +1576,9 @@
   }
 
   async function deleteConnection() {
-    var connection = state.connections[0];
+    var connection = currentConnection();
     if (!connection) return;
+    if (connection.can_edit === false) return;
     var confirmed = await askConfirm({
       title: "Удалить подключение «" + connection.name + "»?",
       message: "Кабинеты, кампании и загруженная статистика Meta будут удалены " +
@@ -1374,10 +1600,39 @@
 
   /* ---------- вкладки ---------- */
 
-  var TABS = ["overview", "launches", "rules"];
+  var TABS = ["overview", "launches", "rules", "comments"];
+  var TAB_KEY = "celestial.meta.tab";
+
+  /* Открытая вкладка переживает перезагрузку. Раньше F5 на «Автоправилах»
+     возвращал на «Обзор», и блок правил выглядел так, будто не загрузился. */
+  function rememberTab(name) {
+    try {
+      window.sessionStorage.setItem(TAB_KEY, name);
+    } catch (error) {
+      // Приватный режим Safari запрещает запись — вкладка просто не запомнится.
+    }
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, "", name === "overview"
+        ? window.location.pathname + window.location.search
+        : "#" + name);
+    }
+  }
+
+  function restoreTab() {
+    var hash = String(window.location.hash || "").replace("#", "");
+    if (TABS.indexOf(hash) >= 0) return setTab(hash);
+    var saved = null;
+    try {
+      saved = window.sessionStorage.getItem(TAB_KEY);
+    } catch (error) {
+      saved = null;
+    }
+    setTab(TABS.indexOf(saved) >= 0 ? saved : "overview");
+  }
 
   function setTab(name) {
     state.tab = name;
+    rememberTab(name);
     TABS.forEach(function (tab) {
       var section = byId("metaTab" + tab.charAt(0).toUpperCase() + tab.slice(1));
       if (section) section.style.display = tab === name ? "" : "none";
@@ -1392,7 +1647,8 @@
     if (name === "launches" && state.launchView !== "bundles") setLaunchView("bundles");
     var loader = {
       launches: loadTemplates,
-      rules: loadRules
+      rules: loadRules,
+      comments: loadComments
     }[name];
     if (loader) loader().catch(showFailure);
   }
@@ -1401,6 +1657,24 @@
     if (state.reference) return state.reference;
     state.reference = await api.get("/meta/reference");
     return state.reference;
+  }
+
+  /* Кабинет в выпадающем списке: имя подписью, ID — технической строкой ниже.
+     Поиск в списке (select-ui) смотрит и в неё, поэтому кабинет находится по
+     `act_123`: в комментариях и в чужих ссылках имени часто нет, а ID есть. */
+  function accountOptionHtml(account, selected) {
+    /* Если имени нет, синк кладёт в name числовой ID — и в списке вариант
+       выглядел как склейка «1026… act_1026…». Такой кабинет показываем один
+       раз как act_…, без дублирующей подписи. */
+    var name = String(account.name || "").trim();
+    var ext = String(account.external_id || "").trim();
+    var digits = ext.replace(/^act_/, "");
+    var unnamed = !name || name === digits || name === ext;
+    var label = unnamed ? (ext || name || "Кабинет без ID") : name;
+    return '<option value="' + escapeHtml(account.id) + '"' +
+      (account.id === selected ? " selected" : "") +
+      (!unnamed && ext ? ' data-hint="' + escapeHtml(ext) + '"' : "") +
+      ">" + escapeHtml(label) + "</option>";
   }
 
   function referenceAccounts() {
@@ -1423,7 +1697,9 @@
       body = '<select class="meta-control meta-select" data-field="' + escapeHtml(field.name) +
         '">' + (field.options || []).map(function (option) {
           return '<option value="' + escapeHtml(option.value) + '"' +
-            (option.selected ? " selected" : "") + ">" + escapeHtml(option.label) + "</option>";
+            (option.selected ? " selected" : "") +
+            (option.hint ? ' data-hint="' + escapeHtml(option.hint) + '"' : "") +
+            ">" + escapeHtml(option.label) + "</option>";
         }).join("") + "</select>";
     } else if (field.type === "textarea") {
       body = '<textarea class="meta-control" data-field="' + escapeHtml(field.name) + '">' +
@@ -1484,17 +1760,27 @@
       'aria-label="Убрать условие" style="padding:0;height:38px">✕</button></div>';
   }
 
+  /* Подпись креатива в списке: у части файлов имя не сохранилось — не
+     оставлять строку пустой, иначе модалка показывает голые чекбоксы. */
+  function creativeLabel(creative) {
+    var base = creative && (creative.name || creative.file_name || "");
+    if (!base) base = "Креатив " + String(creative && creative.id || "").slice(0, 6);
+    var kind = creative && creative.kind === "video" ? "видео" : "картинка";
+    return base + " · " + kind;
+  }
+
   function checklistHtml(field) {
     if (!(field.options || []).length) {
       return '<div style="font-size:11.5px;color:#9B9292;font-weight:600">' +
         escapeHtml(field.empty || "Нечего выбрать") + "</div>";
     }
     return field.options.map(function (option) {
+      var label = option.label || "Креатив " + String(option.value || "").slice(0, 6);
       return '<label class="meta-pick" style="align-items:center;padding:9px 12px">' +
         '<input type="checkbox" data-check="' + escapeHtml(field.name) + '" value="' +
         escapeHtml(option.value) + '"' + (option.selected ? " checked" : "") + ">" +
         '<span style="font-size:12.5px;font-weight:600;color:#3A3030">' +
-        escapeHtml(option.label) + "</span></label>";
+        escapeHtml(label) + "</span></label>";
     }).join("");
   }
 
@@ -1605,7 +1891,7 @@
   }
 
   async function loadLaunches() {
-    await loadReference();
+    if (!state.reference) await loadReference();
     var query = state.launchStatus ? "?status=" + encodeURIComponent(state.launchStatus) : "";
     var page = await api.get("/meta/launches" + query);
     state.launches = page.items || [];
@@ -1613,6 +1899,37 @@
       return state.launches.some(function (launch) { return launch.id === id; });
     });
     renderLaunches();
+    scheduleLaunchPoll();
+  }
+
+  /* Опрос статусов публикации: пока хоть один залив «в очереди»/«публикуется»
+     (или в журнале есть pending-операция), перечитываем заливы и журнал каждые
+     несколько секунд. Как только всё завершилось — опрос сам останавливается. */
+  function scheduleLaunchPoll() {
+    if (state.launchPollTimer) window.clearTimeout(state.launchPollTimer);
+    state.launchPollTimer = null;
+    var inflight =
+      (state.launches || []).some(function (launch) {
+        return launch.status === "queued" || launch.status === "publishing";
+      }) ||
+      (state.queue || []).some(function (row) { return row.status === "pending"; });
+    if (!inflight) return;
+    state.launchPollTimer = window.setTimeout(async function () {
+      if (state.launchPollBusy) {
+        scheduleLaunchPoll();
+        return;
+      }
+      state.launchPollBusy = true;
+      try {
+        await loadLaunches();
+        if (state.launchView === "queue") await loadQueue();
+      } catch (error) {
+        // Тихий опрос: одна неудача не должна гасить обновление насовсем.
+      } finally {
+        state.launchPollBusy = false;
+        scheduleLaunchPoll();
+      }
+    }, POLL_DELAY);
   }
 
   function renderLaunches() {
@@ -1697,7 +2014,8 @@
         placeholder: "DE | Nervio | broad" },
       { name: "account_id", label: "Рекламный кабинет", type: "select", half: true,
         options: accounts.map(function (account) {
-          return { value: account.id, label: account.name, selected: account.id === accountId };
+          return { value: account.id, label: account.name, hint: account.external_id,
+            selected: account.id === accountId };
         }) },
       { name: "template_id", label: "Шаблон", type: "select", half: true,
         options: [{ value: "", label: "Без шаблона" }].concat(
@@ -1747,7 +2065,7 @@
         empty: "В этом кабинете ещё нет загруженных креативов",
         options: creatives.map(function (creative) {
           return { value: creative.id,
-            label: creative.name + " · " + (creative.kind === "video" ? "видео" : "картинка"),
+            label: creativeLabel(creative),
             selected: (launch.creative_ids || []).indexOf(creative.id) >= 0 };
         }) },
       { name: "activate_on_publish", label: "Снять с паузы сразу после публикации",
@@ -1800,11 +2118,22 @@
       // Что задано на конкретный кабинет и что Meta про него рассказала.
       perAccount: {},
       assets: {},
+      // Активный язык объявления на шаге «Креативы» — чипсы-табы.
+      textTabs: {},
+      // Дополнительные поля шага «Кабинеты»: включаются свитчерами сверху.
+      // Бенефициар тянется из подсказок самого кабинета (DSA-прозрачность).
+      switches: { naming: true, urlTags: true, displayLink: true, beneficiary: true },
+      beneficiaries: {},
       accountSearch: "",
       onlyPicked: false,
       // Объявления пачки: тексты и файлы у них общие, хэши в кабинетах — свои.
       ads: [],
       languages: false,
+      // Названия языков, добавленных через поиск Meta: код «hr_HR» без имени
+      // в чипсах выглядел бы как мусор.
+      languageNames: {},
+      // Модалка «Добавить языки»: открытость, поиск, отметки.
+      langPicker: null,
       split: false,
       unique: false,
       values: {
@@ -1813,6 +2142,30 @@
         link_url: "", primary_text: "", headline: "", description: "",
         call_to_action: "LEARN_MORE", page_id: "", pixel_id: "",
         url_tags: "", display_link: "",
+        // Расширенный режим: кампании, цель (4 селекта), бюджет и ставка,
+        // автоправила, теги.
+        campaign_count: 1,
+        objective: "",
+        custom_event_type: "",
+        attribution: "",
+        engaged_view: "",
+        budget_level: "",
+        budget_kind: "",
+        budget_randomize: false,
+        adset_budget_limit: "",
+        budget_limit_on: false,
+        budget_limit_min: "",
+        budget_limit_max: "",
+        budget_increase_on: false,
+        budget_increases: [],
+        bid_strategy: "",
+        rules_on: true,
+        rule_group_on: false,
+        rule_ids: [],
+        rule_group: "",
+        tag_level: "campaign",
+        tag_names: "",
+        tag_mode: "add",
         activate_on_publish: true,
         // Блок «Время»: когда стартовать, когда заливать и что оставить на паузе.
         start_mode: "now", start_at: "",
@@ -2038,6 +2391,265 @@
       "</div></div>";
   }
 
+  /* Активация бюджета в extra-режиме не нужна — блок «Параметры залива» убран
+     (его в Dolphin нет), путь расширенного остался только для остальных карточек. */
+
+  /* Кампании и адсеты: сколько кампаний и копий адсетов взять в залив. */
+  function campaignsCardHtml() {
+    var values = state.upload.values;
+    return '<div class="meta-card"><div class="meta-card__title">Кампании и адсеты</div>' +
+      '<div style="display:grid;gap:14px">' +
+      '<div class="meta-line"><span>Количество кампаний</span>' +
+      '<input class="meta-control" style="width:100px;padding:0 13px" type="number" min="1" ' +
+      'max="20" data-up-field="campaign_count" value="' +
+      escapeHtml(String(values.campaign_count || 1)) + '">' +
+      '<span class="meta-switch__hint">Каждая со своими адсетами и своим номером в имени.</span></div>' +
+      '<div class="meta-line"><span>Количество адсетов</span>' +
+      '<input class="meta-control" style="width:100px;padding:0 13px" type="number" min="1" ' +
+      'max="20" data-up-field="adset_count" value="' +
+      escapeHtml(String(state.upload.values.adset_count || 1)) + '">' +
+      '<span class="meta-switch__hint">Копии адсета в каждой кампании — Meta учится на каждой отдельно.</span></div>' +
+      "</div></div>";
+  }
+
+  /* Цель кампании: 4 селекта поверх связки — цель, событие пикселя,
+     окно конверсии и вовлечённые просмотры. */
+  function goalCardHtml() {
+    var values = state.upload.values;
+    var bundle = state.reference || {};
+    var reference = bundle.bundle || {};
+    var goals = (reference.goals || []).filter(function (goal) {
+      return goal.group !== "placement" && goal.group !== "app";
+    }).map(function (goal) {
+      return { value: goal.code, label: goal.label || goal.code };
+    });
+    var events = Object.keys(reference.pixel_events || {}).map(function (code) {
+      return { value: code, label: reference.pixel_events[code] };
+    });
+    var windows = (reference.attribution_windows || []).map(function (row) {
+      return { value: row.code, label: row.label };
+    });
+    var goalSelect = '<label class="meta-field"><select class="meta-control meta-select" ' +
+      'style="width:100%" data-up-field="objective">' +
+      plainOptions(goals, "Оставьте текущую цель или поставьте новую", values.objective) +
+      "</select></label>";
+    // Событие пикселя и окна показываем всегда: они имеют смысл и для
+    // конверсий (пиксель), где цель переопределена, и для остальных целей —
+    // где не заданы, работает связка.
+    return '<div class="meta-card"><div class="meta-card__title">Цель кампании</div>' +
+      '<div style="display:grid;gap:14px">' + goalSelect +
+      '<label class="meta-field"><span>Событие пикселя</span>' +
+      '<select class="meta-control meta-select" style="width:100%" data-up-field="custom_event_type">' +
+      plainOptions(events, "Из связки", values.custom_event_type) + "</select></label>" +
+      '<label class="meta-field"><span>Окно конверсии</span>' +
+      '<select class="meta-control meta-select" style="width:100%" data-up-field="attribution">' +
+      plainOptions(windows, "Из связки", values.attribution) + "</select></label>" +
+      '<label class="meta-field"><span>Вовлечённые просмотры (только для видео)</span>' +
+      '<select class="meta-control meta-select" style="width:100%" data-up-field="engaged_view">' +
+      plainOptions([
+        { value: "none", label: "Отсутствует" },
+        { value: "1d", label: "1 день" },
+        { value: "7d", label: "7 дней" }
+      ], "Из связки", values.engaged_view) + "</select></label>" +
+      "</div></div>";
+  }
+
+  function plainOptions(items, placeholder, selected) {
+    return '<option value="">' + escapeHtml(placeholder || "—") + "</option>" +
+      items.map(function (row) {
+        return '<option value="' + escapeHtml(row.value) + '"' +
+          (String(row.value) === String(selected || "") ? " selected" : "") + ">" +
+          escapeHtml(row.label) + "</option>";
+      }).join("");
+  }
+
+  /* Бюджет и ставка: уровень, тип, разброс, лимит адсета (мин/макс),
+     запланированное увеличение бюджета, стратегия ставок. */
+  function budgetCardHtml() {
+    var values = state.upload.values;
+    var reference = state.reference || {};
+    var strategies = reference.bid_strategies || {};
+    return '<div class="meta-card"><div class="meta-card__title">Бюджет и ставка</div>' +
+      '<div style="display:grid;gap:14px">' +
+      '<div class="meta-line"><span>Уровень бюджета</span>' +
+      segHtml("budget_level", [
+        { value: "", label: "Из связки" },
+        { value: "campaign", label: "Кампания" },
+        { value: "adset", label: "Адсет" }
+      ]) + "</div>" +
+      '<div class="meta-line"><span>Тип бюджета</span>' +
+      segHtml("budget_kind", [
+        { value: "", label: "Из связки" },
+        { value: "daily", label: "Дневной" },
+        { value: "lifetime", label: "На весь срок" }
+      ]) + "</div>" +
+      '<div class="meta-line"><span>Бюджет</span>' +
+      '<input class="meta-control" style="width:130px;padding:0 13px" type="number" min="0" ' +
+      'step="0.01" data-up-field="daily_budget" value="' +
+      escapeHtml(String(values.daily_budget || "")) + '">' +
+      '<span style="font-size:12px;color:#9B9292;font-weight:700">' +
+      escapeHtml(values.budget_currency || "USD") + "</span>" +
+      '<label class="meta-switch"><input type="checkbox" data-up-field="budget_randomize"' +
+      (values.budget_randomize ? " checked" : "") +
+      '><span class="meta-switch__box"></span><span>Рандомизировать</span></label></div>' +
+      budgetLimitHtml() +
+      budgetIncreaseHtml() +
+      '<div class="meta-line"><span>Стратегия ставок</span>' +
+      '<select class="meta-control meta-select" style="width:240px" data-up-field="bid_strategy">' +
+      '<option value="">Из связки</option>' +
+      Object.keys(strategies).map(function (code) {
+        return '<option value="' + escapeHtml(code) + '"' +
+          (code === values.bid_strategy ? " selected" : "") + ">" +
+          escapeHtml(strategies[code]) + "</option>";
+      }).join("") + "</select></div></div></div>";
+  }
+
+  /* Лимит адсета: переключатель «Установить лимит адсета» — при включении
+     поле минимум и максимум (USD). */
+  function budgetLimitHtml() {
+    var values = state.upload.values;
+    var on = !!values.budget_limit_on;
+    return '<div class="meta-line"><span>Лимит расхода адсета</span>' +
+      '<label class="meta-switch"><input type="checkbox" data-up-field="budget_limit_on"' +
+      (on ? " checked" : "") +
+      '><span class="meta-switch__box"></span><span>Установить лимит адсета</span></label></div>' +
+      (on
+        ? '<div class="meta-line"><span></span>' +
+          '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+          '<label class="meta-field" style="width:150px"><span>Минимум</span>' +
+          '<input class="meta-control" style="width:100%;padding:0 13px" type="number" min="0" ' +
+          'step="0.01" data-up-field="budget_limit_min" value="' +
+          escapeHtml(String(values.budget_limit_min || "")) + '"></label>' +
+          '<span style="font-size:12px;color:#9B9292;font-weight:700">USD</span>' +
+          '<label class="meta-field" style="width:150px"><span>Максимум</span>' +
+          '<input class="meta-control" style="width:100%;padding:0 13px" type="number" min="0" ' +
+          'step="0.01" data-up-field="budget_limit_max" value="' +
+          escapeHtml(String(values.budget_limit_max || "")) + '"></label></div></div>'
+        : "");
+  }
+
+  /* Запланированное увеличение бюджета: периоды [начало, завершение, тип, сумма]. */
+  function budgetIncreaseHtml() {
+    var values = state.upload.values;
+    var on = !!values.budget_increase_on;
+    var periods = values.budget_increases || [];
+    var cards = periods.map(function (period, index) {
+      var number = index + 1;
+      return '<div style="border:1px solid #EBE6E6;border-radius:13px;padding:14px;' +
+        'margin-top:10px;background:#FAF8F8">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">' +
+        '<div style="font-size:13px;font-weight:700">Период ' + number + "</div>" +
+        '<button class="meta-action meta-action--danger" type="button" ' +
+        'data-up-period-drop="' + index + '">Удалить период</button></div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">' +
+        '<label class="meta-field"><span>Начало</span>' +
+        '<input class="meta-control" style="width:100%;padding:0 13px" type="datetime-local" ' +
+        'data-up-period="' + index + '" data-up-period-field="start_at" value="' +
+        escapeHtml(period.start_at || "") + '"></label>' +
+        '<label class="meta-field"><span>Завершение</span>' +
+        '<input class="meta-control" style="width:100%;padding:0 13px" type="datetime-local" ' +
+        'data-up-period="' + index + '" data-up-period-field="end_at" value="' +
+        escapeHtml(period.end_at || "") + '"></label></div>' +
+        '<div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">' +
+        '<select class="meta-control meta-select" style="width:280px" data-up-period="' + index +
+        '" data-up-period-field="kind">' +
+        '<option value="sum"' + (period.kind === "sum" ? " selected" : "") +
+        '>Увеличить дневной бюджет на сумму ($)</option>' +
+        '<option value="pct"' + (period.kind === "pct" ? " selected" : "") +
+        '>Увеличить дневной бюджет на процент (%)</option></select>' +
+        '<input class="meta-control" style="width:140px;padding:0 13px" type="number" min="0" ' +
+        'step="0.01" data-up-period="' + index + '" data-up-period-field="amount" value="' +
+        escapeHtml(String(period.amount || "")) + '">' +
+        '<span style="font-size:12px;color:#9B9292;font-weight:700">' +
+        (period.kind === "pct" ? "%" : "USD") + "</span></div></div>";
+    }).join("");
+    return '<div class="meta-line" style="align-items:flex-start"><span></span>' +
+      '<div style="flex:1;min-width:0">' +
+      '<label class="meta-switch"><input type="checkbox" data-up-field="budget_increase_on"' +
+      (on ? " checked" : "") +
+      '><span class="meta-switch__box"></span><span>Запланировать увеличение бюджета' +
+      '<span class="meta-switch__hint">В определённые дни и периоды времени, когда ' +
+      "ожидается высокий спрос.</span></span></label>" +
+      (on
+        ? '<div style="margin-top:12px">' + cards +
+          '<button class="meta-action" type="button" data-up-period-add ' +
+          'style="margin-top:10px">+ Добавить период</button>' +
+          '<span style="margin-left:10px;font-size:11.5px;color:#9B9292;font-weight:700">' +
+          "Период " + periods.length + " из 50</span></div>"
+        : "") +
+      "</div></div>";
+  }
+
+  function segHtml(name, options) {
+    return '<div class="meta-seg">' + options.map(function (option) {
+      return '<button type="button" data-up-seg="' + name + '" data-up-value="' +
+        escapeHtml(option.value) + '" class="' +
+        (state.upload.values[name] === option.value ? "meta-seg--on" : "") + '">' +
+        escapeHtml(option.label) + "</button>";
+    }).join("") + "</div>";
+  }
+
+  /* Авто-правила: два переключателя — применить правила и применить группу
+     (логика групп появится позже, пока сохраняем). */
+  function rulesCardHtml() {
+    var values = state.upload.values;
+    var rules = state.rules || [];
+    return '<div class="meta-card"><div class="meta-card__title">Авто-правила</div>' +
+      '<div style="display:grid;gap:14px">' +
+      '<div class="meta-line"><span></span><div><label class="meta-switch">' +
+      '<input type="checkbox" data-up-field="rules_on"' + (values.rules_on ? " checked" : "") +
+      '><span class="meta-switch__box"></span><span>Применить автоправила</span></label>' +
+      (values.rules_on
+        ? '<select class="meta-control meta-select" style="width:100%;margin-top:10px" ' +
+          'multiple size="4" data-up-field="rule_ids">' +
+          (rules.length
+            ? rules.map(function (rule) {
+              return '<option value="' + escapeHtml(rule.id) + '"' +
+                ((values.rule_ids || []).indexOf(rule.id) >= 0 ? " selected" : "") + ">" +
+                escapeHtml(rule.name) + " · " + escapeHtml(rule.level || "") + "</option>";
+            }).join("")
+            : '<option value="">Автоправил пока не создано — заведите их на вкладке «Автоправила»</option>') +
+          "</select>" +
+          '<span class="meta-switch__hint">Правила будут смотреть только на объекты этого залива.</span>'
+        : "") +
+      "</div></div>" +
+      '<div class="meta-line"><span></span><div><label class="meta-switch">' +
+      '<input type="checkbox" data-up-field="rule_group_on"' +
+      (values.rule_group_on ? " checked" : "") +
+      '><span class="meta-switch__box"></span><span>Применить группу автоправил</span></label>' +
+      (values.rule_group_on
+        ? '<input class="meta-control" style="width:100%;margin-top:10px;padding:0 13px" ' +
+          'type="text" placeholder="Название группы" data-up-field="rule_group" value="' +
+          escapeHtml(values.rule_group || "") + '">'
+        : "") +
+      "</div></div></div></div>";
+  }
+
+  /* Дополнительно: теги после создания объявлений — 5 уровней, теги, режим. */
+  function tagsCardHtml() {
+    var values = state.upload.values;
+    return '<div class="meta-card"><div class="meta-card__title">Дополнительно</div>' +
+      '<span style="font-size:11.5px;color:#857D7D;font-weight:700">Присвойте теги ' +
+      "после создания объявлений</span>" +
+      '<div style="display:flex;gap:2px;flex-wrap:wrap;margin-top:12px">' +
+      segHtml("tag_level", [
+        { value: "account", label: "Аккаунты" },
+        { value: "cabinet", label: "Кабинеты" },
+        { value: "campaign", label: "Кампании" },
+        { value: "adset", label: "Адсеты" },
+        { value: "ad", label: "Объявления" }
+      ]) + "</div>" +
+      '<div class="meta-up-grid" style="margin-top:14px">' +
+      uploadField("tag_names", "Теги", 'placeholder="Новая волна, Горячий"',
+        "Через запятую — adlabels Meta на созданных объектах") +
+      "</div>" +
+      '<div class="meta-line" style="margin-top:14px"><span>Режим</span>' +
+      segHtml("tag_mode", [
+        { value: "add", label: "Добавить теги" },
+        { value: "remove", label: "Убрать теги" }
+      ]) + "</div></div>";
+  }
+
   function renderUploadSettings() {
     var options = [{ value: "", label: "Выберите связку или создайте новую" }].concat(
       state.templates.map(function (bundle) {
@@ -2062,7 +2674,11 @@
       '<button type="button" class="meta-action meta-action--primary" data-up-bundle-new ' +
       'style="height:40px;padding:0 16px">+ Создать связку</button></div></div>' +
       (state.upload.values.template_id ? timeCardHtml() : "") +
-      (state.upload.advanced ? advancedCardHtml() : "");
+      (state.upload.advanced ? campaignsCardHtml() : "") +
+      (state.upload.advanced ? goalCardHtml() : "") +
+      (state.upload.advanced ? budgetCardHtml() : "") +
+      (state.upload.advanced ? rulesCardHtml() : "") +
+      (state.upload.advanced ? tagsCardHtml() : "");
 
     return '<div class="meta-up-split"><div class="meta-up-col">' + left + "</div>" +
       '<div class="meta-card" style="align-self:start">' + bundleSummaryHtml() + "</div></div>";
@@ -2079,7 +2695,8 @@
   function accountRow(account) {
     if (!state.upload.perAccount[account.id]) {
       state.upload.perAccount[account.id] = {
-        page_id: "", pixel_id: "", link_url: "", daily_budget: ""
+        page_id: "", pixel_id: "", link_url: "", daily_budget: "",
+        campaign_name: "", url_tags: "", display_link: "", beneficiary: ""
       };
     }
     return state.upload.perAccount[account.id];
@@ -2087,6 +2704,27 @@
 
   function accountAssets(id) {
     return state.upload.assets[id] || { pages: [], pixels: [], loading: false };
+  }
+
+  function accountBeneficiaries(id) {
+    return state.upload.beneficiaries[id] || { items: [], loading: false };
+  }
+
+  async function loadAccountBeneficiaries(id) {
+    if (state.upload.beneficiaries[id]) return;
+    state.upload.beneficiaries[id] = { items: [], loading: true };
+    renderUpload();
+    try {
+      var data = await api.get("/meta/accounts/" + id + "/dsa-recommendations");
+      state.upload.beneficiaries[id] = {
+        items: data.recommendations || [], loading: false
+      };
+    } catch (error) {
+      // Без подсказок поле остаётся доступным для ручного ввода: Meta даёт
+      // рекомендации не всем кабинетам, а DSA-поля заполнять всё равно нужно.
+      state.upload.beneficiaries[id] = { items: [], loading: false };
+    }
+    renderUpload();
   }
 
   async function loadAccountAssets(id) {
@@ -2150,6 +2788,10 @@
       '<label class="meta-switch"><input type="checkbox" data-up-only-picked' +
       (state.upload.onlyPicked ? " checked" : "") +
       '><span class="meta-switch__box"></span><span>Только выбранные</span></label>' +
+      uploadSwitch("naming", "Кастомный нейминг") +
+      uploadSwitch("urlTags", "Параметры URL") +
+      uploadSwitch("displayLink", "Отображаемый URL") +
+      uploadSwitch("beneficiary", "Бенефициар") +
       '<div style="flex:1"></div>' +
       '<button class="meta-action" type="button" data-up-link-all>Ссылка для всех</button>' +
       '<input class="meta-control" style="width:220px;padding:0 13px" type="search" ' +
@@ -2194,22 +2836,81 @@
         'type="number" min="0" step="0.01" placeholder="Бюджет" ' +
         'data-up-account-field="daily_budget" data-up-account-id="' +
         escapeHtml(account.id) + '" value="' + escapeHtml(String(own.daily_budget || "")) +
-        '"></td></tr>';
+        '"></td>' +
+        '<td class="meta-cell meta-cell--left" style="min-width:230px">' +
+        (on ? accountExtras(account.id) : "") + "</td></tr>";
     }).join("");
 
     return head +
       '<div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;overflow:hidden">' +
       '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;' +
-      'min-width:940px"><thead><tr style="border-bottom:1px solid #F0EBEB">' +
+      'min-width:1170px"><thead><tr style="border-bottom:1px solid #F0EBEB">' +
       '<th class="meta-th meta-th--left" style="padding-left:16px"></th>' +
       '<th class="meta-th meta-th--left">Кабинет</th>' +
       '<th class="meta-th meta-th--left">Статус</th>' +
       '<th class="meta-th meta-th--left">Фан-пейдж и пиксель</th>' +
       '<th class="meta-th meta-th--left">Ссылка</th>' +
-      '<th class="meta-th meta-th--left">Бюджет</th></tr></thead><tbody>' +
-      (body || '<tr><td colspan="6" style="padding:26px;text-align:center;color:#9B9292;' +
+      '<th class="meta-th meta-th--left">Бюджет</th>' +
+      '<th class="meta-th meta-th--left">Дополнительно</th></tr></thead><tbody>' +
+      (body || '<tr><td colspan="7" style="padding:26px;text-align:center;color:#9B9292;' +
         'font-size:12.5px;font-weight:600">Ничего не нашлось</td></tr>') +
       "</tbody></table></div></div>";
+  }
+
+  function uploadSwitch(key, label) {
+    return '<label class="meta-switch"><input type="checkbox" data-up-switch="' + key + '"' +
+      (state.upload.switches[key] ? " checked" : "") +
+      '><span class="meta-switch__box"></span><span>' + label + "</span></label>";
+  }
+
+  /* Дополнительные поля кабинета. Состав зависит от свитчеров: выключенный
+     свитчер убирает поле — и его значение не уходит в залив. Бенефициар —
+     селект с подсказками самого кабинета; если кабинет подсказок не дал,
+     поле превращается в ручной ввод. */
+  function accountExtras(accountId) {
+    var own = accountRow({ id: accountId });
+    var switches = state.upload.switches;
+    var extra = "";
+    if (switches.beneficiary) {
+      var refs = accountBeneficiaries(accountId);
+      if (refs.loading) {
+        extra += '<div style="font-size:11.5px;color:#9B9292;font-weight:600">' +
+          "Загружаем бенефициара…</div>";
+      } else if (refs.items.length) {
+        extra += '<select class="meta-control meta-select" style="width:100%;height:36px"' +
+          ' data-up-account-field="beneficiary" data-up-account-id="' +
+          escapeHtml(accountId) + '"><option value="">Бенефициар / Плательщик</option>' +
+          refs.items.map(function (item) {
+            return '<option value="' + escapeHtml(item) + '"' +
+              (own.beneficiary === item ? " selected" : "") + ">" +
+              escapeHtml(item) + "</option>";
+          }).join("") + "</select>";
+      } else {
+        extra += '<input class="meta-control" style="width:100%;height:36px;padding:0 11px"' +
+          ' placeholder="Бенефициар / Плательщик" data-up-account-field="beneficiary"' +
+          ' data-up-account-id="' + escapeHtml(accountId) + '" value="' +
+          escapeHtml(own.beneficiary || "") + '">';
+      }
+    }
+    if (switches.naming) {
+      extra += '<input class="meta-control" style="width:100%;height:36px;padding:0 11px;' +
+        (extra ? "margin-top:6px;" : "") + '" placeholder="Кастомный нейминг"' +
+        ' data-up-account-field="campaign_name" data-up-account-id="' +
+        escapeHtml(accountId) + '" value="' + escapeHtml(own.campaign_name || "") + '">';
+    }
+    if (switches.urlTags) {
+      extra += '<input class="meta-control" style="width:100%;height:36px;padding:0 11px;' +
+        (extra ? "margin-top:6px;" : "") + '" placeholder="Параметры URL"' +
+        ' data-up-account-field="url_tags" data-up-account-id="' +
+        escapeHtml(accountId) + '" value="' + escapeHtml(own.url_tags || "") + '">';
+    }
+    if (switches.displayLink) {
+      extra += '<input class="meta-control" style="width:100%;height:36px;padding:0 11px;' +
+        (extra ? "margin-top:6px;" : "") + '" placeholder="Отображаемый URL"' +
+        ' data-up-account-field="display_link" data-up-account-id="' +
+        escapeHtml(accountId) + '" value="' + escapeHtml(own.display_link || "") + '">';
+    }
+    return extra || '<span style="font-size:11.5px;color:#C6BDBD">включите свитчер сверху</span>';
   }
 
   /* ----- шаг 3: креативы и объявления -----
@@ -2243,21 +2944,86 @@
     return { files: [], texts: [emptyText("")] };
   }
 
-  function emptyText(language) {
+  function emptyText(language, languageName) {
     return {
-      language: language, headline: "", description: "", primary_text: "",
-      link_url: "", call_to_action: "LEARN_MORE"
+      language: language,
+      // Человеческое имя сохраняем в тексте объявления: по нему публикация
+      // найдёт в Meta числовой ID локали для правил показа на языке.
+      language_name: languageName || "",
+      // Свой креатив языка («на каждый язык свой»).
+      files: [],
+      headline: "", description: "", primary_text: "",
+      call_to_action: "LEARN_MORE"
     };
   }
 
+  function uploadPreviewUrl(file) {
+    if (!file || !window.URL || !URL.createObjectURL) return "";
+    var cached = uploadPreviewUrls.get(file);
+    if (cached) return cached;
+    var url = URL.createObjectURL(file);
+    uploadPreviewUrls.set(file, url);
+    return url;
+  }
+
+  function clearUploadPreviews() {
+    uploadPreviewUrls.forEach(function (url) {
+      URL.revokeObjectURL(url);
+    });
+    uploadPreviewUrls.clear();
+  }
+
+  function creativePreviewHtml(adIndex, file, index, textIndex) {
+    var name = String(file && file.name || "Креатив");
+    var type = String(file && file.type || "").toLowerCase();
+    var extension = name.split(".").pop().toLowerCase();
+    var isVideo = type.indexOf("video/") === 0 ||
+      ["avi", "mov", "mp4", "webm"].indexOf(extension) >= 0;
+    var isImage = type.indexOf("image/") === 0 ||
+      ["gif", "jpeg", "jpg", "png", "webp"].indexOf(extension) >= 0;
+    var url = uploadPreviewUrl(file);
+    var media = isVideo && url
+      ? '<video src="' + escapeHtml(url) + '" controls muted playsinline ' +
+        'preload="metadata" style="width:100%;height:150px;object-fit:contain;background:#F7F4F4"></video>'
+      : isImage && url
+        ? '<img src="' + escapeHtml(url) + '" alt="' + escapeHtml(name) +
+          '" style="width:100%;height:150px;object-fit:contain;background:#F7F4F4">'
+        : '<div style="height:150px;display:flex;align-items:center;justify-content:center;' +
+          'padding:14px;color:#9B9292;font-size:12px;font-weight:700;text-align:center;' +
+          'background:#F7F4F4">' + escapeHtml(type || "Файл") + "</div>";
+    var dropKey = textIndex == null
+      ? adIndex + ":" + index
+      : adIndex + ":" + textIndex + ":" + index;
+    return '<div style="position:relative;min-width:0;overflow:hidden;border:1px solid #EBE6E6;' +
+      'border-radius:12px;background:#fff">' + media +
+      '<div title="' + escapeHtml(name) + '" style="padding:9px 34px 9px 10px;overflow:hidden;' +
+      'text-overflow:ellipsis;white-space:nowrap;color:#4D4343;font-size:11.5px;font-weight:700">' +
+      escapeHtml(name) + "</div>" +
+      '<button type="button" data-up-file-drop="' + dropKey +
+      '" aria-label="Убрать ' + escapeHtml(name) + '" style="position:absolute;top:7px;right:7px;' +
+      'width:24px;height:24px;padding:0;border:1px solid #E5DFDF;border-radius:50%;' +
+      'background:rgba(255,255,255,.94);color:#B91414;font-size:17px;line-height:20px;cursor:pointer">×</button>' +
+      "</div>";
+  }
+
   function languageLabel(code) {
+    var custom = state.upload && state.upload.languageNames[code];
+    if (custom) return custom;
     var found = LANGUAGE_PRESETS.filter(function (row) { return row.code === code; })[0];
     return found ? found.label : code;
   }
 
+  /* Короткая подпись языка для полей («Заголовок EN»). Для кодов вида xx_YY
+     берём язык, для прочих (числовые ID локалей из поиска Meta) — имя. */
+  function languageShort(code) {
+    return String(code || "").indexOf("_") >= 0
+      ? String(code).split("_")[0].toUpperCase()
+      : languageLabel(code);
+  }
+
   function adTextFields(adIndex, textIndex, text) {
     var suffix = state.upload.languages && text.language
-      ? " " + text.language.split("_")[0].toUpperCase()
+      ? " " + languageShort(text.language)
       : "";
     var field = function (name, label, attrs) {
       return '<label class="meta-field" style="flex:1;min-width:150px">' +
@@ -2267,20 +3033,14 @@
         textIndex + '" value="' + escapeHtml(String(text[name] || "")) + '"></label>';
     };
     return '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">' +
-      (state.upload.languages
-        ? '<label class="meta-field" style="width:190px"><span>Язык</span>' +
-          '<select class="meta-control meta-select" style="width:100%" data-up-text="language" ' +
-          'data-up-ad="' + adIndex + '" data-up-text-index="' + textIndex + '">' +
-          LANGUAGE_PRESETS.map(function (row) {
-            return '<option value="' + row.code + '"' +
-              (row.code === text.language ? " selected" : "") + ">" +
-              escapeHtml(row.label) + "</option>";
-          }).join("") + "</select></label>"
-        : "") +
       field("headline", "Заголовок", 'maxlength="240"') +
       field("description", "Описание", 'maxlength="240"') +
       field("primary_text", "Текст") +
-      field("link_url", "Ссылка", 'placeholder="https://..."') +
+      // Ссылка этого языка: пустая — значит, общая ссылка кабинета со второго
+      // шага; заполненная — Meta ведёт зрителя этого языка именно сюда.
+      (state.upload.languages
+        ? field("link_url", "Ссылка", 'placeholder="https://..." maxlength="2000"')
+        : "") +
       '<label class="meta-field" style="width:170px"><span>Кнопка' + escapeHtml(suffix) +
       "</span>" +
       '<select class="meta-control meta-select" style="width:100%" data-up-text="call_to_action" ' +
@@ -2290,25 +3050,24 @@
           (option.value === text.call_to_action ? " selected" : "") + ">" +
           escapeHtml(option.label) + "</option>";
       }).join("") + "</select></label>" +
-      (state.upload.languages && textIndex > 0
-        ? '<button class="meta-action meta-action--danger" type="button" data-up-text-drop="' +
-          adIndex + ':' + textIndex + '" style="height:42px">Убрать язык</button>'
-        : "") + "</div>";
+      "</div>";
   }
 
-  function adFilesHtml(adIndex, ad) {
+  function adFilesHtml(adIndex, files, textIndex) {
+    var key = textIndex == null ? String(adIndex) : adIndex + ":" + textIndex;
+    var hint = textIndex == null
+      ? "jpg, png, gif, mp4 — файл уйдёт в каждый выбранный кабинет"
+      : "Креатив этого языка: Meta покажет его зрителю именно этого языка";
     return '<div style="border:1px dashed #E2DADA;border-radius:14px;padding:16px;' +
       'margin-top:12px">' +
-      '<button class="meta-action" type="button" data-up-files="' + adIndex + '">' +
+      '<button class="meta-action" type="button" data-up-files="' + key + '">' +
       "+ Добавить креативы</button>" +
       '<span style="margin-left:10px;font-size:11.5px;color:#9B9292;font-weight:600">' +
-      "jpg, png, gif, mp4 — файл уйдёт в каждый выбранный кабинет</span>" +
-      (ad.files.length
-        ? '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">' +
-          ad.files.map(function (file, index) {
-            return '<span class="meta-tag">' + escapeHtml(file.name) +
-              '<button type="button" data-up-file-drop="' + adIndex + ":" + index +
-              '" aria-label="Убрать">×</button></span>';
+      hint + "</span>" +
+      (files.length
+        ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));' +
+          'gap:10px;margin-top:14px">' + files.map(function (file, index) {
+            return creativePreviewHtml(adIndex, file, index, textIndex);
           }).join("") + "</div>"
         : '<div style="margin-top:10px;font-size:11.5px;color:#C6BDBD;font-weight:600">' +
           "Пока пусто — без креатива объявление не создастся</div>") +
@@ -2347,6 +3106,22 @@
       "</div></div>";
 
     var ads = uploadAds().map(function (ad, index) {
+      // Языки — табы: чипс выбранного языка, под ним его строка текстов
+      // и его креативы («на каждый язык свой»).
+      var activeText = state.upload.textTabs[index] || 0;
+      if (!ad.texts[activeText]) activeText = 0;
+      var textRow;
+      var filesHtml;
+      if (state.upload.languages) {
+        var text = ad.texts[activeText];
+        textRow = adTextFields(index, activeText, text);
+        filesHtml = adFilesHtml(index, text.files || [], activeText);
+      } else {
+        textRow = ad.texts.map(function (entry, textIndex) {
+          return adTextFields(index, textIndex, entry);
+        }).join('<div style="height:10px"></div>');
+        filesHtml = adFilesHtml(index, ad.files, null);
+      }
       return '<div class="meta-card" style="margin-bottom:14px">' +
         '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">' +
         '<div class="meta-card__title" style="margin:0">Объявление №' + (index + 1) + "</div>" +
@@ -2357,21 +3132,183 @@
           ? '<button class="meta-action meta-action--danger" type="button" ' +
             'data-up-ad-drop="' + index + '">Убрать</button>'
           : "") + "</div>" +
-        ad.texts.map(function (text, textIndex) {
-          return adTextFields(index, textIndex, text);
-        }).join('<div style="height:10px"></div>') +
-        (state.upload.languages
-          ? '<button class="meta-action" type="button" data-up-text-add="' + index +
-            '" style="margin-top:10px">+ Добавить язык</button>'
-          : "") +
-        adFilesHtml(index, ad) + "</div>";
+        (state.upload.languages ? adLanguagesHtml(index, ad) : "") +
+        '<div style="margin-bottom:12px">' + textRow + "</div>" +
+        filesHtml + "</div>";
     }).join("");
 
     return panel + ads +
       '<button class="meta-action" type="button" data-up-ad-add>+ Добавить объявление</button>' +
       '<div class="meta-note" style="margin-top:14px">Кабинетов выбрано: ' + accounts.length +
       ". Каждый файл загрузится в каждый из них — один и тот же файл в другом кабинете " +
-      "имеет другой хэш, и чужой Meta не примет.</div>";
+      "имеет другой хэш, и чужой Meta не примет.</div>" +
+      (state.upload.langPicker ? langPickerHtml() : "");
+  }
+
+  /* Языки объявления: основной задаётся селектом, каждый язык — чипс-таб.
+     Клик по чипсу показывает его строку текстов; × убирает язык. */
+  function adLanguagesHtml(adIndex, ad) {
+    var primary = ad.texts[0] || emptyText("");
+    var active = state.upload.textTabs[adIndex] || 0;
+    if (!ad.texts[active]) active = 0;
+    var options = [{ code: "", label: "Основной язык" }].concat(
+      LANGUAGE_PRESETS.map(function (row) { return row; })
+    );
+    // Нестандартные локали из поиска Meta тоже должны выбираться основным.
+    ad.texts.forEach(function (text) {
+      var code = text.language;
+      if (code && !options.some(function (row) { return row.code === code; })) {
+        options.push({ code: code, label: languageLabel(code) });
+      }
+    });
+    var chips = ad.texts.map(function (text, textIndex) {
+      var on = textIndex === active;
+      var label = languageLabel(text.language);
+      return '<span class="meta-tag" data-up-lang-tab="' + adIndex + ":" + textIndex +
+        '" title="Показать тексты этого языка" style="cursor:pointer;' +
+        (on ? "background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;" : "") +
+        '"' + (on ? ' data-up-lang-active="1"' : "") + ">" +
+        escapeHtml(label) +
+        (ad.texts.length > 1
+          ? '<button type="button" data-up-lang-drop="' + adIndex + ":" + textIndex +
+            '" aria-label="Убрать ' + escapeHtml(label) + '"' +
+            ' style="' + (on ? "color:#fff;" : "") +
+            'margin-left:5px">×</button>'
+          : "") + "</span>";
+    }).join("");
+    return '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;' +
+      'margin-bottom:10px">' +
+      '<label class="meta-field" style="width:190px"><span>Основной язык</span>' +
+      '<select class="meta-control meta-select" style="width:100%" data-up-text="language" ' +
+      'data-up-ad="' + adIndex + '" data-up-text-index="0">' +
+      options.map(function (row) {
+        return '<option value="' + escapeHtml(row.code) + '"' +
+          (row.code === primary.language ? " selected" : "") + ">" +
+          escapeHtml(row.label) + "</option>";
+      }).join("") + "</select></label>" +
+      chips +
+      '<button class="meta-action" type="button" data-up-lang-add="' + adIndex +
+      '">+ Добавить языки</button>' +
+      "</div>";
+  }
+
+  function langPickerState() {
+    return state.upload.langPicker || {};
+  }
+
+  function langPickerOptions() {
+    /* Что показать в списке: пресеты, отфильтрованные по запросу, плюс то,
+       что вернул поиск Meta. Запрос короче двух символов — только пресеты. */
+    var picker = langPickerState();
+    var query = (picker.query || "").trim().toLowerCase();
+    var seen = {};
+    var items = LANGUAGE_PRESETS.filter(function (row) {
+      if (query && row.label.toLowerCase().indexOf(query) < 0 &&
+        row.code.toLowerCase().indexOf(query) < 0) return false;
+      seen[row.code] = true;
+      return true;
+    }).map(function (row) { return { code: row.code, name: row.label }; });
+    (picker.remote || []).forEach(function (row) {
+      if (seen[row.id]) return;
+      if (query && row.name.toLowerCase().indexOf(query) < 0) return;
+      items.push({ code: row.id, name: row.name });
+    });
+    return items;
+  }
+
+  function langPickerListHtml() {
+    var picker = langPickerState();
+    if (picker.loading) {
+      return '<div class="meta-combo__empty">Ищем в Meta…</div>';
+    }
+    var items = langPickerOptions();
+    if (!items.length) {
+      return '<div class="meta-combo__empty">' +
+        ((picker.query || "").trim().length < 2
+          ? "Введите хотя бы два символа для поиска в Meta"
+          : "Ничего не нашлось") + "</div>";
+    }
+    return items.map(function (row) {
+      var checked = !!(picker.checked || {})[row.code];
+      return '<label style="display:flex;align-items:center;gap:10px;padding:8px 10px;' +
+        'border-radius:9px;cursor:pointer;font-size:12.5px;font-weight:600;color:#3A3030"' +
+        ' onmouseover="this.style.background=\'#F7F4F4\'"' +
+        ' onmouseout="this.style.background=\'transparent\'">' +
+        '<input type="checkbox" data-up-lang-check="' + escapeHtml(row.code) + '"' +
+        ' data-up-lang-name="' + escapeHtml(row.name) + '"' + (checked ? " checked" : "") +
+        ' style="width:16px;height:16px;accent-color:#B91414;flex-shrink:0">' +
+        "<span>" + escapeHtml(row.name) + '</span><span style="color:#9B9292;' +
+        'font-size:11px;font-weight:600;margin-left:auto">' + escapeHtml(row.code) +
+        "</span></label>";
+    }).join("");
+  }
+
+  var langSearchTimer = null;
+
+  function renderLangOptions() {
+    var host = document.querySelector("[data-up-lang-options]");
+    if (host) host.innerHTML = langPickerListHtml();
+  }
+
+  async function searchLocales(query) {
+    var picker = state.upload.langPicker;
+    if (!picker) return;
+    picker.loading = true;
+    renderLangOptions();
+    try {
+      var data = await api.get(
+        "/meta/targeting?kind=locale&q=" + encodeURIComponent(query)
+      );
+      // Пока отвечала Meta, запрос могли сменить или модалку закрыть.
+      if (!state.upload.langPicker || state.upload.langPicker.query !== query) return;
+      state.upload.langPicker.remote = data.items || [];
+      state.upload.langPicker.loading = false;
+      renderLangOptions();
+    } catch (error) {
+      if (!state.upload.langPicker) return;
+      state.upload.langPicker.loading = false;
+      renderLangOptions();
+    }
+  }
+
+  function langPickerHtml() {
+    var picker = langPickerState();
+    var picked = Object.keys(picker.checked || {}).length;
+    return '<div style="position:fixed;inset:0;z-index:60;background:rgba(7,5,5,.42);' +
+      'display:flex;align-items:center;justify-content:center;padding:24px">' +
+      '<div role="dialog" aria-modal="true" aria-label="Добавить языки" ' +
+      'style="width:100%;max-width:540px;background:#fff;border-radius:20px;padding:26px;' +
+      'box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:90vh;overflow:auto">' +
+      '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">' +
+      '<div>' +
+      '<div style="font-family:\'Alumni Sans\',\'Inter\',sans-serif;font-size:21px;' +
+      'font-weight:700;letter-spacing:-.3px">Добавить языки</div>' +
+      '<p style="font-size:12px;color:#6A6161;font-weight:500;margin-top:6px;line-height:1.55">' +
+      "Отмеченные языки получат свою строку текстов и ссылку. Основной язык задаётся " +
+      "селектом рядом с чипсами.</p></div>" +
+      '<button type="button" data-up-lang-cancel aria-label="Закрыть" ' +
+      'style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;' +
+      'border-radius:10px;color:#857D7D;font-size:16px;font-weight:700;cursor:pointer">' +
+      "×</button></div>" +
+      '<div style="margin:16px 0 12px">' +
+      '<input class="meta-control" style="width:100%;height:42px;padding:0 13px" ' +
+      'type="search" placeholder="Поиск по справочнику Meta" data-up-lang-search value="' +
+      escapeHtml(picker.query || "") + '"></div>' +
+      '<div data-up-lang-options style="border:1px solid #EBE6E6;border-radius:12px;' +
+      'max-height:280px;overflow:auto;padding:6px;min-height:120px">' +
+      langPickerListHtml() + "</div>" +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;' +
+      'margin-top:18px">' +
+      '<span id="metaUpLangPicked" style="font-size:11.5px;color:#857D7D;font-weight:700">' +
+      "Отмечено: " + picked + "</span>" +
+      '<div style="display:flex;gap:10px">' +
+      '<button type="button" data-up-lang-cancel style="height:38px;padding:0 16px;' +
+      'border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;' +
+      'font-size:12.5px;font-weight:700;cursor:pointer">Отмена</button>' +
+      '<button type="button" data-up-lang-apply style="height:38px;padding:0 18px;' +
+      'border:0;border-radius:12px;background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;font-size:14px;' +
+      'font-weight:700;cursor:pointer">Добавить</button>' +
+      "</div></div></div></div>";
   }
 
   function renderUpload() {
@@ -2382,7 +3319,11 @@
     if (upload.step === 1) body.innerHTML = renderUploadSettings();
     if (upload.step === 2) body.innerHTML = renderUploadAccounts();
     if (upload.step === 3) body.innerHTML = renderUploadCreatives();
-    byId("metaUpBack").style.visibility = upload.step === 1 ? "hidden" : "";
+    // Отдельной вкладки у мастера больше нет — в него заходят кнопкой «Залить»
+    // в строке связки. Поэтому «Назад» с первого шага не прячется, а
+    // возвращает к списку: иначе выйти было бы нечем.
+    byId("metaUpBack").style.visibility = "";
+    byId("metaUpBack").textContent = upload.step === 1 ? "К связкам" : "Назад";
     byId("metaUpNext").textContent = upload.step === 3 ? "Залить" : "Далее";
     byId("metaUpHint").textContent = upload.step === 3
       ? "Будет создано заливов: " + upload.accountIds.length +
@@ -2401,9 +3342,6 @@
     var upload = state.upload;
     if (upload.step === 1) {
       if (!upload.values.template_id) return uploadError("Выберите связку или создайте новую");
-      if (!String(upload.values.name || "").trim()) {
-        return uploadError("Укажите название залива в расширенном режиме");
-      }
       if (upload.values.start_mode === "custom" && !upload.values.start_at) {
         return uploadError("Укажите время запуска");
       }
@@ -2434,13 +3372,29 @@
       upload.step = 3;
       return renderUpload();
     }
-    var empty = uploadAds().filter(function (ad) { return !ad.files.length; });
-    if (empty.length) return uploadError("У каждого объявления должен быть креатив");
+    var noFiles = uploadAds().filter(function (ad) {
+      if (state.upload.languages) {
+        return ad.texts.some(function (text) { return !(text.files || []).length; });
+      }
+      return !ad.files.length;
+    });
+    if (noFiles.length) return uploadError(state.upload.languages
+      ? "У каждого языка объявления должен быть свой креатив"
+      : "У каждого объявления должен быть креатив");
     if (state.upload.languages) {
       var noLanguage = uploadAds().some(function (ad) {
         return ad.texts.some(function (text) { return !text.language; });
       });
       if (noLanguage) return uploadError("У каждого языкового варианта выберите язык");
+      // Дубль языка в одном объявлении — два одинаковых правила показа в
+      // asset_feed_spec: Meta такую креативку отбивает.
+      var duplicated = uploadAds().some(function (ad) {
+        var codes = ad.texts.map(function (text) {
+          return text.language;
+        }).filter(Boolean);
+        return codes.length !== new Set(codes).size;
+      });
+      if (duplicated) return uploadError("Языки внутри объявления не должны повторяться");
     }
     await submitUpload();
   }
@@ -2457,30 +3411,57 @@
       adsByAccount[id] = [];
     });
 
+    // Файлы пачки складываем по кабинетам: у «Разные крео» — по очереди.
+    async function uploadForAccount(files, accountId, slot) {
+      var picked = upload.split
+        ? files.filter(function (_file, position) {
+          return position % upload.accountIds.length === slot;
+        })
+        : files;
+      var ids = [];
+      for (var index = 0; index < picked.length; index += 1) {
+        var form = new FormData();
+        form.append("file", picked[index]);
+        form.append("name", picked[index].name);
+        var created = await api.upload(
+          "/meta/creatives?account_id=" + encodeURIComponent(accountId) +
+            (upload.unique ? "&unique=true" : ""),
+          form
+        );
+        ids.push(created.id);
+        byAccount[accountId].push(created.id);
+      }
+      return ids;
+    }
+
     for (var adIndex = 0; adIndex < uploadAds().length; adIndex += 1) {
       var ad = uploadAds()[adIndex];
       for (var slot = 0; slot < upload.accountIds.length; slot += 1) {
         var accountId = upload.accountIds[slot];
-        var files = upload.split
-          ? ad.files.filter(function (_file, position) {
-            return position % upload.accountIds.length === slot;
-          })
-          : ad.files;
-        var ids = [];
-        for (var index = 0; index < files.length; index += 1) {
-          var form = new FormData();
-          form.append("file", files[index]);
-          form.append("name", files[index].name);
-          var created = await api.upload(
-            "/meta/creatives?account_id=" + encodeURIComponent(accountId) +
-              (upload.unique ? "&unique=true" : ""),
-            form
-          );
-          ids.push(created.id);
-          byAccount[accountId].push(created.id);
-        }
-        if (ids.length) {
-          adsByAccount[accountId].push({ texts: ad.texts, creative_ids: ids });
+        if (upload.languages) {
+          // Свой креатив на каждый язык: тексты несут свои файлы и свои ids.
+          var texts = [];
+          for (var textIndex = 0; textIndex < ad.texts.length; textIndex += 1) {
+            var text = ad.texts[textIndex];
+            var ownIds = await uploadForAccount(text.files || [], accountId, slot);
+            var clean = Object.assign({}, text);
+            delete clean.files;
+            clean.creative_ids = ownIds;
+            texts.push(clean);
+          }
+          if (texts.length) {
+            adsByAccount[accountId].push({ texts: texts, creative_ids: [] });
+          }
+        } else {
+          var ids = await uploadForAccount(ad.files, accountId, slot);
+          if (ids.length) {
+            adsByAccount[accountId].push({
+              // Ссылка языка уходит как есть: пустая — сервер подставит общую
+              // ссылку кабинета, заполненная — Meta ведёт этот язык сюда.
+              texts: ad.texts,
+              creative_ids: ids
+            });
+          }
         }
       }
     }
@@ -2490,8 +3471,9 @@
   async function submitUpload() {
     var upload = state.upload;
     var values = upload.values;
+    var chosenBundle = uploadBundle();
     var payload = {
-      name: values.name.trim(),
+      name: values.name.trim() || (chosenBundle && chosenBundle.name) || "Залив",
       template_id: values.template_id || null,
       offer_id: values.offer_id || null,
       partner_id: values.partner_id || null,
@@ -2518,6 +3500,42 @@
       pause_ads: values.pause_ads,
       account_delay_seconds: Number(values.account_delay_seconds) || 0,
       adset_count: Number(values.adset_count) || 1,
+      // Расширенный режим: кампании, цель (4 селекта), бюджет и ставка.
+      campaign_count: Number(values.campaign_count) || 1,
+      objective: (values.objective || "").trim() || null,
+      custom_event_type: (values.custom_event_type || "").trim() || null,
+      attribution: (values.attribution || "").trim() || null,
+      engaged_view: (values.engaged_view || "").trim() || null,
+      budget_level: values.budget_level || null,
+      budget_kind: values.budget_kind || null,
+      budget_randomize: !!values.budget_randomize,
+      budget_limit_min: values.budget_limit_on && values.budget_limit_min
+        ? String(values.budget_limit_min) : null,
+      budget_limit_max: values.budget_limit_on && values.budget_limit_max
+        ? String(values.budget_limit_max) : null,
+      budget_increases: values.budget_increase_on
+        ? (values.budget_increases || []).filter(function (period) {
+          return period && period.start_at && period.end_at;
+        }).map(function (period) {
+          return {
+            start_at: localMoment(period.start_at),
+            end_at: localMoment(period.end_at),
+            kind: period.kind === "pct" ? "pct" : "sum",
+            amount: Number(period.amount) || 0
+          };
+        }) : null,
+      bid_strategy: values.bid_strategy || null,
+      rule_ids: values.rules_on ? (values.rule_ids || []) : [],
+      rule_group: values.rule_group_on ? (values.rule_group || "").trim() || null : null,
+      tags: (values.tag_names || "").trim()
+        ? {
+          level: values.tag_level || "campaign",
+          names: values.tag_names.split(",").map(function (name) {
+            return name.trim();
+          }).filter(Boolean),
+          mode: values.tag_mode || "add"
+        }
+        : null,
       account_ids: upload.accountIds,
       publish: true
     };
@@ -2535,7 +3553,12 @@
           page_id: own.page_id || null,
           pixel_id: own.pixel_id || null,
           link_url: own.link_url || null,
-          daily_budget: own.daily_budget || null
+          daily_budget: own.daily_budget || null,
+          // Дополнительно: выключенный свитчер просто не оставил значения.
+          campaign_name: own.campaign_name || null,
+          url_tags: own.url_tags || null,
+          display_link: own.display_link || null,
+          beneficiary: own.beneficiary || null
         };
       });
       button.textContent = "Заливаю…";
@@ -2551,6 +3574,7 @@
           : "Кампании создаются в Meta" +
             (payload.activate_on_publish ? "" : " на паузе") + "."
       });
+      clearUploadPreviews();
       state.upload = null;
       await loadLaunches();
       setLaunchView("queue");
@@ -2613,6 +3637,21 @@
         ] = adText.value;
       return;
     }
+    var langSearch = event.target.closest ? event.target.closest("[data-up-lang-search]") : null;
+    if (langSearch) {
+      var picker = state.upload.langPicker;
+      if (picker) {
+        picker.query = langSearch.value;
+        // Перерисовываем только список: фокус в поиске должен остаться.
+        renderLangOptions();
+        if (langSearchTimer) clearTimeout(langSearchTimer);
+        var query = langSearch.value.trim();
+        if (query.length >= 2) {
+          langSearchTimer = setTimeout(function () { searchLocales(query); }, 300);
+        }
+      }
+      return;
+    }
     var field = event.target.closest ? event.target.closest("[data-up-field]") : null;
     if (!field || field.type === "checkbox") return;
     // Поля пишем в состояние, но не перерисовываем: перерисовка на каждом
@@ -2625,11 +3664,30 @@
     var field = target.closest ? target.closest("[data-up-field]") : null;
     if (field) {
       var name = field.getAttribute("data-up-field");
-      state.upload.values[name] = field.type === "checkbox" ? field.checked : field.value;
+      if (field.multiple) {
+        state.upload.values[name] = Array.prototype.slice.call(field.selectedOptions || [])
+          .map(function (option) { return option.value; })
+          .filter(function (value) { return value; });
+      } else {
+        state.upload.values[name] = field.type === "checkbox" ? field.checked : field.value;
+      }
       if (name === "template_id") {
         applyBundleToUpload(uploadBundle());
         return renderUpload();
       }
+      // Переключатели, после которых карточка меняет состав полей.
+      if (name === "budget_limit_on" || name === "budget_increase_on" ||
+        name === "rules_on" || name === "rule_group_on") {
+        return renderUpload();
+      }
+      return;
+    }
+    var period = target.closest ? target.closest("[data-up-period]") : null;
+    if (period) {
+      var periodIndex = Number(period.getAttribute("data-up-period"));
+      state.upload.values.budget_increases[periodIndex][
+        period.getAttribute("data-up-period-field")
+      ] = period.value;
       return;
     }
     var accountField = target.closest ? target.closest("[data-up-account-field]") : null;
@@ -2641,14 +3699,52 @@
     }
     var adText = target.closest ? target.closest("[data-up-text]") : null;
     if (adText) {
-      uploadAds()[Number(adText.getAttribute("data-up-ad"))]
-        .texts[Number(adText.getAttribute("data-up-text-index"))][
-          adText.getAttribute("data-up-text")
-        ] = adText.value;
+      var adIndex = Number(adText.getAttribute("data-up-ad"));
+      var textIndex = Number(adText.getAttribute("data-up-text-index"));
+      var textName = adText.getAttribute("data-up-text");
+      uploadAds()[adIndex].texts[textIndex][textName] = adText.value;
+      // «Основной язык» — селект: рядом с кодом запоминаем человеческое имя,
+      // по нему публикация найдёт числовой ID локали в справочнике Meta.
+      if (textName === "language" && adText.selectedIndex >= 0) {
+        state.upload.languageNames[adText.value] =
+          adText.options[adText.selectedIndex].text;
+        uploadAds()[adIndex].texts[textIndex].language_name =
+          state.upload.languageNames[adText.value] || "";
+      }
+      return;
+    }
+    var langCheck = target.closest ? target.closest("[data-up-lang-check]") : null;
+    if (langCheck) {
+      var picker = state.upload.langPicker;
+      if (picker) {
+        picker.checked = picker.checked || {};
+        var code = langCheck.getAttribute("data-up-lang-check");
+        if (langCheck.checked) {
+          var name = langCheck.getAttribute("data-up-lang-name") || code;
+          picker.checked[code] = name;
+          // Имя запоминаем сразу: чипсы и «Основной язык» зовут язык по-человечески.
+          state.upload.languageNames[code] = name;
+        } else {
+          delete picker.checked[code];
+        }
+        var counter = document.getElementById("metaUpLangPicked");
+        if (counter) {
+          counter.textContent = "Отмечено: " + Object.keys(picker.checked).length;
+        }
+      }
       return;
     }
     if (target.closest && target.closest("[data-up-only-picked]")) {
       state.upload.onlyPicked = target.checked;
+      return renderUpload();
+    }
+    var extraSwitch = target.closest ? target.closest("[data-up-switch]") : null;
+    if (extraSwitch) {
+      state.upload.switches[extraSwitch.getAttribute("data-up-switch")] = target.checked;
+      // Включили бенефициара — спрашиваем подсказки у уже отмеченных кабинетов.
+      if (extraSwitch.getAttribute("data-up-switch") === "beneficiary" && target.checked) {
+        state.upload.accountIds.forEach(function (id) { loadAccountBeneficiaries(id); });
+      }
       return renderUpload();
     }
     if (target.closest && target.closest("[data-up-languages]")) {
@@ -2656,9 +3752,21 @@
       // Включили языки — первому тексту нужен язык, иначе Meta не поймёт,
       // кому его показывать.
       uploadAds().forEach(function (ad) {
-        if (target.checked && !ad.texts[0].language) ad.texts[0].language = "en_US";
-        if (!target.checked) ad.texts = [ad.texts[0]];
+        var text = ad.texts[0] || emptyText("");
+        if (target.checked && !text.language) {
+          text.language = "en_US";
+          text.language_name = "English (US)";
+        }
+        if (!target.checked) {
+          // Файлы языка переносим в общий блок: без языков объявление
+          // использует один креатив на все тексты.
+          ad.files = ad.files.concat(text.files || []);
+          text.files = [];
+          ad.texts = [text];
+        }
       });
+      // После переключения панель языков всегда открыта на основном.
+      state.upload.textTabs = {};
       return renderUpload();
     }
     if (target.closest && target.closest("[data-up-split]")) {
@@ -2671,6 +3779,15 @@
     }
     if (target.closest && target.closest("[data-up-advanced]")) {
       state.upload.advanced = target.checked;
+      if (target.checked && !state.rules.length) {
+        api.get("/meta/rules?limit=200").then(function (payload) {
+          state.rules = (payload && payload.items) || [];
+          renderUpload();
+        }).catch(function () {
+          state.rules = [];
+          renderUpload();
+        });
+      }
       return renderUpload();
     }
     if (target.closest && target.closest("[data-up-pause-gap]")) {
@@ -2689,6 +3806,7 @@
         // Страницы и пиксели спрашиваем у Meta только для отмеченного: на все
         // видимые кабинеты это были бы десятки запросов ради трёх нужных.
         loadAccountAssets(id);
+        if (state.upload.switches.beneficiary) loadAccountBeneficiaries(id);
       }
       state.upload.accountIds = picked;
       return renderUpload();
@@ -2722,10 +3840,33 @@
       var all = referenceAccounts().map(function (account) { return account.id; });
       var pick = accounts.getAttribute("data-up-accounts") === "all";
       state.upload.accountIds = pick ? all : [];
-      if (pick) all.forEach(function (id) { loadAccountAssets(id); });
+      if (pick) {
+        all.forEach(function (id) {
+          loadAccountAssets(id);
+          if (state.upload.switches.beneficiary) loadAccountBeneficiaries(id);
+        });
+      }
       return renderUpload();
     }
     if (closest("[data-up-link-all]")) return spreadLink();
+    var periodAdd = closest("[data-up-period-add]");
+    if (periodAdd) {
+      if ((state.upload.values.budget_increases || []).length >= 50) {
+        return showFailure(new Error("Периодов можно добавить не больше пятидесяти"));
+      }
+      state.upload.values.budget_increases = state.upload.values.budget_increases || [];
+      state.upload.values.budget_increases.push(
+        { start_at: "", end_at: "", kind: "sum", amount: "" }
+      );
+      return renderUpload();
+    }
+    var periodDrop = closest("[data-up-period-drop]");
+    if (periodDrop) {
+      state.upload.values.budget_increases.splice(
+        Number(periodDrop.getAttribute("data-up-period-drop")), 1
+      );
+      return renderUpload();
+    }
 
     var adAdd = closest("[data-up-ad-add]");
     if (adAdd) {
@@ -2751,34 +3892,82 @@
       });
       return renderUpload();
     }
-    var textAdd = closest("[data-up-text-add]");
-    if (textAdd) {
-      var ad = uploadAds()[Number(textAdd.getAttribute("data-up-text-add"))];
-      var used = ad.texts.map(function (text) { return text.language; });
-      var free = LANGUAGE_PRESETS.filter(function (row) {
-        return used.indexOf(row.code) < 0;
-      })[0];
-      ad.texts.push(emptyText(free ? free.code : ""));
+    var langAdd = closest("[data-up-lang-add]");
+    if (langAdd) {
+      state.upload.langPicker = {
+        adIndex: Number(langAdd.getAttribute("data-up-lang-add")),
+        query: "", remote: [], checked: {}, loading: false
+      };
       return renderUpload();
     }
-    var textDrop = closest("[data-up-text-drop]");
-    if (textDrop) {
-      var parts = textDrop.getAttribute("data-up-text-drop").split(":");
-      var owner = uploadAds()[Number(parts[0])];
-      owner.texts = owner.texts.filter(function (_text, position) {
-        return position !== Number(parts[1]);
-      });
+    if (closest("[data-up-lang-cancel]")) {
+      state.upload.langPicker = null;
+      return renderUpload();
+    }
+    var langApply = closest("[data-up-lang-apply]");
+    if (langApply) {
+      var picker = state.upload.langPicker;
+      if (picker) {
+        var owner = uploadAds()[picker.adIndex];
+        Object.keys(picker.checked).forEach(function (code) {
+          var exists = owner.texts.some(function (text) {
+            return text.language === code;
+          });
+          if (!exists) {
+            owner.texts.push(
+              emptyText(code, picker.checked[code] || languageLabel(code))
+            );
+          }
+        });
+        // Показать строку последнего добавленного языка: его заполнять дальше.
+        state.upload.textTabs[picker.adIndex] = owner.texts.length - 1;
+        state.upload.langPicker = null;
+      }
+      return renderUpload();
+    }
+    var langTab = closest("[data-up-lang-tab]");
+    if (langTab) {
+      // Точка входа для чипса-таба, но не для его кнопки «×».
+      if (event.target.closest("[data-up-lang-drop]")) {
+        // удаление обрабатывается ниже
+      } else {
+        var tabWhere = langTab.getAttribute("data-up-lang-tab").split(":");
+        state.upload.textTabs[Number(tabWhere[0])] = Number(tabWhere[1]);
+        return renderUpload();
+      }
+    }
+    var langDrop = closest("[data-up-lang-drop]");
+    if (langDrop) {
+      var where = langDrop.getAttribute("data-up-lang-drop").split(":");
+      var owner = uploadAds()[Number(where[0])];
+      var removed = Number(where[1]);
+      if (owner.texts.length > 1) {
+        owner.texts = owner.texts.filter(function (_text, position) {
+          return position !== removed;
+        });
+        // Активный таб мог ссылаться на удалённый язык.
+        var current = state.upload.textTabs[Number(where[0])] || 0;
+        if (current === removed) state.upload.textTabs[Number(where[0])] = 0;
+        if (current > removed) state.upload.textTabs[Number(where[0])] = current - 1;
+      }
       return renderUpload();
     }
     var files = closest("[data-up-files]");
-    if (files) return pickCreativeFiles(Number(files.getAttribute("data-up-files")));
+    if (files) return pickCreativeFiles(files.getAttribute("data-up-files"));
     var fileDrop = closest("[data-up-file-drop]");
     if (fileDrop) {
       var where = fileDrop.getAttribute("data-up-file-drop").split(":");
       var host = uploadAds()[Number(where[0])];
-      host.files = host.files.filter(function (_file, position) {
-        return position !== Number(where[1]);
-      });
+      if (where.length === 3 && state.upload.languages) {
+        var text = host.texts[Number(where[1])];
+        text.files = (text.files || []).filter(function (_file, position) {
+          return position !== Number(where[2]);
+        });
+      } else {
+        host.files = host.files.filter(function (_file, position) {
+          return position !== Number(where[1]);
+        });
+      }
       return renderUpload();
     }
   }
@@ -2798,13 +3987,21 @@
     renderUpload();
   }
 
-  function pickCreativeFiles(adIndex) {
+  function pickCreativeFiles(key) {
     var input = byId("metaUploadFiles");
     input.value = "";
     input.onchange = function () {
       var chosen = Array.prototype.slice.call(input.files || []);
       if (chosen.length) {
-        uploadAds()[adIndex].files = uploadAds()[adIndex].files.concat(chosen);
+        var parts = String(key).split(":");
+        var ad = uploadAds()[Number(parts[0])];
+        if (parts.length > 1 && state.upload.languages) {
+          // Свои креативы языка: складываем в его тексты.
+          (ad.texts[Number(parts[1])].files = ad.texts[Number(parts[1])].files || [])
+            .push.apply(ad.texts[Number(parts[1])].files, chosen);
+        } else {
+          ad.files = ad.files.concat(chosen);
+        }
         renderUpload();
       }
       input.onchange = null;
@@ -2837,6 +4034,7 @@
     var page = await api.get("/meta/operations" + (status ? "?status=" + status : ""));
     state.queue = page.items || [];
     renderQueue();
+    scheduleLaunchPoll();
   }
 
   function renderQueue() {
@@ -2984,8 +4182,7 @@
       name: "creative_ids",
       empty: "В этом кабинете ещё нет загруженных креативов",
       options: creatives.map(function (creative) {
-        return { value: creative.id,
-          label: creative.name + " · " + (creative.kind === "video" ? "видео" : "картинка") };
+        return { value: creative.id, label: creativeLabel(creative) };
       })
     });
   }
@@ -4318,14 +5515,78 @@
 
   /* ---------- автоправила (ТЗ 3.8) ---------- */
 
-  async function loadRules() {
-    await loadReference();
-    var page = await api.get("/meta/rules");
-    state.rules = page.items || [];
-    var events = await api.get("/meta/rule-events?limit=50");
-    state.events = events.items || [];
-    renderRules();
+  /* --- вкладка правил: состояние --- */
+  state.rulesTab = "fb";
+  state.ruleSearch = "";
+  state.rulePicked = {};
+  state.groupSearch = "";
+  state.groupPicked = {};
+  state.groups = [];
+  state.campaigns = [];
+  state.ruleForm = null;
+  state.groupForm = null;
+  /* idle | loading | ready | error — вкладка рисует себя в любом из них, и
+     пустая белая карточка перестала быть состоянием «ещё грузится». */
+  state.rulesStatus = "idle";
+  state.rulesError = "";
+
+  var rulesRequest = null;
+
+  async function loadRules(options) {
+    var quiet = !!(options && options.quiet);
+    if (rulesRequest) return rulesRequest;
+    if (!quiet && state.rulesStatus !== "ready") {
+      state.rulesStatus = "loading";
+      renderRulesRoot();
+    }
+    rulesRequest = fetchRules();
+    try {
+      await rulesRequest;
+    } finally {
+      rulesRequest = null;
+    }
+  }
+
+  async function fetchRules() {
+    try {
+      await loadReference();
+      var page = await api.get("/meta/rules");
+      state.rules = page.items || [];
+      // Группы и журнал срабатываний — вторичные списки. Их отказ не должен
+      // оставлять вкладку пустой: сами правила уже загружены и показываются.
+      var rest = await Promise.all([
+        api.get("/meta/rule-groups").catch(function () { return null; }),
+        api.get("/meta/rule-events?limit=50").catch(function () { return null; })
+      ]);
+      state.groups = rest[0] ? (rest[0].items || []) : [];
+      state.events = rest[1] ? (rest[1].items || []) : [];
+      state.rulesStatus = "ready";
+      state.rulesError = "";
+    } catch (error) {
+      // Не пробрасываем наверх: ошибка одного блока не повод накрывать весь
+      // экран заглушкой «не удалось загрузить данные» — её видно в карточке,
+      // и оттуда же можно повторить.
+      state.rulesStatus = "error";
+      state.rulesError = error && error.message
+        ? error.message : "Не удалось загрузить автоправила";
+    }
+    renderRulesRoot();
     renderEvents();
+  }
+
+  /* Кампании нужны, только когда правило привязано к одной кампании: список
+     тяжёлый, поэтому грузим его по требованию и один раз. */
+  function ensureCampaigns() {
+    if (state.campaigns.length || state.campaignsLoading) return;
+    state.campaignsLoading = true;
+    api.get("/meta/entities/campaigns").then(function (items) {
+      state.campaigns = items || [];
+    }).catch(function () {
+      state.campaigns = [];
+    }).then(function () {
+      state.campaignsLoading = false;
+      renderRuleForm();
+    });
   }
 
   /* «Данные» одной строкой: с чем работает правило, где и за какой период. */
@@ -4336,77 +5597,926 @@
       (reference.rule_statuses || {})[rule.entity_status] || rule.entity_status,
       (reference.rule_windows || {})[rule.window] || rule.window
     ];
-    return '<div style="font-weight:700;font-size:12.5px">' +
-      escapeHtml(parts.join(" · ")) + "</div>" +
-      '<div style="font-size:10.5px;color:#9B9292;margin-top:3px">' +
-      escapeHtml(rule.account_name || "Все кабинеты") +
-      " · мин. расход " + money(rule.min_spend) + "</div>";
+    var where = rule.scope_kind === "campaign"
+      ? "Кампания " + (campaignName(rule.campaign_external_id) || rule.campaign_external_id || "—")
+      : (rule.account_name || "Все кабинеты");
+    return '<div style="font-size:11px;color:#9B9292;font-weight:600;margin-top:4px;' +
+      'line-height:1.5">' + escapeHtml(parts.join(" · ")) + "<br>" +
+      escapeHtml(where) + " · мин. расход " + money(rule.min_spend) + "</div>";
+  }
+
+  function campaignName(externalId) {
+    if (!externalId) return "";
+    var row = (state.campaigns || []).filter(function (item) {
+      return item.external_id === externalId;
+    })[0];
+    return row ? row.name : "";
   }
 
   function ruleConditions(rule) {
-    var reference = state.reference || {};
     var list = rule.conditions || [];
     if (!list.length) {
-      return '<span style="color:#C9821F;font-weight:700">Без условий — сработает на всех</span>';
+      return '<span class="meta-chip" style="background:#FFF9E9;color:#6A5A28">' +
+        "Без условий — сработает на всех</span>";
     }
     return list.map(function (item) {
-      var metric = (reference.metrics || {})[item.metric] || item.metric;
-      var sign = (reference.rule_operators || {})[item.operator] || item.operator;
-      return '<span class="meta-chip" style="background:#F4F0F0;color:#3A3030;margin:2px 4px 2px 0">' +
-        escapeHtml(metric + " " + sign + " " + item.value) + "</span>";
+      return '<span class="meta-chip" style="background:#F4F0F0;color:#3A3030;' +
+        'margin:2px 4px 2px 0">' + escapeHtml(conditionText(item)) + "</span>";
     }).join("");
   }
 
-  function frequencyLabel(minutes) {
-    var reference = (state.reference || {}).rule_frequencies || {};
-    return reference[String(minutes)] || (minutes + " мин");
+  /* Свои подписи операторов важнее справочника: в списке правил условие должно
+     читаться теми же словами, что и в форме, где его набирали. */
+  function conditionText(item) {
+    var reference = state.reference || {};
+    var sign = RULE_OPERATOR_LABELS[item.operator] ||
+      (reference.rule_operators || {})[item.operator] || item.operator;
+    return referenceMetricLabel(item.metric) + " " + sign + " " + (item.value === "" ||
+      item.value === null || item.value === undefined ? "—" : item.value);
   }
 
-  function renderRules() {
-    var body = byId("metaRulesBody");
-    var reference = state.reference || {};
-    byId("metaRuleCreate").style.display = state.canLaunch ? "" : "none";
-    byId("metaRulesRun").style.display = state.canLaunch ? "" : "none";
-    if (!state.rules.length) {
-      body.innerHTML = '<tr><td colspan="8" style="padding:44px 20px;text-align:center;' +
-        'color:#9B9292;font-size:13px">Правил нет. Начните с уведомления — оно ничего ' +
-        "не выключает, но покажет, как правило вело бы себя на реальных цифрах.</td></tr>";
-      byId("metaRulesCount").textContent = "Правил: 0";
-      return;
+  /* Справочник метрик: группы — для читаемости списка, коды — те же, что
+     считает движок (`meta_metrics.METRIC_LABELS`). Дублировать один код под
+     разными подписями нельзя: в `<select>` выбранным подсветится первый из
+     них, и человек увидит не то, что выбрал. */
+  var RULE_METRIC_GROUPS = [
+    ["Наиболее распространенные", [
+      ["spend", "Расход"], ["spend_total", "Потрачено за все время"],
+      ["results", "Результаты"], ["cpa", "Цена за результат"],
+      ["roi", "ROAS для покупок на веб-сайте"], ["roi", "Окупаемость затрат"],
+      ["spend_day_pct", "% расходов за день"], ["spend_total_pct", "% расходов за все время"],
+      ["reach_pct", "Охваченная аудитория, %"]
+    ]],
+    ["Настройки", [
+      ["campaign_name", "Название кампании"], ["entity_name", "Название адсета"],
+      ["objective", "Цель"], ["buying_type", "Закупочный тип"],
+      ["spend_cap", "Предел затрат"], ["bid_amount", "Сумма ставки"],
+      ["daily_budget", "Дневной бюджет"], ["lifetime_budget", "Бюджет на весь срок"]
+    ]],
+    ["Конверсии на веб-сайте (пиксель Fb)", [
+      ["results", "Все конверсии на сайте"],
+      ["pixel_purchases", "Покупки (пиксель Fb)"], ["pixel_leads", "Лиды (пиксель Fb)"],
+      ["results", "Добавления платежной информации (пиксель Fb)"],
+      ["results", "Добавления в корзину (пиксель Fb)"],
+      ["results", "Завершенные регистрации (пиксель Fb)"],
+      ["results", "Начатое оформление заказов (пиксель Fb)"]
+    ]],
+    ["Цена за конверсию на сайте (пиксель Facebook)", [
+      ["cpa", "Цена за результат (пиксель Fb)"], ["cpc", "Цена за лид (пиксель Fb)"],
+      ["cpl", "Цена за завершенную регистрацию (пиксель Fb)"]
+    ]],
+    ["Другое", [
+      ["impressions", "Показы"], ["reach", "Охват"], ["clicks", "Клики"],
+      ["link_clicks", "Клики по ссылке"], ["impressions", "Показы за весь срок действия"],
+      ["leads", "Лиды"], ["actions_total", "Действия"], ["cpc", "CPC"],
+      ["cpa", "CPA"], ["cpm", "CPM"], ["ctr", "CTR"], ["link_ctr", "CTR (ссылка)"],
+      ["spend", "Потрачено сегодня"], ["yesterday_spend", "Вчерашние расходы"],
+      ["pixel_leads", "Лиды (пиксель)"], ["pixel_purchases", "Покупки (пиксель)"],
+      ["actions_total", "Другие действия"], ["cpa", "Цена за результат"],
+      ["sales", "Продажи (Keitaro)"], ["profit", "Прибыль"], ["revenue", "Доход"],
+      ["cpl", "Цена лида"]
+    ]]
+  ];
+
+  /* Настройки объекта — строки: сравнивать их можно только на совпадение и
+     вхождение, и порог у них тоже текстовый. Тот же список на бэкенде. */
+  var RULE_TEXT_METRICS = {
+    entity_name: true, campaign_name: true, objective: true, buying_type: true
+  };
+
+  var RULE_OPERATOR_LABELS = {
+    lt: "<", lte: "≤", gt: ">", gte: "≥", eq: "=", ne: "!=", in: "∈",
+    nin: "∉"
+  };
+  var RULE_NUMBER_OPERATORS = ["lt", "lte", "gt", "gte", "eq", "ne"];
+  var RULE_TEXT_OPERATORS = ["eq", "ne", "in", "nin"];
+
+  function isTextMetric(code) {
+    return !!RULE_TEXT_METRICS[code];
+  }
+
+  function ruleOperators(metric) {
+    return isTextMetric(metric) ? RULE_TEXT_OPERATORS : RULE_NUMBER_OPERATORS;
+  }
+
+  function referenceMetricLabel(code) {
+    var labels = ((state.reference || {}).metrics || {});
+    if (labels[code]) return labels[code];
+    for (var g = 0; g < RULE_METRIC_GROUPS.length; g += 1) {
+      var group = RULE_METRIC_GROUPS[g];
+      for (var i = 0; i < group[1].length; i += 1) {
+        if (group[1][i][0] === code) return group[1][i][1];
+      }
     }
-    body.innerHTML = state.rules.map(function (rule) {
-      var action = (reference.rule_actions || {})[rule.action] || rule.action;
+    return code;
+  }
+
+  function metricOptionsHtml(selected) {
+    return RULE_METRIC_GROUPS.map(function (group) {
+      return '<optgroup label="' + escapeHtml(group[0]) + '">' +
+        group[1].map(function (item) {
+          return '<option value="' + escapeHtml(item[0]) + '"' +
+            (item[0] === selected ? " selected" : "") + ">" +
+            escapeHtml(item[1]) + "</option>";
+        }).join("") + "</optgroup>";
+    }).join("");
+  }
+
+  var RULE_FREQUENCIES = [
+    ["always", "Постоянно — при каждом прогоне"],
+    ["daily_midnight", "Каждую полночь"],
+    ["custom", "Свои дни и часы"]
+  ];
+
+  /* Область: с чем работает правило и на каком уровне. Пара «где + уровень»
+     живёт в одном значении — раньше в списке было шесть пунктов с тремя
+     повторяющимися value, и выбрать «Кабинет: адсет» было физически нельзя. */
+  var RULE_SCOPES = [
+    ["cabinet:ad", "Весь кабинет · объявления"],
+    ["cabinet:adset", "Весь кабинет · адсеты"],
+    ["cabinet:campaign", "Весь кабинет · кампании"],
+    ["campaign:campaign", "Одна кампания · сама кампания"],
+    ["campaign:adset", "Одна кампания · её адсеты"],
+    ["campaign:ad", "Одна кампания · её объявления"]
+  ];
+
+  var RULE_ACTION_OPTIONS = [
+    ["pause", "Остановить"],
+    ["resume", "Запустить"],
+    ["change_budget:adset", "Изменить бюджет адсета"],
+    ["change_budget:campaign", "Изменить бюджет кампании"],
+    ["change_bid", "Изменить ставку"]
+  ];
+
+  function ruleActionLabel(rule) {
+    var reference = state.reference || {};
+    var label = (reference.rule_actions || {})[rule.action] || rule.action;
+    if (rule.action === "change_budget") {
+      label = rule.level === "campaign" ? "Изменить бюджет кампании" : "Изменить бюджет адсета";
+    }
+    if (rule.action !== "change_budget" && rule.action !== "change_bid") return label;
+    var sign = rule.action_sign === "minus" ? "−" : "+";
+    var unit = rule.action_mode === "pct" ? " %" : " " + (rule.currency || "USD");
+    if (!Number(rule.action_value)) return label + " " + sign + "…";
+    return label + " " + sign + rule.action_value + unit;
+  }
+
+  function ruleScheduleLabel(rule) {
+    if (rule.schedule_kind === "daily_midnight") return "Каждую полночь";
+    if (rule.schedule_kind === "custom") {
+      var payload = rule.schedule || {};
+      var days = (payload.days || []).slice().sort(function (a, b) { return a - b; });
+      var intervals = payload.intervals || [];
+      var names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+      var dayText = days.length === 7 ? "Ежедневно" : days.length
+        ? days.map(function (day) { return names[day - 1] || day; }).join(", ")
+        : "Любой день";
+      var timeText = intervals.length
+        ? intervals.map(function (item) {
+          return (item.begin || "00:00") + "–" + (item.end || "00:00");
+        }).join(", ")
+        : "круглосуточно";
+      return dayText + ", " + timeText;
+    }
+    return "Постоянно";
+  }
+
+  /* --- отрисовка вкладки --- */
+
+  function renderRulesRoot() {
+    var root = byId("metaRulesRoot");
+    if (!root) return;
+    syncRulesHeader();
+    var focused = document.activeElement;
+    var searchKind = focused && focused.getAttribute
+      ? focused.getAttribute("data-rules-search") : null;
+    if (state.rulesStatus === "loading" || state.rulesStatus === "idle") {
+      root.innerHTML = '<div class="rule-skeleton" aria-hidden="true">' +
+        "<span></span><span></span><span></span><span></span></div>";
+      return renderRuleForm();
+    }
+    if (state.rulesStatus === "error") {
+      root.innerHTML = '<div class="rule-state rule-state--error"><b>Автоправила не загрузились</b>' +
+        escapeHtml(state.rulesError) + '<div style="margin-top:14px">' +
+        '<button type="button" class="meta-action" data-rules-retry>Повторить</button></div></div>';
+      return renderRuleForm();
+    }
+    root.innerHTML = rulesSubtabs() +
+      (state.rulesTab === "fb" ? renderRulesList() : renderGroupsList());
+    if (searchKind) {
+      var field = root.querySelector('[data-rules-search="' + searchKind + '"]');
+      if (field) {
+        field.focus();
+        try {
+          field.setSelectionRange(field.value.length, field.value.length);
+        } catch (error) {
+          // type="search" не везде поддерживает каретку — фокуса достаточно.
+        }
+      }
+    }
+    renderRuleForm();
+  }
+
+  /* Кнопки живут в шапке вкладки, как на «Заливах». Раньше их прятали из JS и
+     рисовали вторые такие же внутри карточки — одно и то же действие в двух
+     местах, причём кнопка в шапке ни к чему не была привязана. */
+  function syncRulesHeader() {
+    var run = byId("metaRulesRun");
+    var create = byId("metaRuleCreate");
+    var ready = state.rulesStatus === "ready";
+    if (run) run.style.display = state.canLaunch && ready ? "" : "none";
+    if (!create) return;
+    create.style.display = state.canLaunch && ready ? "" : "none";
+    create.textContent = state.rulesTab === "groups" ? "Новая группа" : "Новое правило";
+  }
+
+  function createFromHeader() {
+    if (state.rulesTab === "groups") {
+      state.groupForm = { id: null, name: "", rule_ids: [] };
+      state.ruleFormError = "";
+      state.ruleFormFresh = true;
+      return renderRuleForm();
+    }
+    openRuleEditor(null);
+  }
+
+  function rulesSubtabs() {
+    return '<div class="rule-subtabs">' + [
+      { key: "fb", label: "Правила", count: (state.rules || []).length },
+      { key: "groups", label: "Группы правил", count: (state.groups || []).length }
+    ].map(function (item) {
+      return '<button type="button" class="rule-subtab' +
+        (state.rulesTab === item.key ? " rule-subtab--on" : "") +
+        '" data-rules-tab="' + item.key + '">' + item.label +
+        '<span class="rule-subtab__count">' + item.count + "</span></button>";
+    }).join("") + "</div>";
+  }
+
+  function rulesToolbar(kind) {
+    var picked = kind === "fb" ? state.rulePicked : state.groupPicked;
+    var count = Object.keys(picked).length;
+    var search = kind === "fb" ? state.ruleSearch : state.groupSearch;
+    return '<div class="rule-toolbar">' +
+      '<input class="meta-control rule-toolbar__search" type="search" ' +
+      'placeholder="Поиск по названию" aria-label="Поиск по названию" value="' +
+      escapeHtml(search) + '" data-rules-search="' + kind + '">' +
+      (count
+        ? '<span style="font-size:12px;color:#857D7D;font-weight:700">Выбрано: ' + count +
+          "</span>" +
+          '<button type="button" class="meta-action" data-rules-clear>Снять выбор</button>' +
+          '<button type="button" class="meta-action meta-action--danger" ' +
+          'data-rules-delete-picked>Удалить выбранные</button>'
+        : "") +
+      "</div>";
+  }
+
+  function renderRulesList() {
+    var query = (state.ruleSearch || "").trim().toLowerCase();
+    var rows = (state.rules || []).filter(function (rule) {
+      if (!query) return true;
+      return String(rule.name || "").toLowerCase().indexOf(query) >= 0;
+    });
+    var body = rows.map(function (rule) {
+      var picked = !!state.rulePicked[rule.id];
       return '<tr class="meta-row" style="border-bottom:1px solid #F7F4F4">' +
-        '<td class="meta-cell meta-cell--left" style="padding-left:20px;font-weight:700">' +
-        escapeHtml(rule.name) + "</td>" +
-        '<td class="meta-cell meta-cell--left" style="color:#6A6161">' +
-        ruleScope(rule) + "</td>" +
-        '<td class="meta-cell meta-cell--left" style="max-width:300px;white-space:normal">' +
+        '<td class="meta-cell meta-cell--left" style="padding-left:20px;width:36px">' +
+        '<input type="checkbox" aria-label="Выбрать правило" data-rule-pick="' +
+        escapeHtml(rule.id) + '"' + (picked ? " checked" : "") +
+        ' style="width:16px;height:16px;accent-color:#B91414"></td>' +
+        '<td class="meta-cell meta-cell--left" style="min-width:190px;white-space:normal">' +
+        '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">' +
+        '<span style="font-weight:700">' + escapeHtml(rule.name) + "</span>" +
+        ruleToggleHtml(rule) + "</div>" + ruleScope(rule) + "</td>" +
+        '<td class="meta-cell meta-cell--left" style="min-width:170px;white-space:normal">' +
         ruleConditions(rule) + "</td>" +
-        '<td class="meta-cell">' + escapeHtml(frequencyLabel(rule.frequency_minutes)) +
-        "</td>" +
-        '<td class="meta-cell">' + money(rule.min_spend) + "</td>" +
-        '<td class="meta-cell meta-cell--left">' + escapeHtml(action) +
-        (rule.action_value ? " " + rule.action_value + " %" : "") + "</td>" +
-        '<td class="meta-cell meta-cell--left">' +
-        (rule.is_enabled
-          ? '<span class="meta-chip" style="color:#16B57F;background:#E4F7F0">' +
-            '<span class="meta-dot" style="background:#16B57F"></span>включено</span>'
-          : '<span class="meta-chip" style="color:#9B9292;background:#F7F4F4">' +
-            '<span class="meta-dot" style="background:#9B9292"></span>выключено</span>') +
-        '<div style="font-size:10.5px;color:#9B9292;margin-top:4px">' +
-        (rule.last_triggered_at ? "сработало " + formatMoment(rule.last_triggered_at) : "не срабатывало") +
-        "</div></td>" +
+        '<td class="meta-cell meta-cell--left">' + escapeHtml(ruleActionLabel(rule)) + "</td>" +
+        '<td class="meta-cell meta-cell--left" style="white-space:normal;min-width:130px">' +
+        escapeHtml(ruleScheduleLabel(rule)) + "</td>" +
         '<td class="meta-cell meta-cell--left" style="padding-right:20px">' +
         '<div style="display:flex;gap:6px">' +
-        '<button class="meta-action" data-rule-preview="' + escapeHtml(rule.id) +
-        '">Что сработает</button>' +
-        (state.canLaunch ? '<button class="meta-action" data-rule-open="' +
-          escapeHtml(rule.id) + '">Изменить</button>' : "") +
+        '<button type="button" class="meta-action" data-rules-preview="' +
+        escapeHtml(rule.id) + '" title="Показать, на кого правило сработает прямо сейчас">' +
+        "Что сработает</button>" +
+        (state.canLaunch
+          ? '<button type="button" class="meta-action" data-rules-edit="' +
+            escapeHtml(rule.id) + '">Изменить</button>' +
+            '<button type="button" class="meta-action meta-action--danger" ' +
+            'data-rules-delete="' + escapeHtml(rule.id) + '">Удалить</button>'
+          : "") +
         "</div></td></tr>";
     }).join("");
-    byId("metaRulesCount").textContent = "Правил: " + state.rules.length;
+    return rulesToolbar("fb") +
+      '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;' +
+      'min-width:1000px"><thead><tr style="border-bottom:1px solid #F0EBEB">' +
+      '<th class="meta-th meta-th--left" style="padding-left:20px;width:36px"></th>' +
+      '<th class="meta-th meta-th--left">Правило</th>' +
+      '<th class="meta-th meta-th--left">Условия</th>' +
+      '<th class="meta-th meta-th--left">Действие</th>' +
+      '<th class="meta-th meta-th--left">Когда проверять</th>' +
+      '<th class="meta-th meta-th--left" style="padding-right:20px">Действия</th>' +
+      "</tr></thead><tbody>" +
+      (body || '<tr><td colspan="6"><div class="rule-state">' +
+        (query
+          ? "<b>Ничего не нашлось</b>По запросу «" + escapeHtml(state.ruleSearch) +
+            "» правил нет."
+          : "<b>Правил пока нет</b>Автоправило само остановит объявление или изменит " +
+            "бюджет, когда цифры выйдут за рамки." +
+            (state.canLaunch
+              ? '<div style="margin-top:14px"><button type="button" ' +
+                'class="meta-action meta-action--primary" data-rules-create>' +
+                "Создать первое правило</button></div>"
+              : "")) +
+        "</div></td></tr>") +
+      "</tbody></table></div>" +
+      '<div class="rule-foot"><span>Правил: ' + rows.length +
+      (rows.length === (state.rules || []).length ? "" : " из " + (state.rules || []).length) +
+      "</span>" +
+      '<span>Считаются по нашим числам: расход из Meta, доход из Keitaro</span></div>';
   }
+
+  /* Выключить правило, не удаляя его, — самый частый способ «поставить на
+     паузу» на время теста. Раньше состояние было только подписью. */
+  function ruleToggleHtml(rule) {
+    if (!state.canLaunch) {
+      return rule.is_enabled
+        ? '<span class="meta-chip" style="color:#0F9D58;background:#E4F7F0">включено</span>'
+        : '<span class="meta-chip" style="color:#9B9292;background:#F7F4F4">выключено</span>';
+    }
+    return '<button type="button" class="meta-chip" data-rules-toggle="' +
+      escapeHtml(rule.id) + '" style="border:0;cursor:pointer;' +
+      (rule.is_enabled ? "color:#0F9D58;background:#E4F7F0" : "color:#9B9292;background:#F7F4F4") +
+      '" title="' + (rule.is_enabled ? "Выключить правило" : "Включить правило") + '">' +
+      (rule.is_enabled ? "включено" : "выключено") + "</button>";
+  }
+
+  function renderGroupsList() {
+    var query = (state.groupSearch || "").trim().toLowerCase();
+    var rows = (state.groups || []).filter(function (group) {
+      if (!query) return true;
+      return String(group.name || "").toLowerCase().indexOf(query) >= 0;
+    });
+    var body = rows.map(function (group) {
+      var picked = !!state.groupPicked[group.id];
+      var rules = (group.rules || []).map(function (rule) {
+        return '<span class="meta-chip" style="background:#F4F0F0;color:#3A3030;' +
+          'margin:2px 4px 2px 0">' + escapeHtml(rule.name) + "</span>";
+      }).join("");
+      return '<tr class="meta-row" style="border-bottom:1px solid #F7F4F4">' +
+        '<td class="meta-cell meta-cell--left" style="padding-left:20px;width:36px">' +
+        '<input type="checkbox" aria-label="Выбрать группу" data-group-pick="' +
+        escapeHtml(group.id) + '"' + (picked ? " checked" : "") +
+        ' style="width:16px;height:16px;accent-color:#B91414"></td>' +
+        '<td class="meta-cell meta-cell--left" style="min-width:240px;font-weight:700">' +
+        escapeHtml(group.name) + "</td>" +
+        '<td class="meta-cell meta-cell--left" style="min-width:300px;white-space:normal">' +
+        (rules || '<span style="color:#C6BDBD;font-size:11.5px;font-weight:600">' +
+          "Правил в группе нет</span>") + "</td>" +
+        '<td class="meta-cell meta-cell--left" style="padding-right:20px">' +
+        (state.canLaunch
+          ? '<div style="display:flex;gap:6px">' +
+            '<button type="button" class="meta-action" data-groups-edit="' +
+            escapeHtml(group.id) + '">Изменить</button>' +
+            '<button type="button" class="meta-action meta-action--danger" ' +
+            'data-groups-delete="' + escapeHtml(group.id) + '">Удалить</button></div>'
+          : "") + "</td></tr>";
+    }).join("");
+    return rulesToolbar("groups") +
+      '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;' +
+      'min-width:760px"><thead><tr style="border-bottom:1px solid #F0EBEB">' +
+      '<th class="meta-th meta-th--left" style="padding-left:20px;width:36px"></th>' +
+      '<th class="meta-th meta-th--left">Название</th>' +
+      '<th class="meta-th meta-th--left">Правила</th>' +
+      '<th class="meta-th meta-th--left" style="padding-right:20px">Действия</th>' +
+      "</tr></thead><tbody>" +
+      (body || '<tr><td colspan="4"><div class="rule-state">' +
+        (query
+          ? "<b>Ничего не нашлось</b>По запросу «" + escapeHtml(state.groupSearch) +
+            "» групп нет."
+          : "<b>Групп пока нет</b>Группа собирает правила вместе — удобно, когда их " +
+            "много и они делятся по офферам или баерам." +
+            (state.canLaunch
+              ? '<div style="margin-top:14px"><button type="button" ' +
+                'class="meta-action meta-action--primary" data-groups-create>' +
+                "Создать первую группу</button></div>"
+              : "")) +
+        "</div></td></tr>") +
+      "</tbody></table></div>" +
+      '<div class="rule-foot"><span>Групп: ' + rows.length + "</span></div>";
+  }
+
+  /* --- обработчики автоправил --- */
+  function emptyRuleForm() {
+    // Эталонный набор: без кабинета, минимального расхода и выключателя —
+    // пауза и включённость задаются серверными значениями по умолчанию.
+    return {
+      id: null, name: "", convert_currency: false, currency: "USD",
+      schedule_kind: "always", schedule_days: [], schedule_intervals: [],
+      scope_kind: "cabinet", level: "ad", campaign_external_id: "",
+      entity_status: "active", window: "today",
+      action: "pause", action_sign: "plus", action_mode: "pct",
+      budget_kind: "daily", action_value: "", action_max: "",
+      conditions: [{ metric: "spend", operator: "lt", value: "" }]
+    };
+  }
+
+  function ruleFormFrom(rule) {
+    var schedule = rule.schedule || {};
+    var intervals = (schedule.intervals || []).map(function (item) {
+      var begin = String(item.begin || "00:00").split(":");
+      var end = String(item.end || "00:00").split(":");
+      return {
+        begin_h: begin[0] || "00", begin_m: begin[1] || "00",
+        end_h: end[0] || "00", end_m: end[1] || "00"
+      };
+    });
+    return {
+      id: rule.id || null, name: rule.name || "",
+      convert_currency: !!rule.convert_currency,
+      currency: rule.currency || "USD", schedule_kind: rule.schedule_kind || "always",
+      schedule_days: (schedule.days || []).slice(), schedule_intervals: intervals,
+      scope_kind: rule.scope_kind || "cabinet", level: rule.level || "ad",
+      campaign_external_id: rule.campaign_external_id || "",
+      entity_status: rule.entity_status || "active", window: rule.window || "today",
+      action: rule.action || "pause", action_sign: rule.action_sign || "plus",
+      action_mode: rule.action_mode || "pct", budget_kind: rule.budget_kind || "daily",
+      action_value: rule.action_value == null ? "" : String(rule.action_value),
+      action_max: rule.action_max == null ? "" : String(rule.action_max),
+      conditions: (rule.conditions || []).map(function (item) {
+        return { metric: item.metric, operator: item.operator, value: item.value };
+      })
+    };
+  }
+
+  /* Что мешает сохранить. Пусто — значит форма готова: тем же списком
+     подсвечивается кнопка, поэтому проверка живёт в одном месте. */
+  function ruleFormProblem(f) {
+    if (!String(f.name || "").trim()) return "Укажите название правила";
+    if (f.scope_kind === "campaign" && !f.campaign_external_id) {
+      return "Выберите кампанию, с которой работает правило";
+    }
+    if (f.action === "change_budget" && f.level === "ad") {
+      return "У объявления нет своего бюджета — выберите уровень «адсеты» или «кампании»";
+    }
+    if (f.action === "change_bid" && f.level !== "adset") {
+      return "Ставка задаётся на адсете — выберите область с адсетами";
+    }
+    if ((f.action === "change_budget" || f.action === "change_bid") &&
+      !Number(f.action_value)) {
+      return "Укажите, на сколько менять";
+    }
+    for (var i = 0; i < f.conditions.length; i += 1) {
+      var item = f.conditions[i];
+      var value = String(item.value == null ? "" : item.value).trim();
+      if (!value) return "Заполните значение в условии №" + (i + 1);
+      if (!isTextMetric(item.metric) && isNaN(Number(value))) {
+        return "Условие №" + (i + 1) + ": «" + referenceMetricLabel(item.metric) +
+          "» сравнивается с числом";
+      }
+    }
+    return "";
+  }
+
+  async function saveRuleForm() {
+    var f = state.ruleForm;
+    if (!f) return;
+    var problem = ruleFormProblem(f);
+    if (problem) {
+      state.ruleFormError = problem;
+      return renderRuleForm();
+    }
+    // Правило без условий осмысленно («остановить все активные объявления»),
+    // но подтвердить его стоит осознанно, а не проскочить по невнимательности.
+    if (!f.conditions.length && f.action !== "notify") {
+      if (!(await askConfirm({
+        title: "Правило без условий",
+        message: "Оно сработает на всех объектах области и выполнит «" +
+          ruleActionLabel(f) + "». Это точно то, что нужно?",
+        confirmLabel: "Да, сохранить",
+        danger: true
+      }))) return;
+    }
+    var payload = {
+      name: f.name.trim(),
+      convert_currency: !!f.convert_currency,
+      currency: f.convert_currency ? (f.currency || "USD") : null,
+      schedule_kind: f.schedule_kind,
+      schedule: f.schedule_kind === "custom"
+        ? {
+          days: f.schedule_days,
+          intervals: (f.schedule_intervals || []).map(function (item) {
+            return {
+              begin: item.begin_h + ":" + item.begin_m,
+              end: item.end_h + ":" + item.end_m
+            };
+          })
+        }
+        : null,
+      scope_kind: f.scope_kind,
+      level: f.level,
+      campaign_external_id: f.scope_kind === "campaign" ? (f.campaign_external_id || null) : null,
+      entity_status: f.entity_status,
+      window: f.window,
+      action: f.action,
+      action_sign: f.action_sign,
+      action_mode: f.action_mode,
+      budget_kind: f.budget_kind || "daily",
+      action_value: f.action_value === "" ? null : String(f.action_value),
+      action_max: f.action_max === "" ? null : String(f.action_max),
+      conditions: f.conditions,
+      min_spend: "0",
+      is_enabled: true
+    };
+    state.ruleFormSaving = true;
+    state.ruleFormError = "";
+    renderRuleForm();
+    try {
+      if (f.id) await api.patch("/meta/rules/" + f.id, payload);
+      else await api.post("/meta/rules", payload);
+      state.ruleForm = null;
+      state.ruleFormSaving = false;
+      await loadRules({ quiet: true });
+    } catch (error) {
+      state.ruleFormSaving = false;
+      state.ruleFormError = error && error.message
+        ? error.message : "Не удалось сохранить правило";
+      renderRuleForm();
+    }
+  }
+
+  async function saveGroupForm() {
+    var g = state.groupForm;
+    if (!g.name.trim()) {
+      state.ruleFormError = "Укажите название группы";
+      return renderRuleForm();
+    }
+    var payload = { name: g.name.trim(), rule_ids: g.rule_ids || [] };
+    state.ruleFormSaving = true;
+    state.ruleFormError = "";
+    renderRuleForm();
+    try {
+      if (g.id) await api.patch("/meta/rule-groups/" + g.id, payload);
+      else await api.post("/meta/rule-groups", payload);
+      state.groupForm = null;
+      state.ruleFormSaving = false;
+      await loadRules({ quiet: true });
+    } catch (error) {
+      state.ruleFormSaving = false;
+      state.ruleFormError = error && error.message
+        ? error.message : "Не удалось сохранить группу";
+      renderRuleForm();
+    }
+  }
+
+  function openRuleEditor(rule) {
+    state.ruleForm = rule ? ruleFormFrom(rule) : emptyRuleForm();
+    state.ruleFormError = "";
+    state.ruleFormSaving = false;
+    state.ruleFormFresh = true;
+    if (state.ruleForm.scope_kind === "campaign") ensureCampaigns();
+    renderRuleForm();
+  }
+
+  function closeRuleEditor() {
+    state.ruleForm = null;
+    state.groupForm = null;
+    state.ruleFormError = "";
+    state.ruleFormSaving = false;
+    renderRuleForm();
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target.closest ? event.target : null;
+    if (!target) return;
+    function closest(selector) { return target.closest ? target.closest(selector) : null; }
+
+    if (closest("[data-rules-retry]")) return loadRules();
+    var rulesTab = closest("[data-rules-tab]");
+    if (rulesTab) {
+      state.rulesTab = rulesTab.getAttribute("data-rules-tab");
+      return renderRulesRoot();
+    }
+    if (closest("[data-rule-pick]")) {
+      var id = closest("[data-rule-pick]").getAttribute("data-rule-pick");
+      if (event.target.checked) state.rulePicked[id] = true;
+      else delete state.rulePicked[id];
+      return renderRulesRoot();
+    }
+    if (closest("[data-group-pick]")) {
+      var id2 = closest("[data-group-pick]").getAttribute("data-group-pick");
+      if (event.target.checked) state.groupPicked[id2] = true;
+      else delete state.groupPicked[id2];
+      return renderRulesRoot();
+    }
+    if (closest("[data-rules-clear]")) {
+      state.rulePicked = {}; state.groupPicked = {};
+      return renderRulesRoot();
+    }
+    if (closest("[data-rules-delete-picked]")) {
+      return state.rulesTab === "fb"
+        ? deletePickedRules(Object.keys(state.rulePicked))
+        : deletePickedGroups(Object.keys(state.groupPicked));
+    }
+    if (closest("[data-rules-create]")) return openRuleEditor(null);
+    var edit = closest("[data-rules-edit]");
+    if (edit) {
+      var rule = (state.rules || []).filter(function (row) {
+        return row.id === edit.getAttribute("data-rules-edit");
+      })[0];
+      if (rule) return openRuleEditor(rule);
+      return;
+    }
+    var preview = closest("[data-rules-preview]");
+    if (preview) return previewRule(preview.getAttribute("data-rules-preview"));
+    var toggle = closest("[data-rules-toggle]");
+    if (toggle) return toggleRule(toggle.getAttribute("data-rules-toggle"));
+    var del = closest("[data-rules-delete]");
+    if (del) return deleteRule(del.getAttribute("data-rules-delete"));
+    if (closest("[data-rules-run]")) return runRules();
+    if (closest("[data-rules-save]")) return saveRuleForm();
+    if (closest("[data-rules-close]")) return closeRuleEditor();
+    if (closest("[data-rule-cond-add]")) {
+      state.ruleForm.conditions.push({ metric: "spend", operator: "gt", value: "" });
+      return renderRuleForm();
+    }
+    if (closest("[data-rule-cond-empty]")) {
+      // «Мне нужно правило без условий»: по ТЗ это не пустой список, а готовое
+      // условие-заглушка, которое пользователь потом правит под себя.
+      state.ruleForm.conditions = [{ metric: "spend", operator: "lt", value: "999999" }];
+      return renderRuleForm();
+    }
+    var condDrop = closest("[data-rule-cond-drop]");
+    if (condDrop) {
+      state.ruleForm.conditions.splice(
+        Number(condDrop.getAttribute("data-rule-cond-drop")), 1);
+      return renderRuleForm();
+    }
+    var day = closest("[data-rule-day]");
+    if (day) {
+      var dayNum = Number(day.getAttribute("data-rule-day"));
+      var days = state.ruleForm.schedule_days;
+      var at = days.indexOf(dayNum);
+      if (at >= 0) days.splice(at, 1); else days.push(dayNum);
+      return renderRuleForm();
+    }
+    if (closest("[data-rule-days-all]")) {
+      var all = state.ruleForm.schedule_days.length === 7;
+      state.ruleForm.schedule_days = all ? [] : [1, 2, 3, 4, 5, 6, 7];
+      return renderRuleForm();
+    }
+    if (closest("[data-rule-int-add]")) {
+      state.ruleForm.schedule_intervals.push(
+        { begin_h: "00", begin_m: "00", end_h: "23", end_m: "59" });
+      return renderRuleForm();
+    }
+    var intDrop = closest("[data-rule-int-drop]");
+    if (intDrop) {
+      state.ruleForm.schedule_intervals.splice(
+        Number(intDrop.getAttribute("data-rule-int-drop")), 1);
+      return renderRuleForm();
+    }
+    var budgetSeg = closest("[data-rule-form-budget]");
+    if (budgetSeg) return ruleFormSet("budget_kind", budgetSeg.getAttribute("data-rule-form-budget"));
+    var signSeg = closest("[data-rule-form-sign]");
+    if (signSeg) return ruleFormSet("action_sign", signSeg.getAttribute("data-rule-form-sign"));
+
+    /* группы */
+    if (closest("[data-groups-create]")) {
+      state.groupForm = { id: null, name: "", rule_ids: [] };
+      state.ruleFormError = "";
+      state.ruleFormFresh = true;
+      return renderRuleForm();
+    }
+    var gEdit = closest("[data-groups-edit]");
+    if (gEdit) {
+      var group = (state.groups || []).filter(function (row) {
+        return row.id === gEdit.getAttribute("data-groups-edit");
+      })[0];
+      if (group) {
+        state.groupForm = {
+          id: group.id, name: group.name || "",
+          rule_ids: (group.rules || []).map(function (row) { return row.id; })
+        };
+        state.ruleFormError = "";
+        state.ruleFormFresh = true;
+        return renderRuleForm();
+      }
+      return;
+    }
+    var gDel = closest("[data-groups-delete]");
+    if (gDel) return deleteGroup(gDel.getAttribute("data-groups-delete"));
+    if (closest("[data-groups-save]")) return saveGroupForm();
+    // Клик по затемнению закрывает форму — как в остальных модалках экрана.
+    if (target.classList && target.classList.contains("rule-modal")) {
+      return closeRuleEditor();
+    }
+  });
+
+  function ruledName(id) {
+    var rule = (state.rules || []).filter(function (row) { return row.id === id; })[0];
+    return rule ? rule.name : id;
+  }
+
+  function groupedName(id) {
+    var group = (state.groups || []).filter(function (row) { return row.id === id; })[0];
+    return group ? group.name : id;
+  }
+
+  async function deleteRule(id) {
+    if (!(await askConfirm({
+      title: "Удалить правило?",
+      message: "«" + ruledName(id) + "» перестанет срабатывать.",
+      confirmLabel: "Удалить",
+      danger: true
+    }))) return;
+    try {
+      await api.delete("/meta/rules/" + id);
+      delete state.rulePicked[id];
+      await loadRules({ quiet: true });
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  async function deleteGroup(id) {
+    if (!(await askConfirm({
+      title: "Удалить группу?",
+      message: "«" + groupedName(id) + "» исчезнет, правила из неё останутся.",
+      confirmLabel: "Удалить",
+      danger: true
+    }))) return;
+    try {
+      await api.delete("/meta/rule-groups/" + id);
+      delete state.groupPicked[id];
+      await loadRules({ quiet: true });
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  async function deletePickedRules(ids) {
+    if (!ids.length) return;
+    if (!(await askConfirm({
+      title: "Удалить выбранные правила?",
+      message: "Правил к удалению: " + ids.length + ". Они перестанут срабатывать.",
+      confirmLabel: "Удалить",
+      danger: true
+    }))) return;
+    try {
+      await Promise.all(ids.map(function (id) { return api.delete("/meta/rules/" + id); }));
+      state.rulePicked = {};
+      await loadRules({ quiet: true });
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  async function deletePickedGroups(ids) {
+    if (!ids.length) return;
+    if (!(await askConfirm({
+      title: "Удалить выбранные группы?",
+      message: "Групп к удалению: " + ids.length + ". Правила внутри останутся.",
+      confirmLabel: "Удалить",
+      danger: true
+    }))) return;
+    try {
+      await Promise.all(ids.map(function (id) {
+        return api.delete("/meta/rule-groups/" + id);
+      }));
+      state.groupPicked = {};
+      await loadRules({ quiet: true });
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  async function toggleRule(id) {
+    var rule = (state.rules || []).filter(function (row) { return row.id === id; })[0];
+    if (!rule) return;
+    try {
+      await api.patch("/meta/rules/" + id, { is_enabled: !rule.is_enabled });
+      await loadRules({ quiet: true });
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  function ruleFormSet(field, value) {
+    if (!state.ruleForm) return;
+    state.ruleForm[field] = value;
+    return renderRuleForm();
+  }
+
+  document.addEventListener("change", function (event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    if (target.closest("[data-rules-search]")) {
+      var kind = target.getAttribute("data-rules-search");
+      if (kind === "groups") state.groupSearch = target.value;
+      else state.ruleSearch = target.value;
+      return renderRulesRoot();
+    }
+    var form = target.closest("[data-rule-form]");
+    if (form && state.ruleForm) {
+      var name = form.getAttribute("data-rule-form");
+      if (name === "scope") {
+        // Область и уровень — одно значение вида «где:уровень».
+        var pair = String(form.value).split(":");
+        state.ruleForm.scope_kind = pair[0];
+        state.ruleForm.level = pair[1];
+        if (pair[0] === "campaign") ensureCampaigns();
+        else state.ruleForm.campaign_external_id = "";
+        return renderRuleForm();
+      }
+      if (name === "action") {
+        // «Изменить бюджет адсета/кампании» — два пункта одного действия.
+        var actionValue = String(form.value);
+        if (actionValue.indexOf("change_budget:") === 0) {
+          state.ruleForm.action = "change_budget";
+          state.ruleForm.level = actionValue.split(":")[1];
+        } else {
+          state.ruleForm.action = actionValue;
+          if (actionValue === "change_bid") state.ruleForm.level = "adset";
+        }
+        return renderRuleForm();
+      }
+      state.ruleForm[name] = form.type === "checkbox" ? form.checked : form.value;
+      if (form.tagName !== "SELECT" && form.type !== "checkbox") {
+        return refreshRuleSummary();
+      }
+      return renderRuleForm();
+    }
+    var condMetric = target.closest("[data-rule-cond-metric]");
+    if (condMetric && state.ruleForm) {
+      var metricRow = state.ruleForm.conditions[
+        Number(condMetric.getAttribute("data-rule-cond-metric"))];
+      metricRow.metric = condMetric.value;
+      // Оператор из числового набора не годится тексту и наоборот — иначе
+      // сервер вернёт 422 уже на сохранении.
+      if (ruleOperators(metricRow.metric).indexOf(metricRow.operator) < 0) {
+        metricRow.operator = isTextMetric(metricRow.metric) ? "in" : "gt";
+      }
+      return renderRuleForm();
+    }
+    var condOp = target.closest("[data-rule-cond-operator]");
+    if (condOp && state.ruleForm) {
+      state.ruleForm.conditions[Number(condOp.getAttribute("data-rule-cond-operator"))]
+        .operator = condOp.value;
+      return renderRuleForm();
+    }
+    var interval = target.closest("[data-rule-int]");
+    if (interval && state.ruleForm) {
+      var index = Number(interval.getAttribute("data-rule-int"));
+      var part = interval.getAttribute("data-rule-int-part");
+      state.ruleForm.schedule_intervals[index][part] = interval.value;
+      return renderRuleForm();
+    }
+    var gf = target.closest ? target.closest("[data-group-form]") : null;
+    if (gf && state.groupForm) {
+      state.groupForm[gf.getAttribute("data-group-form")] = gf.value;
+      return;
+    }
+    var gpick = target.closest ? target.closest("[data-group-rule-pick]") : null;
+    if (gpick && state.groupForm) {
+      state.groupForm.rule_ids = state.groupForm.rule_ids || [];
+      var ruleId = gpick.getAttribute("data-group-rule-pick");
+      var at = state.groupForm.rule_ids.indexOf(ruleId);
+      if (gpick.checked && at < 0) state.groupForm.rule_ids.push(ruleId);
+      if (!gpick.checked && at >= 0) state.groupForm.rule_ids.splice(at, 1);
+      return renderRuleForm();
+    }
+  });
+
+  /* Текстовые поля обновляют состояние без перерисовки: иначе каретка прыгала
+     бы в конец на каждом введённом символе. Сводку внизу формы обновляем
+     точечно — она единственное, что от них зависит. */
+  document.addEventListener("input", function (event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    var valueField = target.closest("[data-rule-cond-value]");
+    if (valueField && state.ruleForm) {
+      var index = Number(valueField.getAttribute("data-rule-cond-value"));
+      if (state.ruleForm.conditions[index]) {
+        state.ruleForm.conditions[index].value = valueField.value;
+      }
+      return refreshRuleSummary();
+    }
+    var form = target.closest("[data-rule-form]");
+    if (form && state.ruleForm && form.type !== "checkbox" && form.tagName !== "SELECT") {
+      state.ruleForm[form.getAttribute("data-rule-form")] = form.value;
+      return refreshRuleSummary();
+    }
+    var gf = target.closest("[data-group-form]");
+    if (gf && state.groupForm && !gf.multiple) {
+      state.groupForm[gf.getAttribute("data-group-form")] = gf.value;
+    }
+  });
+
+  /* Esc закрывает форму правила — тот же жест, что и в остальных модалках. */
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    if (!state.ruleForm && !state.groupForm) return;
+    closeRuleEditor();
+  });
 
   function renderEvents() {
     var host = byId("metaEventsList");
@@ -4439,105 +6549,406 @@
     }).join("");
   }
 
-  function openRuleForm(ruleId) {
+  /* ---------- модалка правила ----------
+   *
+   * Форма живёт в отдельном узле, а не внутри карточки со списком: перерисовка
+   * таблицы больше не роняет открытую форму, а прокрутка её середины
+   * переживает любое изменение полей. Шапка и подвал закреплены — «Сохранить»
+   * не уезжает под нижний край, сколько бы условий ни добавили.
+   */
+
+  function renderRuleForm() {
+    var host = byId("metaRuleFormRoot");
+    if (!host) return;
+    // Прокрутку страницы трогаем только на самом открытии и закрытии: функция
+    // вызывается при каждой перерисовке списка, и безусловный сброс снимал бы
+    // замок, поставленный чужой модалкой.
+    if (!state.ruleForm && !state.groupForm) {
+      if (host.innerHTML) {
+        host.innerHTML = "";
+        document.body.style.overflow = "";
+      }
+      return;
+    }
+    var body = host.querySelector(".rule-modal__body");
+    var offset = body ? body.scrollTop : 0;
+    if (!host.innerHTML) document.body.style.overflow = "hidden";
+    host.innerHTML = state.ruleForm ? ruleFormModal() : groupFormModal();
+    var next = host.querySelector(".rule-modal__body");
+    if (next && offset) next.scrollTop = offset;
+    if (state.ruleFormFresh) {
+      state.ruleFormFresh = false;
+      var focus = host.querySelector("[data-rule-autofocus]");
+      if (focus) focus.focus();
+    }
+  }
+
+  /* Сводка обновляется без перерисовки всей формы: её пересчитывают на каждый
+     введённый символ, и переклеивать ради этого DOM было бы расточительно. */
+  function refreshRuleSummary() {
+    var host = byId("metaRuleFormRoot");
+    if (!host || !state.ruleForm) return;
+    var summary = host.querySelector("[data-rule-summary]");
+    if (summary) summary.innerHTML = ruleSummaryHtml(state.ruleForm);
+    var save = host.querySelector("[data-rules-save]");
+    if (save) save.disabled = !!state.ruleFormSaving;
+  }
+
+  var RULE_LEVEL_PLURAL = {
+    ad: "объявления", adset: "адсеты", campaign: "кампании"
+  };
+
+  /* Правило предложением: по семи выпадающим спискам не видно, что именно
+     произойдёт, а здесь это одна фраза, которая меняется на глазах. */
+  function ruleSummaryHtml(f) {
     var reference = state.reference || {};
-    var rule = ruleId
-      ? state.rules.filter(function (row) { return row.id === ruleId; })[0]
-      : { level: "campaign", entity_status: "active", window: "today",
-          conditions: [{ metric: "roi", operator: "lt", value: "0" }],
-          min_spend: 10, action: "notify", frequency_minutes: 60,
-          cooldown_minutes: 180, is_enabled: true };
-    if (!rule) return;
-    openForm({
-      title: ruleId ? "Автоправило" : "Новое автоправило",
-      subtitle: "Условие проверяется по статистике CRM: расход из Meta, доход из Keitaro.",
-      fields: [
-        { name: "name", label: "Название", value: rule.name || "" },
-        { name: "account_id", label: "Кабинет", type: "select", half: true,
-          options: [{ value: "", label: "Все кабинеты" }].concat(
-            referenceAccounts().map(function (account) {
-              return { value: account.id, label: account.name,
-                selected: account.id === rule.account_id };
-            })) },
-        { name: "level", label: "С чем работать", type: "select", half: true,
-          options: dictOptions(reference.rule_levels, rule.level),
-          hint: "Действие применится к объекту этого уровня" },
-        { name: "entity_status", label: "Какие статусы брать", type: "select", half: true,
-          options: dictOptions(reference.rule_statuses, rule.entity_status) },
-        { name: "window", label: "Период статы", type: "select", half: true,
-          options: dictOptions(reference.rule_windows, rule.window) },
-        { name: "frequency_minutes", label: "Частота проверки", type: "select", half: true,
-          options: dictOptions(reference.rule_frequencies, String(rule.frequency_minutes)) },
-        { name: "conditions", label: "Условия", type: "conditions",
-          value: rule.conditions || [],
-          hint: "Соединяются И. Без условий правило сработает на всех объектах области" },
-        { name: "min_spend", label: "Минимальный расход", type: "number", half: true, min: 0,
-          step: "0.01", value: rule.min_spend,
-          hint: "Ниже этой суммы правило молчит" },
-        { name: "action", label: "Что делать", type: "select", half: true,
-          options: dictOptions(reference.rule_actions, rule.action) },
-        { name: "action_value", label: "Процент изменения бюджета", type: "number", half: true,
-          min: 0, max: 500, step: "1",
-          value: rule.action_value === null || rule.action_value === undefined
-            ? "" : rule.action_value },
-        { name: "cooldown_minutes", label: "Пауза между срабатываниями, мин", type: "number",
-          half: true, min: 0, max: 10080, value: rule.cooldown_minutes },
-        { name: "is_enabled", label: "Правило включено", type: "checkbox",
-          value: !!rule.is_enabled }
-      ],
-      note: "Правило с действием само останавливает кампании и меняет бюджеты. " +
-        "Проверьте его кнопкой «Что сработает», прежде чем включать.",
-      onSave: async function (values) {
-        var payload = {
-          name: values.name.trim(),
-          account_id: values.account_id || null,
-          level: values.level,
-          entity_status: values.entity_status,
-          window: values.window,
-          conditions: values.conditions || [],
-          min_spend: values.min_spend || "0",
-          action: values.action,
-          action_value: values.action_value === "" ? null : values.action_value,
-          frequency_minutes: Number(values.frequency_minutes),
-          cooldown_minutes: Number(values.cooldown_minutes),
-          is_enabled: values.is_enabled
-        };
-        if (!payload.name) throw new Error("Укажите название правила");
-        if (!payload.conditions.length && payload.action !== "notify") {
-          // Правило без условий имеет смысл, но «остановить всё» стоит
-          // подтвердить осознанно, а не проскочить по невнимательности.
-          if (!(await askConfirm({
-            title: "Правило без условий",
-            message: "Оно сработает на всех объектах области и выполнит «" +
-              ((reference.rule_actions || {})[payload.action] || payload.action) +
-              "». Это точно то, что нужно?",
-            confirmLabel: "Да, сохранить",
-            danger: true
-          }))) {
-            // Не `return`: тогда форма закрылась бы как после успешного
-            // сохранения, и набранное правило пропало бы молча.
-            throw new Error("Не сохранено. Добавьте условие или подтвердите ещё раз.");
-          }
-        }
-        if (ruleId) {
-          await api.patch("/meta/rules/" + ruleId, payload);
-        } else {
-          await api.post("/meta/rules", payload);
-        }
-        await loadRules();
-      },
-      onDelete: ruleId ? async function () {
-        if (!(await askConfirm({
-          title: "Удалить правило?",
-          message: "«" + rule.name + "» перестанет срабатывать.",
-          confirmLabel: "Удалить",
-          danger: true
-        }))) return;
-        await api.delete("/meta/rules/" + ruleId);
-        await loadRules();
-        closeForm();
-      } : null
-    });
+    var where = f.scope_kind === "campaign"
+      ? "в кампании «" + (campaignName(f.campaign_external_id) || "не выбрана") + "»"
+      : (f.account_id
+        ? "в кабинете «" + (accountName(f.account_id) || "—") + "»"
+        : "во всех кабинетах");
+    var conditions = f.conditions.length
+      ? f.conditions.map(function (item) {
+        return escapeHtml(conditionText(item));
+      }).join(" <b>и</b> ")
+      : "<b>условий нет — на всех подряд</b>";
+    return "Проверяем " + escapeHtml(RULE_LEVEL_PLURAL[f.level] || f.level) +
+      " " + escapeHtml(where) + " со статусом «" +
+      escapeHtml((reference.rule_statuses || {})[f.entity_status] || f.entity_status) +
+      "» за период «" +
+      escapeHtml((reference.rule_windows || {})[f.window] || f.window) + "». " +
+      "Если " + conditions + " — <b>" + escapeHtml(ruleActionLabel(f)) + "</b>. " +
+      "Объекты с расходом ниже " + money(f.min_spend || 0) + " не трогаем.";
+  }
+
+  function accountName(id) {
+    var row = referenceAccounts().filter(function (item) { return item.id === id; })[0];
+    return row ? row.name : "";
+  }
+
+  var RULE_CURRENCIES = ("USD,EUR,GBP,PLN,UAH,KZT,TRY,BRL,INR,AED,SAR,NGN,BDT,PHP,PKR," +
+    "MXN,CLP,COP,PEN,NZD,AUD,CAD,CHF,SEK,NOK,DKK,CZK,HUF,RON,HKD,SGD,KRW,JPY,CNY").split(",");
+
+  function ruleFormModal() {
+    var f = state.ruleForm;
+    var title = f.id ? "Правило «" + escapeHtml(f.name || "без названия") + "»" : "Новое правило";
+    return '<div class="rule-modal">' +
+      '<div class="rule-modal__box" role="dialog" aria-modal="true" ' +
+      'aria-label="Настройка автоправила">' +
+      '<div class="rule-modal__head"><div style="min-width:0">' +
+      '<h2 style="font-family:\'Alumni Sans\',Inter,sans-serif;font-size:20px;font-weight:700;' +
+      'letter-spacing:-.3px">' + title + "</h2>" +
+      '<div style="font-size:12px;color:#9B9292;font-weight:600;margin-top:4px">' +
+      "Правило смотрит на наши числа: расход из Meta, доход из Keitaro</div></div>" +
+      '<button type="button" data-rules-close aria-label="Закрыть" style="width:34px;' +
+      'height:34px;flex-shrink:0;border:0;border-radius:10px;background:#F7F4F4;' +
+      'color:#6A6161;font-size:17px">×</button></div>' +
+      '<div class="rule-modal__body">' +
+      ruleCardBasics(f) +
+      ruleCardScope(f) +
+      ruleCardSchedule(f) +
+      ruleCardConditions(f) +
+      ruleCardAction(f) +
+      "</div>" +
+      '<div class="rule-modal__foot">' +
+      (state.ruleFormError
+        ? '<div class="rule-error" style="flex:1;min-width:220px">' +
+          escapeHtml(state.ruleFormError) + "</div>"
+        : "") +
+      '<div style="display:flex;gap:10px;margin-left:auto">' +
+      '<button type="button" class="meta-action" style="height:42px;padding:0 18px" ' +
+      "data-rules-close>Отмена</button>" +
+      '<button type="button" class="meta-action meta-action--primary" ' +
+      'style="height:42px;padding:0 20px" data-rules-save' +
+      (state.ruleFormSaving ? " disabled" : "") + ">" +
+      (state.ruleFormSaving ? "Сохраняем…" : f.id ? "Сохранить" : "Создать правило") +
+      "</button></div></div></div></div>";
+  }
+
+  function ruleCardBasics(f) {
+    return '<div class="meta-card"><div class="meta-card__title">Настройки</div>' +
+      '<div class="rule-grid">' +
+      '<label class="meta-field rule-grid--wide"><span>Название правила</span>' +
+      '<input class="meta-control" data-rule-autofocus placeholder="Например: стоп при ROI ниже нуля" ' +
+      'data-rule-form="name" value="' + escapeHtml(f.name || "") + '"></label>' +
+      '<div class="rule-grid--wide"><label class="meta-switch">' +
+      '<input type="checkbox" data-rule-form="convert_currency"' +
+      (f.convert_currency ? " checked" : "") + '><span class="meta-switch__box"></span>' +
+      "<span>Считать пороги в одной валюте<span class=\"meta-switch__hint\">" +
+      "Кабинеты бывают в разных валютах — суммы приводятся к выбранной" +
+      "</span></span></label>" +
+      (f.convert_currency
+        ? '<select class="meta-control meta-select" style="width:180px;margin-top:10px" ' +
+          'data-rule-form="currency">' + RULE_CURRENCIES.map(function (code) {
+            return '<option value="' + code + '"' + (f.currency === code ? " selected" : "") +
+              ">" + code + "</option>";
+          }).join("") + "</select>"
+        : "") + "</div></div></div>";
+  }
+
+  function ruleCardScope(f) {
+    var campaigns = "";
+    if (f.scope_kind === "campaign") {
+      campaigns = '<label class="meta-field rule-grid--wide"><span>Кампания</span>' +
+        '<select class="meta-control meta-select" data-rule-form="campaign_external_id">' +
+        '<option value="">' +
+        (state.campaignsLoading ? "Загружаем кампании…" : "Выберите кампанию") + "</option>" +
+        (state.campaigns || []).map(function (item) {
+          return '<option value="' + escapeHtml(item.external_id) + '"' +
+            (item.external_id === f.campaign_external_id ? " selected" : "") + ">" +
+            escapeHtml(item.name + (item.account_name ? " · " + item.account_name : "")) +
+            "</option>";
+        }).join("") + "</select></label>";
+    }
+    return '<div class="meta-card"><div class="meta-card__title">Что проверяем</div>' +
+      '<div class="rule-grid">' +
+      '<label class="meta-field"><span>Область</span>' +
+      '<select class="meta-control meta-select" data-rule-form="scope">' +
+      RULE_SCOPES.map(function (row) {
+        return '<option value="' + row[0] + '"' +
+          (row[0] === f.scope_kind + ":" + f.level ? " selected" : "") + ">" +
+          escapeHtml(row[1]) + "</option>";
+      }).join("") + "</select>" +
+      '<span style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">' +
+      "Действие применится к объекту этого уровня</span></label>" +
+      '<label class="meta-field"><span>Какие статусы брать</span>' +
+      '<select class="meta-control meta-select" data-rule-form="entity_status">' +
+      dictOptions((state.reference || {}).rule_statuses, f.entity_status)
+        .map(function (option) {
+          return '<option value="' + escapeHtml(option.value) + '"' +
+            (option.selected ? " selected" : "") + ">" + escapeHtml(option.label) +
+            "</option>";
+        }).join("") + "</select></label>" +
+      campaigns +
+      '<label class="meta-field"><span>Период статистики</span>' +
+      '<select class="meta-control meta-select" data-rule-form="window">' +
+      dictOptions((state.reference || {}).rule_windows, f.window).map(function (option) {
+        return '<option value="' + escapeHtml(option.value) + '"' +
+          (option.selected ? " selected" : "") + ">" + escapeHtml(option.label) + "</option>";
+      }).join("") + "</select></label>" +
+      "</div></div>";
+  }
+
+  function ruleCardSchedule(f) {
+    var block = "";
+    if (f.schedule_kind === "custom") {
+      var days = f.schedule_days || [];
+      var dayNames = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+      block = '<div style="margin-top:14px">' +
+        '<div class="meta-card__sub">Дни недели</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+        dayNames.map(function (name, index) {
+          var on = days.indexOf(index + 1) >= 0;
+          return '<button type="button" class="rule-day' + (on ? " rule-day--on" : "") +
+            '" data-rule-day="' + (index + 1) + '">' + name + "</button>";
+        }).join("") +
+        '<button type="button" class="rule-link" style="margin-left:6px" data-rule-days-all>' +
+        (days.length === 7 ? "Снять все" : "Выбрать все") + "</button></div>" +
+        '<div class="meta-card__sub" style="margin-top:16px">Часы</div>' +
+        (f.schedule_intervals.length
+          ? f.schedule_intervals.map(ruleIntervalHtml).join("")
+          : '<div style="font-size:11.5px;color:#9B9292;font-weight:600">' +
+            "Интервалов нет — правило работает круглые сутки в выбранные дни</div>") +
+        '<button type="button" class="meta-action" style="margin-top:12px" data-rule-int-add>' +
+        "+ Интервал времени</button></div>";
+    }
+    return '<div class="meta-card"><div class="meta-card__title">Когда проверять</div>' +
+      '<div class="rule-grid">' +
+      '<label class="meta-field"><span>Тип правила</span>' +
+      '<select class="meta-control meta-select" data-rule-form="kind_rule">' +
+      '<option value="schedule">По расписанию</option></select></label>' +
+      '<label class="meta-field"><span>Частота</span>' +
+      '<select class="meta-control meta-select" data-rule-form="schedule_kind">' +
+      RULE_FREQUENCIES.map(function (row) {
+        return '<option value="' + row[0] + '"' +
+          (row[0] === f.schedule_kind ? " selected" : "") + ">" + escapeHtml(row[1]) +
+          "</option>";
+      }).join("") + "</select></label></div>" + block + "</div>";
+  }
+
+  function ruleIntervalHtml(item, index) {
+    return '<div class="rule-int"><span>с</span>' +
+      '<select class="meta-control meta-select" style="width:82px" data-rule-int="' + index +
+      '" data-rule-int-part="begin_h">' + ruleHourOptions(item.begin_h) + "</select>" +
+      '<select class="meta-control meta-select" style="width:82px" data-rule-int="' + index +
+      '" data-rule-int-part="begin_m">' + ruleMinuteOptions(item.begin_m) + "</select>" +
+      "<span>до</span>" +
+      '<select class="meta-control meta-select" style="width:82px" data-rule-int="' + index +
+      '" data-rule-int-part="end_h">' + ruleHourOptions(item.end_h) + "</select>" +
+      '<select class="meta-control meta-select" style="width:82px" data-rule-int="' + index +
+      '" data-rule-int-part="end_m">' + ruleMinuteOptions(item.end_m) + "</select>" +
+      '<button type="button" class="meta-action meta-action--danger" data-rule-int-drop="' +
+      index + '" aria-label="Убрать интервал">Убрать</button></div>';
+  }
+
+  function ruleCardConditions(f) {
+    var rows = f.conditions.map(function (item, index) {
+      var text = isTextMetric(item.metric);
+      return '<div class="rule-cond">' +
+        '<select class="meta-control meta-select" aria-label="Метрика" ' +
+        'data-rule-cond-metric="' + index + '">' + metricOptionsHtml(item.metric) +
+        "</select>" +
+        '<select class="meta-control meta-select" aria-label="Оператор" ' +
+        'data-rule-cond-operator="' + index + '">' +
+        ruleOperators(item.metric).map(function (code) {
+          return '<option value="' + code + '"' +
+            (code === item.operator ? " selected" : "") + ">" +
+            escapeHtml(RULE_OPERATOR_LABELS[code] || code) + "</option>";
+        }).join("") + "</select>" +
+        '<input class="meta-control" style="padding:0 12px"' +
+        (text ? "" : ' type="number" step="any"') + ' aria-label="Значение" placeholder="' +
+        (text ? "текст" : "число") + '" value="' +
+        escapeHtml(item.value == null ? "" : String(item.value)) +
+        '" data-rule-cond-value="' + index + '">' +
+        '<button type="button" class="meta-action meta-action--danger" ' +
+        'data-rule-cond-drop="' + index + '" aria-label="Убрать условие">×</button></div>';
+    }).join("");
+    return '<div class="meta-card"><div class="meta-card__title">Условия</div>' +
+      '<div style="font-size:11.5px;color:#9B9292;font-weight:600;line-height:1.6">' +
+      "Соединяются «и»: правило сработает, когда выполнены все сразу.</div>" +
+      rows +
+      (f.conditions.length
+        ? ""
+        : '<div class="meta-note meta-note--warn" style="margin-top:12px">' +
+          "Условий нет — правило сработает на всех объектах области.</div>") +
+      '<div style="display:flex;align-items:center;gap:14px;margin-top:14px;flex-wrap:wrap">' +
+      '<button type="button" class="meta-action" data-rule-cond-add>+ Условие</button>' +
+      (f.conditions.length
+        ? '<button type="button" class="rule-link" data-rule-cond-empty>' +
+          "Правило без условий</button>"
+        : "") + "</div></div>";
+  }
+
+  function ruleCardAction(f) {
+    var extra = "";
+    if (f.action === "change_budget" || f.action === "change_bid") {
+      var unit = f.action_mode === "pct" ? "%" : (f.convert_currency ? f.currency : "валюта кабинета");
+      extra = '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;' +
+        'margin-top:14px">' +
+        (f.action === "change_budget"
+          ? '<div class="meta-field"><span>Какой бюджет</span>' +
+            segRule("rule-form-budget", [
+              { v: "daily", l: "Дневной" }, { v: "lifetime", l: "На весь срок" }
+            ], f.budget_kind || "daily") + "</div>"
+          : "") +
+        '<div class="meta-field"><span>Куда</span>' +
+        segRule("rule-form-sign", [{ v: "plus", l: "+" }, { v: "minus", l: "−" }],
+          f.action_sign) + "</div>" +
+        '<label class="meta-field" style="width:130px"><span>Как считать</span>' +
+        '<select class="meta-control meta-select" data-rule-form="action_mode">' +
+        '<option value="pct"' + (f.action_mode === "pct" ? " selected" : "") + ">%</option>" +
+        '<option value="sum"' + (f.action_mode === "sum" ? " selected" : "") +
+        ">Сумма</option></select></label>" +
+        '<label class="meta-field" style="width:150px"><span>На сколько, ' +
+        escapeHtml(unit) + '</span><input class="meta-control" type="number" min="0" ' +
+        'step="0.01" data-rule-form="action_value" value="' +
+        escapeHtml(String(f.action_value || "")) + '"></label>' +
+        '<label class="meta-field" style="width:190px"><span>' +
+        (f.action === "change_bid" ? "Потолок ставки" : "Потолок бюджета") + "</span>" +
+        '<input class="meta-control" type="number" min="0" step="0.01" placeholder="без ограничения" ' +
+        'data-rule-form="action_max" value="' + escapeHtml(String(f.action_max || "")) +
+        '"></label></div>';
+    }
+    var warn = "";
+    if (f.action === "change_budget" && f.level === "ad") {
+      warn = "У объявления нет своего бюджета — выберите область с адсетами или кампаниями.";
+    }
+    if (f.action === "change_bid" && f.level !== "adset") {
+      warn = "Ставка задаётся на адсете — выберите область с адсетами.";
+    }
+    return '<div class="meta-card"><div class="meta-card__title">Что делать</div>' +
+      '<label class="meta-field" style="max-width:360px"><span>Действие</span>' +
+      '<select class="meta-control meta-select" data-rule-form="action">' +
+      RULE_ACTION_OPTIONS.map(function (row) {
+        return '<option value="' + row[0] + '"' + (f.action === row[0] ? " selected" : "") +
+          ">" + escapeHtml(row[1]) + "</option>";
+      }).join("") + "</select></label>" + extra +
+      (warn
+        ? '<div class="meta-note meta-note--warn" style="margin-top:14px">' +
+          escapeHtml(warn) + "</div>"
+        : "") + "</div>";
+  }
+
+  function segRule(dataKey, options, selected) {
+    return '<div class="meta-seg">' + options.map(function (option) {
+      return '<button type="button" data-' + dataKey + '="' + option.v + '" class="' +
+        (selected === option.v ? "meta-seg--on" : "") + '">' + option.l + "</button>";
+    }).join("") + "</div>";
+  }
+
+  /* Собственные имена: в файле уже есть `hourOptions(host, values, selected)`,
+     который заполняет готовый `<select>` для окна фиксации расхода. Одинаковые
+     имена в одной области видимости молча затирали друг друга. */
+  function ruleHourOptions(selected) {
+    var rows = [];
+    for (var h = 0; h < 24; h += 1) {
+      var value = String(h < 10 ? "0" + h : h);
+      rows.push('<option value="' + value + '"' + (String(selected) === value ? " selected" : "") +
+        ">" + value + "</option>");
+    }
+    return rows.join("");
+  }
+
+  function ruleMinuteOptions(selected) {
+    var rows = [];
+    for (var m = 0; m < 60; m += 5) {
+      var value = String(m < 10 ? "0" + m : m);
+      rows.push('<option value="' + value + '"' + (String(selected) === value ? " selected" : "") +
+        ">" + value + "</option>");
+    }
+    if (String(selected).length && rows.join("").indexOf('value="' + selected + '"') < 0) {
+      rows.unshift('<option value="' + escapeHtml(String(selected)) + '" selected>' +
+        escapeHtml(String(selected)) + "</option>");
+    }
+    return rows.join("");
+  }
+
+  function groupFormModal() {
+    var g = state.groupForm;
+    return '<div class="rule-modal">' +
+      '<div class="rule-modal__box" style="max-width:520px" role="dialog" aria-modal="true" ' +
+      'aria-label="Группа правил">' +
+      '<div class="rule-modal__head"><div style="min-width:0">' +
+      '<h2 style="font-family:\'Alumni Sans\',Inter,sans-serif;font-size:20px;font-weight:700;' +
+      'letter-spacing:-.3px">' + (g.id ? "Изменить группу" : "Новая группа правил") + "</h2>" +
+      '<div style="font-size:12px;color:#9B9292;font-weight:600;margin-top:4px">' +
+      "Группа собирает правила вместе — удобно, когда их много</div></div>" +
+      '<button type="button" data-rules-close aria-label="Закрыть" style="width:34px;' +
+      'height:34px;flex-shrink:0;border:0;border-radius:10px;background:#F7F4F4;' +
+      'color:#6A6161;font-size:17px">×</button></div>' +
+      '<div class="rule-modal__body">' +
+      '<label class="meta-field"><span>Название группы</span>' +
+      '<input class="meta-control" data-rule-autofocus data-group-form="name" value="' +
+      escapeHtml(g.name || "") + '"></label>' +
+      '<div class="meta-field"><span>Правила в группе · отмечено: ' +
+      (g.rule_ids || []).length + '</span><div style="display:grid;gap:8px;margin-top:8px;' +
+      'max-height:280px;overflow-y:auto;padding-right:4px">' +
+      ((state.rules || []).length
+        ? (state.rules || []).map(function (rule) {
+          var on = (g.rule_ids || []).indexOf(rule.id) >= 0;
+          return '<label style="display:flex;align-items:center;gap:10px;padding:8px 10px;' +
+            'border:1px solid ' + (on ? "#B91414" : "#EBE6E6") + ';border-radius:10px;' +
+            'background:' + (on ? "#FCF1F1" : "#fff") + ';cursor:pointer;font-size:12.5px;' +
+            'font-weight:600;color:#3A3030">' +
+            '<input type="checkbox" data-group-rule-pick="' + escapeHtml(rule.id) + '"' +
+            (on ? " checked" : "") + ' style="width:16px;height:16px;accent-color:#B91414">' +
+            '<span style="flex:1">' + escapeHtml(rule.name) + "</span>" +
+            '<span style="font-size:11px;color:#9B9292;font-weight:700;white-space:nowrap">' +
+            escapeHtml(ruleActionLabel(rule)) + "</span></label>";
+        }).join("")
+        : '<div class="meta-note">Правил пока нет — создайте их на вкладке «Правила FB».</div>') +
+      "</div></div>" +
+      (state.ruleFormError
+        ? '<div class="rule-error">' + escapeHtml(state.ruleFormError) + "</div>"
+        : "") + "</div>" +
+      '<div class="rule-modal__foot"><div style="display:flex;gap:10px;margin-left:auto">' +
+      '<button type="button" class="meta-action" style="height:42px;padding:0 18px" ' +
+      "data-rules-close>Отмена</button>" +
+      '<button type="button" class="meta-action meta-action--primary" ' +
+      'style="height:42px;padding:0 20px" data-groups-save' +
+      (state.ruleFormSaving ? " disabled" : "") + ">" +
+      (state.ruleFormSaving ? "Сохраняем…" : "Сохранить") + "</button></div></div>" +
+      "</div></div>";
   }
 
   async function previewRule(ruleId) {
@@ -4582,7 +6993,7 @@
     button.disabled = true;
     try {
       var result = await api.post("/meta/rules/run", {});
-      await loadRules();
+      await loadRules({ quiet: true });
       notify({
         title: "Правила прогнаны",
         message: "Проверено правил: " + result.rules + "\nСработало: " +
@@ -4601,13 +7012,700 @@
   async function ackEvents() {
     try {
       await api.post("/meta/rule-events/ack", []);
-      await loadRules();
+      await loadRules({ quiet: true });
     } catch (error) {
       notify({
         title: "Не удалось отметить события",
         message: error && error.message ? error.message : ""
       });
     }
+  }
+
+
+  /* ---------- комментарии: ручная чистка ----------
+   *
+   * Чистка ручная по замыслу: под рекламой висит и спам, и живые вопросы
+   * клиентов, и отличать одно от другого автоматом — значит рано или поздно
+   * стереть вопрос покупателя. Интерфейс поэтому оптимизирован не под «удалить
+   * всё», а под быстрый просмотр: сообщение читается целиком, признаки (ссылка,
+   * телефон, ответ в ветке) подсвечены, фильтры сужают список до подозрительного.
+   *
+   * И загрузка, и действия идут заданием в воркере — с паузой между вызовами:
+   * пачка запросов к комментариям без пауз это самый быстрый способ получить
+   * чекпоинт на аккаунте. Интерфейс показывает прогресс и умеет отменить.
+   */
+
+  state.comments = [];
+  state.commentsTotal = 0;
+  state.commentPosts = [];
+  state.commentPicked = {};
+  state.commentAccount = "";
+  state.commentPost = "";
+  state.commentFilters = { only_links: false, only_phones: false, only_replies: false };
+  state.commentStatus = "visible";
+  state.commentQuery = "";
+  state.commentAuthor = "";
+  state.commentAccess = null;
+  state.commentAccessFor = "";
+  state.commentJob = null;
+  state.commentsStatus = "idle";
+  state.commentsError = "";
+
+  var COMMENTS_PAGE = 100;
+  var commentsRequest = null;
+  // Фильтры меняют запрос к серверу. Если во время загрузки поменяли ещё один,
+  // просто отдать текущий промис нельзя: он уедет со старыми параметрами, и
+  // второе изменение молча потеряется. Помечаем «надо перечитать» и повторяем
+  // сразу после текущего запроса.
+  var commentsDirty = false;
+  var commentJobTimer = null;
+
+  function commentLimits() {
+    return ((state.reference || {}).comment_limits) || {};
+  }
+
+  async function loadComments(options) {
+    var quiet = !!(options && options.quiet);
+    if (commentsRequest) {
+      commentsDirty = true;
+      return commentsRequest;
+    }
+    if (!quiet && state.commentsStatus !== "ready") {
+      state.commentsStatus = "loading";
+      renderComments();
+    }
+    commentsDirty = false;
+    commentsRequest = fetchComments();
+    try {
+      await commentsRequest;
+    } finally {
+      commentsRequest = null;
+    }
+    if (commentsDirty) return loadComments({ quiet: true });
+  }
+
+  async function fetchComments() {
+    try {
+      await loadReference();
+      syncCommentAccount();
+      if (!state.commentAccount) {
+        state.commentsStatus = "ready";
+        state.comments = [];
+        state.commentPosts = [];
+        state.commentPostsHint = "";
+        renderComments();
+        return;
+      }
+      var posts = await api.get(
+        "/meta/comments/posts?account_id=" + encodeURIComponent(state.commentAccount)
+      );
+      state.commentPosts = (posts && posts.items) || [];
+      state.commentPostsHint = (posts && posts.hint) || "";
+      if (state.commentPost && !postById(state.commentPost)) state.commentPost = "";
+      var page = await api.get("/meta/comments?" + commentQueryString());
+      state.comments = (page && page.items) || [];
+      state.commentsTotal = (page && page.total) || 0;
+      // Выбор переживает перерисовку, но не должен указывать на строки, которых
+      // в текущей выборке уже нет.
+      var visible = {};
+      state.comments.forEach(function (row) { visible[row.external_id] = true; });
+      Object.keys(state.commentPicked).forEach(function (id) {
+        if (!visible[id]) delete state.commentPicked[id];
+      });
+      await refreshCommentJob({ quiet: true });
+      state.commentsStatus = "ready";
+      state.commentsError = "";
+    } catch (error) {
+      state.commentsStatus = "error";
+      state.comments = [];
+      state.commentsTotal = 0;
+      state.commentsError = error && error.message
+        ? error.message : "Не удалось загрузить комментарии";
+    }
+    renderComments();
+    // Проверка доступа — отдельным запросом и не блокирующая список: она ходит
+    // в Meta и может думать несколько секунд. Делаем её один раз на кабинет:
+    // это настоящий вызов Graph, и повторять его на каждую смену фильтра
+    // означало бы утроить трафик там, где мы его как раз бережём.
+    probeCommentAccess();
+  }
+
+  function syncCommentAccount() {
+    var accounts = referenceAccounts();
+    if (!accounts.length) {
+      state.commentAccount = "";
+      return;
+    }
+    var known = accounts.filter(function (row) { return row.id === state.commentAccount; });
+    if (!known.length) state.commentAccount = accounts[0].id;
+  }
+
+  function commentQueryString() {
+    var parts = [
+      "account_id=" + encodeURIComponent(state.commentAccount),
+      "status=" + encodeURIComponent(state.commentStatus),
+      "limit=" + COMMENTS_PAGE
+    ];
+    if (state.commentPost) {
+      parts.push("post_external_id=" + encodeURIComponent(state.commentPost));
+    }
+    if (state.commentQuery.trim()) {
+      parts.push("query=" + encodeURIComponent(state.commentQuery.trim()));
+    }
+    if (state.commentAuthor.trim()) {
+      parts.push("author=" + encodeURIComponent(state.commentAuthor.trim()));
+    }
+    Object.keys(state.commentFilters).forEach(function (key) {
+      if (state.commentFilters[key]) parts.push(key + "=true");
+    });
+    return parts.join("&");
+  }
+
+  function postById(id) {
+    return (state.commentPosts || []).filter(function (row) {
+      return row.post_external_id === id;
+    })[0];
+  }
+
+  async function probeCommentAccess(force) {
+    if (!state.commentAccount) return;
+    if (!force && state.commentAccessFor === state.commentAccount) return;
+    state.commentAccessFor = state.commentAccount;
+    try {
+      state.commentAccess = await api.get(
+        "/meta/comments/access?account_id=" + encodeURIComponent(state.commentAccount) +
+        (state.commentPost ? "&post_external_id=" + encodeURIComponent(state.commentPost) : "")
+      );
+    } catch (error) {
+      state.commentAccess = {
+        ok: false,
+        reason: error && error.message ? error.message : "Проверка доступа не удалась"
+      };
+      // Разовый сбой не должен запирать проверку до конца сессии.
+      state.commentAccessFor = "";
+    }
+    renderCommentAccess();
+  }
+
+  /* --- отрисовка --- */
+
+  function renderComments() {
+    if (!byId("metaCommentsBody")) return;
+    renderCommentControls();
+    renderCommentAccess();
+    renderCommentJob();
+    renderCommentList();
+  }
+
+  function renderCommentControls() {
+    var accounts = referenceAccounts();
+    var accountSelect = byId("metaCommentsAccount");
+    if (accountSelect) {
+      accountSelect.innerHTML = accounts.length
+        ? accounts.map(function (row) {
+          return accountOptionHtml(row, state.commentAccount);
+        }).join("")
+        : '<option value="">Кабинетов нет</option>';
+    }
+    var postSelect = byId("metaCommentsPost");
+    if (postSelect) {
+      postSelect.innerHTML = '<option value="">Все посты кабинета</option>' +
+        (state.commentPosts || []).map(function (row) {
+          return '<option value="' + escapeHtml(row.post_external_id) + '"' +
+            (row.post_external_id === state.commentPost ? " selected" : "") +
+            ' data-hint="' + escapeHtml(row.post_external_id) + '">' +
+            escapeHtml(row.title) +
+            (row.source === "page_ad" ? " · рекламный пост страницы" : "") +
+            " · " + row.comments + " комм." +
+            (row.page_name ? " · " + escapeHtml(row.page_name) : "") +
+            (row.active_ads ? "" : " (не крутится)") + "</option>";
+        }).join("");
+    }
+    var query = byId("metaCommentsQuery");
+    if (query && query.value !== state.commentQuery) query.value = state.commentQuery;
+    var author = byId("metaCommentsAuthor");
+    if (author && author.value !== state.commentAuthor) author.value = state.commentAuthor;
+    var status = byId("metaCommentsStatus");
+    if (status && status.value !== state.commentStatus) status.value = state.commentStatus;
+    Array.prototype.forEach.call(
+      document.querySelectorAll("[data-cm-flag]"),
+      function (button) {
+        var key = button.getAttribute("data-cm-flag");
+        button.classList.toggle("cm-chip--on", !!state.commentFilters[key]);
+      }
+    );
+    var hint = byId("metaCommentsHint");
+    if (hint) {
+      var limits = commentLimits();
+      hint.textContent = limits.pages_per_post
+        ? "Загружаем до " + limits.pages_per_post * 100 + " последних комментариев на пост, " +
+          "по " + (limits.delay_ms || 0) + " мс между запросами"
+        : "";
+    }
+    var refresh = byId("metaCommentsRefresh");
+    if (refresh) {
+      var busy = !!(state.commentJob && isJobActive(state.commentJob));
+      refresh.disabled = busy || !state.commentAccount;
+      refresh.textContent = busy ? "Идёт загрузка…" : "Загрузить из Meta";
+    }
+  }
+
+  function renderCommentAccess() {
+    var host = byId("metaCommentsAccess");
+    if (!host) return;
+    var access = state.commentAccess;
+    if (!access || access.ok) {
+      host.style.display = "none";
+      host.innerHTML = "";
+      return;
+    }
+    host.style.display = "";
+    host.innerHTML = '<div class="meta-note meta-note--warn">' +
+      '<b style="display:block;margin-bottom:4px">Комментарии сейчас недоступны</b>' +
+      escapeHtml(access.reason || "") +
+      (access.auth_method_label
+        ? '<div style="margin-top:6px;color:#857D7D">Способ подключения: ' +
+          escapeHtml(access.auth_method_label) + "</div>"
+        : "") + "</div>";
+  }
+
+  function isJobActive(job) {
+    return job && (job.status === "queued" || job.status === "running");
+  }
+
+  function renderCommentJob() {
+    var host = byId("metaCommentsJob");
+    if (!host) return;
+    var job = state.commentJob;
+    if (!job) {
+      host.style.display = "none";
+      host.innerHTML = "";
+      return;
+    }
+    var active = isJobActive(job);
+    var percent = job.total ? Math.round((job.processed / job.total) * 100) : 0;
+    var tone = job.status === "failed" ? "#C41616"
+      : job.status === "cancelled" ? "#C9821F"
+        : job.status === "done" ? "#0F9D58" : "#B91414";
+    host.style.display = "";
+    host.innerHTML = '<div class="cm-job"><div class="cm-job__head"><div style="min-width:0">' +
+      '<div class="cm-job__title">' + escapeHtml(job.kind_label || job.kind) +
+      ' · <span style="color:' + tone + '">' + escapeHtml(jobStatusLabel(job)) + "</span></div>" +
+      '<div class="cm-job__meta">Обработано ' + job.processed + " из " + job.total +
+      (job.succeeded ? " · успешно " + job.succeeded : "") +
+      (job.failed ? " · с ошибкой " + job.failed : "") + "</div>" +
+      (job.error
+        ? '<div class="cm-job__meta" style="color:#C41616">' + escapeHtml(job.error) + "</div>"
+        : "") + "</div>" +
+      (active && state.canComments
+        ? '<button type="button" class="meta-action meta-action--danger" data-cm-cancel="' +
+          escapeHtml(job.id) + '"' + (job.cancel_requested ? " disabled" : "") + ">" +
+          (job.cancel_requested ? "Останавливаем…" : "Остановить") + "</button>"
+        : "") + "</div>" +
+      (active
+        ? '<div class="cm-job__bar"><span style="width:' + Math.max(percent, 4) + '%"></span></div>'
+        : "") + "</div>";
+  }
+
+  function jobStatusLabel(job) {
+    return {
+      queued: "в очереди", running: "выполняется", done: "готово",
+      failed: "ошибка", cancelled: "остановлено"
+    }[job.status] || job.status;
+  }
+
+  function renderCommentList() {
+    var host = byId("metaCommentsBody");
+    if (!host) return;
+    if (state.commentsStatus === "loading" || state.commentsStatus === "idle") {
+      host.innerHTML = '<div class="rule-skeleton" aria-hidden="true">' +
+        "<span></span><span></span><span></span><span></span></div>";
+      renderCommentBulk();
+      return renderCommentFoot();
+    }
+    if (state.commentsStatus === "error") {
+      host.innerHTML = '<div class="rule-state rule-state--error">' +
+        "<b>Комментарии не загрузились</b>" + escapeHtml(state.commentsError) +
+        '<div style="margin-top:14px"><button type="button" class="meta-action" ' +
+        "data-cm-retry>Повторить</button></div></div>";
+      renderCommentBulk();
+      return renderCommentFoot();
+    }
+    if (!state.comments.length) {
+      host.innerHTML = '<div class="rule-state">' + emptyCommentsText() + "</div>";
+      renderCommentBulk();
+      return renderCommentFoot();
+    }
+    host.innerHTML = state.comments.map(commentRowHtml).join("");
+    renderCommentBulk();
+    renderCommentFoot();
+  }
+
+  function emptyCommentsText() {
+    if (!state.commentAccount) {
+      return "<b>Нет кабинетов</b>Подключите Meta Ads, чтобы читать комментарии.";
+    }
+    if (!(state.commentPosts || []).length) {
+      if (state.commentPostsHint) {
+        return "<b>Объявления динамические</b>" + escapeHtml(state.commentPostsHint);
+      }
+      return "<b>В кабинете нет постов</b>Комментарии живут под постом объявления. " +
+        "Если объявления есть, запустите синхронизацию — id поста приезжает вместе с ними.";
+    }
+    if (hasCommentFilters()) {
+      return "<b>Под фильтр ничего не попало</b>Снимите часть условий или " +
+        "смените статус — возможно, всё уже вычищено.";
+    }
+    return "<b>Комментарии ещё не загружены</b>Нажмите «Загрузить из Meta» — " +
+      "мы заберём свежие комментарии под постами этого кабинета.";
+  }
+
+  function hasCommentFilters() {
+    return !!(state.commentQuery.trim() || state.commentAuthor.trim() ||
+      state.commentFilters.only_links || state.commentFilters.only_phones ||
+      state.commentFilters.only_replies || state.commentPost);
+  }
+
+  function commentRowHtml(row) {
+    var picked = !!state.commentPicked[row.external_id];
+    var gone = row.status === "deleted";
+    var marks = [];
+    if (row.has_link) marks.push('<span class="cm-mark">ссылка</span>');
+    if (row.has_phone) marks.push('<span class="cm-mark">телефон</span>');
+    if (row.parent_external_id) {
+      marks.push('<span class="cm-mark cm-mark--reply">ответ в ветке</span>');
+    }
+    if (row.like_count) {
+      marks.push('<span class="cm-mark cm-mark--muted">' + row.like_count + " ❤</span>");
+    }
+    if (row.reply_count) {
+      marks.push('<span class="cm-mark cm-mark--muted">ответов: ' + row.reply_count + "</span>");
+    }
+    return '<div class="cm-row' + (picked ? " cm-row--picked" : "") +
+      (gone ? " cm-row--gone" : "") + '">' +
+      (gone || !state.canComments
+        ? "<span></span>"
+        : '<input type="checkbox" aria-label="Выбрать комментарий" data-cm-pick="' +
+          escapeHtml(row.external_id) + '"' + (picked ? " checked" : "") + ">") +
+      '<div style="min-width:0"><div class="cm-head">' +
+      '<span class="cm-author">' + escapeHtml(row.author_name || "Без имени") + "</span>" +
+      '<span class="cm-when">' + escapeHtml(formatMoment(row.created_time)) + "</span>" +
+      commentStatusChip(row) + "</div>" +
+      '<div class="cm-text">' + escapeHtml(row.message || "— без текста —") + "</div>" +
+      (marks.length ? '<div class="cm-marks">' + marks.join("") + "</div>" : "") +
+      "</div>" +
+      '<div class="cm-actions">' +
+      '<a class="meta-action" style="display:inline-flex;align-items:center" target="_blank" ' +
+      'rel="noopener noreferrer" href="' + escapeHtml(row.permalink) + '">В Facebook</a>' +
+      (state.canComments && !gone
+        ? (row.status === "hidden"
+          ? '<button type="button" class="meta-action" data-cm-one="unhide" data-cm-id="' +
+            escapeHtml(row.external_id) + '">Вернуть</button>'
+          : '<button type="button" class="meta-action" data-cm-one="hide" data-cm-id="' +
+            escapeHtml(row.external_id) + '">Скрыть</button>') +
+          '<button type="button" class="meta-action meta-action--danger" data-cm-one="delete" ' +
+          'data-cm-id="' + escapeHtml(row.external_id) + '">Удалить</button>'
+        : "") + "</div></div>";
+  }
+
+  function commentStatusChip(row) {
+    if (row.status === "visible") return "";
+    var tone = row.status === "deleted"
+      ? "color:#B91414;background:#FCF1F1"
+      : "color:#6A5A28;background:#FFF9E9";
+    return '<span class="meta-chip" style="' + tone + '">' +
+      escapeHtml(row.status_label || row.status) + "</span>";
+  }
+
+  function renderCommentBulk() {
+    var host = byId("metaCommentsBulk");
+    if (!host) return;
+    var ids = Object.keys(state.commentPicked);
+    if (!ids.length || !state.canComments) {
+      host.style.display = "none";
+      host.innerHTML = "";
+      return;
+    }
+    host.style.display = "";
+    host.innerHTML = '<span class="cm-bulk__count">Выбрано: ' + ids.length + "</span>" +
+      '<button type="button" class="meta-action" data-cm-bulk="hide">Скрыть</button>' +
+      '<button type="button" class="meta-action" data-cm-bulk="unhide">Вернуть</button>' +
+      '<button type="button" class="meta-action meta-action--danger" data-cm-bulk="delete">' +
+      "Удалить навсегда</button>" +
+      '<button type="button" class="meta-action" data-cm-clear>Снять выбор</button>' +
+      '<div style="flex:1"></div>' +
+      '<span style="font-size:11.5px;color:#857D7D;font-weight:600">' +
+      "Обработка идёт по одному, с паузой — так безопаснее для аккаунта</span>";
+  }
+
+  function renderCommentFoot() {
+    var host = byId("metaCommentsFoot");
+    if (!host) return;
+    var shown = state.comments.length;
+    host.innerHTML = "<span>Показано: " + shown +
+      (state.commentsTotal > shown ? " из " + state.commentsTotal : "") + "</span>" +
+      (state.commentsTotal > shown
+        ? "<span>Сузьте фильтры, чтобы увидеть остальные</span>"
+        : '<span>Удалённые остаются в CRM вместе с текстом — их видно в статусе «Удалённые»</span>');
+  }
+
+  /* --- действия --- */
+
+  async function startCommentFetch() {
+    if (!state.commentAccount) return;
+    try {
+      var job = await api.post("/meta/comments/fetch", {
+        account_id: state.commentAccount,
+        posts: state.commentPost ? [state.commentPost] : [],
+        /* Берём все посты кабинета: у остановленных кампаний комменты
+           продолжают приходить, а «только активные» их молча пропускал —
+           кабинет выглядел пустым, хотя коммент под постом был. */
+        active_only: false
+      });
+      state.commentJob = job;
+      renderComments();
+      watchCommentJob();
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  async function runCommentAction(action, ids) {
+    if (!ids.length) return;
+    var limits = commentLimits();
+    if (limits.max_per_job && ids.length > limits.max_per_job) {
+      return notify({
+        title: "Слишком много за раз",
+        message: "За один заход обрабатываем не больше " + limits.max_per_job +
+          " комментариев. Сузьте выборку."
+      });
+    }
+    var labels = { hide: "Скрыть", unhide: "Вернуть", delete: "Удалить" };
+    var confirmed = await askConfirm(
+      action === "delete"
+        ? {
+          title: "Удалить " + ids.length + " комм. навсегда?",
+          message: "Meta не возвращает удалённые комментарии. В CRM останется их " +
+            "текст и автор, но в Facebook их больше не будет — и восстановить их " +
+            "нельзя ни нам, ни поддержке Meta.",
+          confirmLabel: "Удалить навсегда",
+          danger: true
+        }
+        : {
+          title: labels[action] + " " + ids.length + " комм.?",
+          message: action === "hide"
+            ? "Скрытый комментарий останется виден автору и его друзьям, но исчезнет " +
+              "для остальных. Действие обратимо."
+            : "Комментарии снова увидят все.",
+          confirmLabel: labels[action]
+        }
+    );
+    if (!confirmed) return;
+    try {
+      var job = await api.post("/meta/comments/action", {
+        account_id: state.commentAccount,
+        action: action,
+        comments: ids
+      });
+      state.commentJob = job;
+      state.commentPicked = {};
+      renderComments();
+      watchCommentJob();
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  async function cancelCommentJob(id) {
+    try {
+      state.commentJob = await api.post("/meta/comments/jobs/" + id + "/cancel", {});
+      renderCommentJob();
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  async function refreshCommentJob(options) {
+    if (!state.commentAccount) return;
+    try {
+      var page = await api.get(
+        "/meta/comments/jobs?limit=1&account_id=" + encodeURIComponent(state.commentAccount)
+      );
+      state.commentJob = ((page && page.items) || [])[0] || null;
+    } catch (error) {
+      if (!(options && options.quiet)) state.commentJob = null;
+    }
+  }
+
+  /* Опрос, пока задание живо. Тика в две секунды достаточно: между вызовами
+     Meta всё равно стоит пауза, и чаще прогресс просто не меняется. */
+  function watchCommentJob() {
+    if (commentJobTimer) window.clearTimeout(commentJobTimer);
+    if (!isJobActive(state.commentJob)) return;
+    commentJobTimer = window.setTimeout(async function () {
+      commentJobTimer = null;
+      var id = state.commentJob && state.commentJob.id;
+      if (!id) return;
+      try {
+        state.commentJob = await api.get("/meta/comments/jobs/" + id);
+      } catch (error) {
+        return;
+      }
+      renderCommentJob();
+      renderCommentControls();
+      if (isJobActive(state.commentJob)) return watchCommentJob();
+      // Задание закончилось — список надо перечитать: статусы изменились.
+      await loadComments({ quiet: true });
+    }, 2000);
+  }
+
+
+  /* Поиск поста по ссылке. Объявление может не попасть в список по трём
+     причинам: оно создано только что и ещё не синхронизировано, лежит в другом
+     кабинете, или у его креатива нет собственного поста. Во всех трёх случаях
+     ссылка на пост решает вопрос напрямую. */
+  async function resolveCommentRef() {
+    var field = byId("metaCommentsRef");
+    var host = byId("metaCommentsRefResult");
+    if (!field || !host || !state.commentAccount) return;
+    var ref = field.value.trim();
+    if (!ref) {
+      host.style.display = "none";
+      return;
+    }
+    host.style.display = "";
+    host.className = "cm-lookup__result";
+    host.textContent = "Спрашиваем Meta…";
+    var found;
+    try {
+      found = await api.get(
+        "/meta/comments/resolve?account_id=" + encodeURIComponent(state.commentAccount) +
+        "&ref=" + encodeURIComponent(ref)
+      );
+    } catch (error) {
+      found = { ok: false, reason: error && error.message ? error.message : "Не вышло" };
+    }
+    state.commentRef = found;
+    if (!found.ok) {
+      host.className = "cm-lookup__result cm-lookup__result--bad";
+      host.innerHTML = escapeHtml(found.reason || "Пост не найден");
+      return;
+    }
+    host.className = "cm-lookup__result cm-lookup__result--ok";
+    host.innerHTML = "Пост " + escapeHtml(found.post_external_id) +
+      " · комментариев на первой странице: " + found.comments +
+      (found.via ? " · распознано как " + escapeHtml(found.via) : "") +
+      (found.known
+        ? ""
+        : " · синхронизация о нём ещё не знает — загрузить всё равно можно") +
+      ' <button type="button" class="meta-action" style="margin-left:8px" ' +
+      'data-cm-fetch-ref>Загрузить комментарии этого поста</button>';
+  }
+
+  async function fetchResolvedPost() {
+    var found = state.commentRef;
+    if (!found || !found.ok) return;
+    try {
+      var job = await api.post("/meta/comments/fetch", {
+        account_id: state.commentAccount,
+        posts: [found.post_external_id],
+        active_only: false
+      });
+      state.commentJob = job;
+      state.commentPost = found.post_external_id;
+      renderComments();
+      watchCommentJob();
+    } catch (error) {
+      showFailure(error);
+    }
+  }
+
+  function bindComments() {
+    var account = byId("metaCommentsAccount");
+    if (!account) return;
+    account.addEventListener("change", function () {
+      state.commentAccount = account.value;
+      state.commentPost = "";
+      state.commentPicked = {};
+      state.commentAccess = null;
+      state.commentAccessFor = "";
+      state.commentsStatus = "loading";
+      loadComments().catch(showFailure);
+    });
+    byId("metaCommentsPost").addEventListener("change", function (event) {
+      state.commentPost = event.target.value;
+      state.commentPicked = {};
+      loadComments({ quiet: true }).catch(showFailure);
+    });
+    byId("metaCommentsStatus").addEventListener("change", function (event) {
+      state.commentStatus = event.target.value;
+      loadComments({ quiet: true }).catch(showFailure);
+    });
+    var searchTimer = null;
+    function debouncedSearch() {
+      if (searchTimer) window.clearTimeout(searchTimer);
+      // Поиск уходит на сервер: ждём, пока человек допечатает.
+      searchTimer = window.setTimeout(function () {
+        loadComments({ quiet: true }).catch(showFailure);
+      }, 300);
+    }
+    byId("metaCommentsQuery").addEventListener("input", function (event) {
+      state.commentQuery = event.target.value;
+      debouncedSearch();
+    });
+    byId("metaCommentsAuthor").addEventListener("input", function (event) {
+      state.commentAuthor = event.target.value;
+      debouncedSearch();
+    });
+    byId("metaCommentsRefresh").addEventListener("click", function () {
+      startCommentFetch();
+    });
+    byId("metaCommentsResolve").addEventListener("click", resolveCommentRef);
+    byId("metaCommentsRef").addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        resolveCommentRef();
+      }
+    });
+    byId("metaTabComments").addEventListener("click", function (event) {
+      var target = event.target.closest ? event.target : null;
+      if (!target) return;
+      var flag = target.closest("[data-cm-flag]");
+      if (flag) {
+        var key = flag.getAttribute("data-cm-flag");
+        state.commentFilters[key] = !state.commentFilters[key];
+        return loadComments({ quiet: true }).catch(showFailure);
+      }
+      var pick = target.closest("[data-cm-pick]");
+      if (pick) {
+        var id = pick.getAttribute("data-cm-pick");
+        if (pick.checked) state.commentPicked[id] = true;
+        else delete state.commentPicked[id];
+        var row = pick.closest(".cm-row");
+        if (row) row.classList.toggle("cm-row--picked", !!pick.checked);
+        return renderCommentBulk();
+      }
+      if (target.closest("[data-cm-clear]")) {
+        state.commentPicked = {};
+        return renderCommentList();
+      }
+      var bulk = target.closest("[data-cm-bulk]");
+      if (bulk) {
+        return runCommentAction(
+          bulk.getAttribute("data-cm-bulk"), Object.keys(state.commentPicked)
+        );
+      }
+      var one = target.closest("[data-cm-one]");
+      if (one) {
+        return runCommentAction(
+          one.getAttribute("data-cm-one"), [one.getAttribute("data-cm-id")]
+        );
+      }
+      var cancel = target.closest("[data-cm-cancel]");
+      if (cancel) return cancelCommentJob(cancel.getAttribute("data-cm-cancel"));
+      if (target.closest("[data-cm-fetch-ref]")) return fetchResolvedPost();
+      if (target.closest("[data-cm-retry]")) return loadComments().catch(showFailure);
+    });
   }
 
   /* ---------- браузерная сессия для токена EAAB ----------
@@ -4638,27 +7736,60 @@
     host.innerHTML = '<span style="color:#B91414">' + escapeHtml(text) + "</span>";
   }
 
+  var SPINNER = '<span class="meta-spin" aria-hidden="true"></span>';
+
+  /* Строка ожидания с кружком: браузер Meta поднимается десятками секунд, и без
+     этого экран выглядит замершим. */
+  function sessionBusy(scope, text) {
+    sessionStatus(scope, SPINNER + escapeHtml(text));
+  }
+
+  /* Ожидание токена живёт обещаниями на самой сессии: «Далее» ждёт тот же
+     браузер, который мог запустить и человек кнопкой, а закрытие сессии или
+     ошибка обрывают ожидание — иначе кнопка ждала бы токен, которого уже
+     никто не принесёт. */
+  function sessionWait() {
+    return new Promise(function (resolve, reject) {
+      var session = state.session;
+      if (!session || !session.sessionId) {
+        reject(new Error("Браузер не запущен"));
+        return;
+      }
+      if (session.token) {
+        resolve(session.token);
+        return;
+      }
+      session.waiters = session.waiters || [];
+      session.waiters.push({ resolve: resolve, reject: reject });
+    });
+  }
+
+  function sessionSettle(session, error, token) {
+    var waiters = (session && session.waiters) || [];
+    if (session) session.waiters = [];
+    waiters.forEach(function (waiter) {
+      if (error) waiter.reject(error);
+      else waiter.resolve(token);
+    });
+  }
+
   function sessionTokenPreview(token) {
     return escapeHtml(token.slice(0, 14)) + "…" +
       '<span style="color:#9B9292"> (' + token.length + " симв.)</span>";
   }
 
   function setSessionButtons(scope, running) {
-    var start = scope === "wizard" ? byId("metaWizSessionStart") : byId("metaModalSessionStart");
+    // В мастере отдельной кнопки запуска нет — браузер поднимает «Далее».
+    var start = scope === "wizard" ? null : byId("metaModalSessionStart");
     var close = scope === "wizard" ? byId("metaWizSessionClose") : byId("metaModalSessionClose");
     var cookies = scope === "wizard" ? byId("metaWizCookies") : byId("metaModalCookies");
-    if (running) {
-      start.style.display = "none";
-      close.style.display = "";
-      cookies.disabled = true;
-    } else {
-      start.style.display = "";
-      close.style.display = "none";
-      cookies.disabled = false;
-    }
+    if (start) start.style.display = running ? "none" : "";
+    close.style.display = running ? "" : "none";
+    cookies.disabled = !!running;
   }
 
   function sessionStop() {
+    sessionSettle(state.session, new Error("Браузер закрыт"));
     if (state.session && state.session.timer) {
       window.clearInterval(state.session.timer);
       state.session.timer = null;
@@ -4682,15 +7813,10 @@
     if (scope === "wizard") {
       byId("metaWizTokenField").style.display = isSession ? "none" : "";
       byId("metaWizSessionBlock").style.display = isSession ? "" : "none";
-      byId("metaWizProxyHint").innerHTML = isSession
-        ? '<b style="color:#B91414">Обязателен:</b> токен сессии живёт только со своим прокси — без него Meta заблокирует сессию и аккаунт'
-        : "Нужен, если кабинеты живут за своим прокси. Поддерживаются http, https и socks5";
+      byId("metaWizSessionActions").style.display = isSession ? "" : "none";
     } else {
       byId("metaModalTokenField").style.display = isSession ? "none" : "";
       byId("metaModalSessionBlock").style.display = isSession ? "" : "none";
-      byId("metaFieldProxyHint").innerHTML = isSession
-        ? '<b style="color:#B91414">Обязателен:</b> токен сессии живёт только со своим прокси — без него Meta заблокирует сессию и аккаунт'
-        : "Через него пойдут все запросы этого подключения — синхронизация, заливы и автоправила";
     }
     if (!isSession) {
       sessionStop();
@@ -4722,8 +7848,9 @@
     var proxy = (scope === "wizard" ? byId("metaWizProxy") : byId("metaFieldProxy")).value.trim();
     var cookies = (scope === "wizard" ? byId("metaWizCookies") : byId("metaModalCookies")).value.trim();
     var userAgent = (scope === "wizard" ? byId("metaWizUserAgent") : byId("metaFieldUserAgent")).value.trim();
-    var connectionId = scope === "modal" && state.connections.length
-      ? state.connections[0].id : null;
+    var selectedConnection = scope === "modal" ? currentConnection() : null;
+    var connectionId = selectedConnection && selectedConnection.can_edit !== false
+      ? selectedConnection.id : null;
     if (!proxy) {
       sessionError(scope, "Укажите прокси — без него браузер не запустится (защита от бана)");
       return;
@@ -4731,9 +7858,10 @@
     sessionStop();
     if (scope === "wizard") state.wizard.sessionToken = null;
     if (scope === "modal") byId("metaModalSessionToken").value = "";
-    state.session = { scope: scope, sessionId: null, token: null, timer: null };
-    sessionStatus(scope, "Запускаем браузер…");
+    state.session = { scope: scope, sessionId: null, token: null, timer: null, waiters: [] };
+    sessionBusy(scope, "Запускаем браузер…");
     setSessionButtons(scope, true);
+    var started = state.session;
     try {
       var payload = { cookies: cookies, proxy_url: proxy, user_agent: userAgent || null };
       if (connectionId) payload.connection_id = connectionId;
@@ -4742,13 +7870,24 @@
       if (res.status === "error") {
         sessionError(scope, res.error || "Ошибка запуска");
         setSessionButtons(scope, false);
-        return;
+        throw sessionSettleError(started, res.error || "Ошибка запуска");
       }
       sessionPoll(scope);
     } catch (error) {
+      if (started.settled) throw error;
       sessionError(scope, error && error.message ? error.message : "Не удалось запустить браузер");
       setSessionButtons(scope, false);
+      throw sessionSettleError(started, error && error.message
+        ? error.message : "Не удалось запустить браузер");
     }
+    return sessionWait();
+  }
+
+  function sessionSettleError(session, text) {
+    var error = new Error(text);
+    if (session) session.settled = true;
+    sessionSettle(session, error);
+    return error;
   }
 
   function sessionPoll(scope) {
@@ -4766,10 +7905,11 @@
           current.timer = null;
           sessionError(scope, st.error || "Ошибка сессии");
           setSessionButtons(scope, false);
+          sessionSettleError(current, st.error || "Ошибка сессии");
           return;
         }
         if (st.status === "waiting_login" || st.status === "restoring") {
-          sessionStatus(scope, escapeHtml(SESSION_STATUS_LABELS[st.status] || st.status) +
+          sessionBusy(scope, (SESSION_STATUS_LABELS[st.status] || st.status) +
             " — если требуется ручной вход, выполните его через VNC (порт 5900)");
           return;
         }
@@ -4782,13 +7922,15 @@
           onSessionToken(scope, tokenRes.token);
           return;
         }
-        sessionStatus(scope, escapeHtml(SESSION_STATUS_LABELS[st.status] || st.status));
+        sessionBusy(scope, SESSION_STATUS_LABELS[st.status] || st.status);
       } catch (error) {
         if (!state.session || state.session.sessionId !== id) return;
         window.clearInterval(current.timer);
         current.timer = null;
         sessionError(scope, error && error.message ? error.message : "Опрос статуса не удался");
         setSessionButtons(scope, false);
+        sessionSettleError(current, error && error.message
+          ? error.message : "Опрос статуса не удался");
       }
     }, 3000);
   }
@@ -4796,6 +7938,7 @@
   function onSessionToken(scope, token) {
     if (!token) {
       sessionError(scope, "Токен не найден — попробуйте зайти в Ads Manager в окне браузера и повторить");
+      sessionSettleError(state.session, "Токен не найден");
       return;
     }
     if (scope === "wizard") {
@@ -4807,11 +7950,13 @@
       sessionTokenPreview(token));
     setSessionButtons(scope, false);
     byId("metaWizNext").disabled = false;
+    if (state.session) state.session.token = token;
+    sessionSettle(state.session, null, token);
   }
 
   /* ---------- мастер подключения ---------- */
 
-  var WIZARD_STEPS = ["Инструкции", "Токен", "Проверка", "Импорт", "Готово"];
+  var WIZARD_STEPS = ["Инструкции", "Токен", "Проверка", "Готово"];
 
   /* Инструкция под выбранный способ. Держать одну на всех нельзя: у токена из
      панели приложения и у токена сессии шаги вообще не пересекаются, а общий
@@ -4819,9 +7964,9 @@
   var AUTH_GUIDES = {
     system_user: {
       needs: [
-        "аккаунт разработчика Facebook",
-        "права Admin или Employee в Business Manager",
-        "приложение, созданное на developers.facebook.com"
+        "Аккаунт разработчика Facebook",
+        "Права Admin или Employee в Business Manager",
+        "Приложение, созданное на developers.facebook.com"
       ],
       steps: [
         {
@@ -4845,15 +7990,13 @@
             "поставьте Never: с «60 days» синхронизация встанет через два месяца.",
           scopes: ["ads_read", "ads_management", "business_management", "pages_show_list"]
         }
-      ],
-      note: "ads_read достаточно для статистики. ads_management нужен для заливов и " +
-        "автоправил с действиями — он даёт право тратить бюджет."
+      ]
     },
     session: {
       needs: [
-        "доступ к своему аккаунту Facebook с правами в Business Manager",
-        "cookies из браузера, в котором вы вошли в Ads Manager",
-        "прокси этого аккаунта — обязателен, иначе Meta заблокирует сессию"
+        "Доступ к своему аккаунту Facebook с правами в Business Manager",
+        "Cookies из браузера, в котором вы вошли в Ads Manager",
+        "Прокси этого аккаунта — обязателен, иначе Meta заблокирует сессию"
       ],
       steps: [
         {
@@ -4879,16 +8022,12 @@
           text: "Все запросы CRM пойдут через тот же прокси. Когда токен умрёт, " +
             "синхронизация восстановит сохранённую сессию и получит новый EAAB сама."
         }
-      ],
-      note: "Токен сессии живёт, пока жива сессия аккаунта: смена пароля, выход из " +
-        "устройств или запрос подтверждения личности его обнуляют. С сохранённой " +
-        "браузерной сессией токен обновляется автоматически, но при бане аккаунта " +
-        "придётся подключать заново."
+      ]
     },
     app_token: {
       needs: [
-        "аккаунт разработчика Facebook",
-        "приложение, созданное на developers.facebook.com"
+        "Аккаунт разработчика Facebook",
+        "Приложение, созданное на developers.facebook.com"
       ],
       steps: [
         {
@@ -4907,9 +8046,7 @@
           text: "Такой токен живёт часы. Он годится, чтобы проверить доступ к кабинетам, " +
             "но для постоянной синхронизации нужен токен системного пользователя."
         }
-      ],
-      note: "Если приложение в статусе development_access, реальные кабинеты через него " +
-        "не видны — доступен только кабинет-песочница."
+      ]
     }
   };
 
@@ -4941,9 +8078,7 @@
                   'border-radius:7px;padding:4px 9px">' + escapeHtml(scope) + "</span>";
               }).join("") + "</div>"
             : "") + "</div></li>";
-      }).join("") + "</ol>" +
-      '<div style="font-size:11.5px;color:#9B9292;font-weight:500;margin-top:12px;' +
-      'line-height:1.6">' + escapeHtml(guide.note) + "</div>";
+      }).join("") + "</ol>";
   }
 
   function renderWizardMethods(selected) {
@@ -4964,17 +8099,13 @@
 
   function openWizard() {
     sessionStop();
-    state.wizard = { step: 1, accounts: [], picked: [], payload: null, sessionToken: null };
+    state.wizard = { step: 1, accounts: [], summary: null, payload: null, sessionToken: null };
     renderWizardMethods("system_user");
     byId("metaWizName").value = "";
     byId("metaWizToken").value = "";
     byId("metaWizCookies").value = "";
-    byId("metaWizBusiness").value = "";
     byId("metaWizProxy").value = "";
     byId("metaWizUserAgent").value = "";
-    byId("metaWizSub").value = "";
-    byId("metaWizInterval").value = 30;
-    byId("metaWizLookback").value = 3;
     sessionResetUi("wizard");
     wizardError("");
     renderWizard();
@@ -4993,6 +8124,13 @@
     host.style.display = message ? "" : "none";
   }
 
+  /* Кнопка «Далее» на время ожидания гаснет, а рядом крутится кружок: браузер
+     Meta поднимается десятками секунд, и молчащий экран читается как зависший. */
+  function wizardWaiting(on, text) {
+    byId("metaWizNext").disabled = !!on;
+    byId("metaWizStatus").innerHTML = on ? SPINNER + escapeHtml(text || "") : "";
+  }
+
   function renderWizard() {
     var step = state.wizard.step;
     byId("metaWizardSteps").innerHTML = WIZARD_STEPS.map(function (label, index) {
@@ -5009,10 +8147,11 @@
         panel.style.display = Number(panel.getAttribute("data-step")) === step ? "" : "none";
       }
     );
-    byId("metaWizBack").style.visibility = step === 1 || step === 5 ? "hidden" : "";
+    var last = WIZARD_STEPS.length;
+    byId("metaWizBack").style.visibility = step === 1 || step === last ? "hidden" : "";
     byId("metaWizNext").textContent = step === 3
-      ? "Импорт →"
-      : step === 4 ? "Подключить" : step === 5 ? "Готово" : "Далее →";
+      ? "Подключить"
+      : step === last ? "Готово" : "Далее →";
   }
 
   async function wizardNext() {
@@ -5037,35 +8176,39 @@
         if (!proxy) return wizardError(
           "Токен сессии (EAAB) требует прокси — без него Meta заблокирует сессию и аккаунт"
         );
-        if (!wizard.sessionToken) return wizardError(
-          "Сначала получите токен через браузер: cookies → прокси → «Запустить браузер»"
-        );
+        if (!wizard.sessionToken) {
+          // Отдельного «сначала нажмите Запустить браузер» больше нет: кнопка
+          // «Далее» поднимает браузер сама. Если человек уже нажал её сам, ждём
+          // тот же браузер, а не поднимаем второй.
+          var running = state.session && state.session.sessionId && !state.session.settled;
+          wizardWaiting(true, running ? "Ждём токен из браузера…" : "Запускаем браузер…");
+          try {
+            wizard.sessionToken = running ? await sessionWait() : await sessionStart("wizard");
+          } catch (error) {
+            return wizardError(error && error.message
+              ? error.message : "Не удалось получить токен сессии");
+          } finally {
+            wizardWaiting(false);
+          }
+        }
         token = wizard.sessionToken;
       } else if (token.length < 20) {
         return wizardError("Вставьте токен");
       }
+      // Business ID, sub_id, интервал и глубина перечитывания в мастер больше не
+      // входят: на создании у них есть разумные значения по умолчанию, а меняют
+      // их потом в настройках самого подключения.
       wizard.payload = {
         name: name,
         access_token: token,
         auth_method: method,
         proxy_url: proxy || null,
-        user_agent: byId("metaWizUserAgent").value.trim() || null,
-        business_id: byId("metaWizBusiness").value.trim() || null,
-        attribution_sub_id: byId("metaWizSub").value
-          ? Number(byId("metaWizSub").value) : null,
-        sync_interval_minutes: Number(byId("metaWizInterval").value) || 30,
-        lookback_days: Number(byId("metaWizLookback").value) || 3
+        user_agent: byId("metaWizUserAgent").value.trim() || null
       };
       await wizardCheck();
       return;
     }
     if (wizard.step === 3) {
-      wizard.step = 4;
-      renderWizardAccounts();
-      renderWizard();
-      return;
-    }
-    if (wizard.step === 4) {
       await wizardConnect();
       return;
     }
@@ -5074,8 +8217,7 @@
 
   async function wizardCheck() {
     var wizard = state.wizard;
-    byId("metaWizNext").disabled = true;
-    byId("metaWizStatus").textContent = "Спрашиваем Meta…";
+    wizardWaiting(true, "Спрашиваем Meta…");
     try {
       var result = await api.post("/meta/connections/preview", {
         access_token: wizard.payload.access_token,
@@ -5083,70 +8225,87 @@
         // Проверка идёт тем же маршрутом, что и работа: токен за прокси без
         // него кабинетов не покажет.
         proxy_url: wizard.payload.proxy_url,
-        user_agent: wizard.payload.user_agent
+        user_agent: wizard.payload.user_agent,
+        // Для токена сессии запросы Meta принимает только из браузерного
+        // контекста живой сессии — передаём её id.
+        session_id: state.session && state.session.sessionId ? state.session.sessionId : null
       });
       wizard.accounts = result.accounts || [];
-      wizard.picked = wizard.accounts.filter(function (account) {
-        // По умолчанию отмечаем рабочие кабинеты: отключённый вряд ли нужен в CRM.
-        return account.account_status === "ACTIVE";
-      }).map(function (account) { return account.external_id; });
-      byId("metaWizCheck").innerHTML = wizardCheckHtml(wizard.accounts);
+      wizard.summary = result.summary || null;
+      byId("metaWizCheck").innerHTML =
+        wizardCheckHtml(wizard.accounts, wizard.summary, wizard.payload);
       wizard.step = 3;
       renderWizard();
     } catch (error) {
       wizardError(error && error.message ? error.message : "Meta отклонила токен");
     } finally {
-      byId("metaWizNext").disabled = false;
-      byId("metaWizStatus").textContent = "";
+      wizardWaiting(false);
     }
   }
 
-  function wizardCheckHtml(accounts) {
-    var active = accounts.filter(function (account) {
-      return account.account_status === "ACTIVE";
-    }).length;
-    return notice("#E4F7F0", "#16B57F", "Токен принят",
-      "Через него видно кабинетов: " + accounts.length + ", из них рабочих: " + active + ".") +
-      '<div style="display:grid;gap:8px;margin-top:14px;max-height:280px;overflow:auto">' +
-      accounts.map(function (account) {
-        return '<div style="display:flex;align-items:center;justify-content:space-between;' +
-          'gap:12px;border:1px solid #EBE6E6;border-radius:12px;padding:11px 14px">' +
-          '<div style="min-width:0"><div style="font-size:12.5px;font-weight:700">' +
-          escapeHtml(account.name) + "</div>" +
-          '<div style="font-size:10.5px;color:#9B9292;margin-top:2px">' +
-          escapeHtml(account.external_id) + " · " + escapeHtml(account.currency) +
-          (account.timezone_name ? " · " + escapeHtml(account.timezone_name) : "") + "</div></div>" +
-          chip(account.account_status) + "</div>";
-      }).join("") + "</div>" +
-      '<div class="meta-note" style="margin-top:14px">Таймзона кабинета важнее, чем кажется: ' +
-      "Meta считает день по ней, а Keitaro — по своей. Если они разные, расход и доход за " +
-      "«вчера» не сойдутся.</div>";
+  /* Плитка сводки. Числа здесь — то, что реально видно этим токеном: если
+     кабинетов ноль или БМов не видно, чинить это надо до подключения, а не
+     после первой синхронизации. */
+  function summaryTile(label, value, hint) {
+    return '<div style="border:1px solid #EBE6E6;border-radius:14px;padding:13px 15px">' +
+      '<div style="font-size:10.5px;font-weight:700;color:#9B9292;text-transform:uppercase;' +
+      'letter-spacing:.5px">' + escapeHtml(label) + "</div>" +
+      '<div style="font-size:21px;font-weight:700;letter-spacing:-.4px;margin-top:5px">' +
+      escapeHtml(value) + "</div>" +
+      (hint
+        ? '<div style="font-size:11px;color:#9B9292;font-weight:600;margin-top:3px">' +
+          escapeHtml(hint) + "</div>"
+        : "") + "</div>";
   }
 
-  function renderWizardAccounts() {
-    var wizard = state.wizard;
-    byId("metaWizAccounts").innerHTML = wizard.accounts.map(function (account) {
-      return '<label class="meta-pick">' +
-        '<input type="checkbox" data-wizard-account="' + escapeHtml(account.external_id) + '"' +
-        (wizard.picked.indexOf(account.external_id) >= 0 ? " checked" : "") + ">" +
-        '<span style="min-width:0"><span style="display:block;font-size:12.5px;font-weight:700">' +
-        escapeHtml(account.name) + "</span>" +
-        '<span style="display:block;font-size:10.5px;color:#9B9292;margin-top:2px">' +
-        escapeHtml(account.external_id) + " · " + escapeHtml(account.currency) + " · " +
-        escapeHtml(account.account_status || "—") + "</span></span></label>";
-    }).join("");
+  function wizardCheckHtml(accounts, summary, payload) {
+    var totals = summary || {};
+    var token = (payload && payload.access_token) || "";
+    // Права у токенов разные: без business_management БМы и страницы не
+    // отдаются вовсе, и прочерк здесь честнее нуля.
+    function count(value) {
+      return value === null || value === undefined ? "—" : num(value);
+    }
+    var campaignHint = totals.campaigns_partial
+      ? "по первым " + num(totals.campaigns_scanned) + " кабинетам"
+      : (totals.active_campaigns ? "активных: " + num(totals.active_campaigns) : "");
+    return notice("#E4F7F0", "#16B57F",
+      payload && payload.auth_method === "session" ? "EAAB-токен получен" : "Токен принят",
+      "Так выглядит аккаунт, который подключается.") +
+      // Целиком токен не показываем: это ключ от аккаунта, а для «получилось»
+      // хватает начала и длины.
+      (token
+        ? '<div style="margin-top:12px;font-size:11.5px;color:#6A6161;font-weight:600">' +
+          "Токен: " + sessionTokenPreview(token) + "</div>"
+        : "") +
+      '<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;' +
+      'margin-top:14px">' +
+      summaryTile("Кабинеты", count(totals.ad_accounts),
+        totals.active_ad_accounts ? "рабочих: " + num(totals.active_ad_accounts) : "") +
+      summaryTile("БМы", count(totals.businesses), "") +
+      summaryTile("Фан-пейджи", count(totals.pages), "") +
+      summaryTile("Кампании", count(totals.campaigns), campaignHint) +
+      "</div>" +
+      ((totals.currencies || []).length > 1
+        ? '<div class="meta-note meta-note--warn" style="margin-top:14px">Кабинеты в разных ' +
+          "валютах (" + escapeHtml((totals.currencies || []).join(", ")) +
+          "). Meta считает день по таймзоне кабинета, а Keitaro — по своей: за «вчера» " +
+          "расход и доход могут не сойтись.</div>"
+        : "");
   }
 
   async function wizardConnect() {
     var wizard = state.wizard;
-    if (!wizard.picked.length) {
-      wizardError("Отметьте хотя бы один кабинет");
-      return;
-    }
-    byId("metaWizNext").disabled = true;
-    byId("metaWizStatus").textContent = "Подключаем…";
+    wizardWaiting(true, "Подключаем…");
     try {
-      var payload = Object.assign({}, wizard.payload, { import_accounts: wizard.picked });
+      // Шага выбора кабинетов больше нет: подключаются все, что видно токеном.
+      // Ненужные выключают потом в списке кабинетов, там же, где назначают
+      // ответственных.
+      var payload = Object.assign({}, wizard.payload);
+      if (wizard.payload.auth_method === "session" && state.session && state.session.sessionId) {
+        // Создание подключения проверяет токен через живую сессию браузера.
+        payload.session_id = state.session.sessionId;
+      }
       var connection = await api.post("/meta/connections", payload);
       // Сохраняем браузерную сессию за подключением: когда EAAB умрёт,
       // синхронизация восстановит её и получит новый токен сама.
@@ -5159,7 +8318,7 @@
       await api.post("/meta/connections/" + connection.id + "/sync?mode=backfill", {});
       byId("metaWizDone").innerHTML = notice("#E4F7F0", "#16B57F",
         "Подключено: " + wizard.payload.name,
-        "Импортировано кабинетов: " + wizard.picked.length +
+        "Импортировано кабинетов: " + wizard.accounts.length +
         ". Запущена загрузка статистики за 90 дней — она идёт в фоне, страницу можно " +
         "закрыть.") +
         (wizard.payload.attribution_sub_id
@@ -5169,7 +8328,7 @@
           : '<div class="meta-note meta-note--warn" style="margin-top:14px">sub_id с ID ' +
             "кампании не указан, поэтому доход и ROI считаться не будут. Его можно " +
             "добавить позже в настройках подключения.</div>");
-      wizard.step = 5;
+      wizard.step = WIZARD_STEPS.length;
       renderWizard();
       state.reference = null;
       await loadConnections();
@@ -5178,8 +8337,7 @@
     } catch (error) {
       wizardError(error && error.message ? error.message : "Не удалось подключить");
     } finally {
-      byId("metaWizNext").disabled = false;
-      byId("metaWizStatus").textContent = "";
+      wizardWaiting(false);
     }
   }
 
@@ -5190,16 +8348,20 @@
     });
     byId("metaAccountFilter").addEventListener("change", function (event) {
       state.accountId = event.target.value;
+      resetLevelFilters();
       load().catch(showFailure);
     });
     byId("metaOwnerFilter").addEventListener("change", function (event) {
       state.ownerId = event.target.value;
+      resetLevelFilters();
       load().catch(showFailure);
     });
     byId("metaSync").addEventListener("click", startSync);
-    // Мастер — для первого подключения, обычная форма — для правки существующего.
+    // Мастер создаёт новое подключение в том числе когда другие уже существуют.
     byId("metaConnect").addEventListener("click", function () {
-      if (state.connections.length) openModal(); else openWizard();
+      // Существующие подключения открываются из уровня «Аккаунты» — здесь
+      // остаётся только заведение нового.
+      openWizard();
     });
     byId("metaModalClose").addEventListener("click", closeModal);
     byId("metaModalSave").addEventListener("click", saveConnection);
@@ -5237,7 +8399,7 @@
         });
       });
     byId("metaUpBack").addEventListener("click", function () {
-      if (!state.upload || state.upload.step <= 1) return;
+      if (!state.upload || state.upload.step <= 1) return setLaunchView("bundles");
       state.upload.step -= 1;
       renderUpload();
     });
@@ -5248,14 +8410,60 @@
     });
     byId("metaUpBody").addEventListener("input", onUploadInput);
     byId("metaUpBody").addEventListener("change", onUploadChange);
+    // Нативный <select> (ФП/пиксель в таблице кабинетов): после закрытия его
+    // выпадашки Chromium «вписывает» сфокусированный элемент в видимую
+    // область и прокручивает страницу (в т.ч. само окно). Запоминаем позицию
+    // на момент клика и возвращаем её после выбора — страница не дёргается.
+    byId("metaUpBody").addEventListener("mousedown", function (event) {
+      var select = event.target.closest
+        ? event.target.closest("select[data-up-account-field]") : null;
+      if (!select) return;
+      select._pageScrollY = window.scrollY;
+    });
+    byId("metaUpBody").addEventListener("change", function (event) {
+      var select = event.target.closest
+        ? event.target.closest("select[data-up-account-field]") : null;
+      if (!select || select._pageScrollY === undefined) return;
+      var saved = select._pageScrollY;
+      select._pageScrollY = undefined;
+      if (window.scrollY !== saved) window.scrollTo(0, saved);
+      // Chromium может довернуть скролл уже после change — возвращаем ещё раз.
+      window.setTimeout(function () {
+        if (window.scrollY !== saved) window.scrollTo(0, saved);
+      }, 50);
+    });
+    byId("metaUpBody").addEventListener("focusout", function (event) {
+      // Выпадашку закрыли без выбора (Esc/клик мимо) — позиция тоже не должна
+      // «уплыть» вместе с фокусом.
+      var select = event.target.closest
+        ? event.target.closest("select[data-up-account-field]") : null;
+      if (!select || select._pageScrollY === undefined) return;
+      var saved = select._pageScrollY;
+      select._pageScrollY = undefined;
+      if (window.scrollY !== saved) window.scrollTo(0, saved);
+    });
     byId("metaUpBody").addEventListener("click", onUploadClick);
     byId("metaTableBody").addEventListener("click", function (event) {
       // Селект ответственного живёт в той же строке — клик по нему окно не открывает.
       if (event.target.closest && event.target.closest("select,button,input,a")) return;
+      var connectionRow = event.target.closest
+        ? event.target.closest("[data-connection-row]") : null;
+      if (connectionRow) {
+        openModal(connectionRow.getAttribute("data-connection-row"));
+        return;
+      }
       var row = event.target.closest ? event.target.closest("[data-hour-row]") : null;
       if (row) openHourModal(state.level, row.getAttribute("data-hour-row"));
     });
     byId("metaTableBody").addEventListener("change", function (event) {
+      var filterBox = event.target.closest
+        ? event.target.closest("[data-level-filter-pick]") : null;
+      if (filterBox) {
+        var filterLevel = filterBox.getAttribute("data-level-filter-kind");
+        toggleLevelFilterPick(filterBox, filterBox.checked);
+        syncLevelFilterChecks(filterLevel);
+        return;
+      }
       var box = event.target.closest ? event.target.closest("[data-spend-pick]") : null;
       if (!box) return;
       toggleSpendPick(box, box.checked);
@@ -5263,6 +8471,17 @@
       renderSpendButton();
     });
     byId("metaLevelHead").addEventListener("change", function (event) {
+      var filterAll = event.target.closest
+        ? event.target.closest("[data-level-filter-all]") : null;
+      if (filterAll) {
+        var level = filterAll.getAttribute("data-level-filter-all");
+        Array.prototype.forEach.call(
+          document.querySelectorAll('[data-level-filter-kind="' + level + '"]'),
+          function (box) { toggleLevelFilterPick(box, filterAll.checked); }
+        );
+        syncLevelFilterChecks(level);
+        return;
+      }
       var all = event.target.closest ? event.target.closest("[data-spend-all]") : null;
       if (!all) return;
       Array.prototype.forEach.call(
@@ -5338,15 +8557,14 @@
     byId("metaWizProxyCheck").addEventListener("click", function () {
       wizardCheckProxy().catch(showFailure);
     });
-    byId("metaWizSessionStart").addEventListener("click", function () {
-      sessionStart("wizard").catch(showFailure);
-    });
     byId("metaWizSessionClose").addEventListener("click", function () {
       sessionStop();
       sessionResetUi("wizard");
     });
     byId("metaModalSessionStart").addEventListener("click", function () {
-      sessionStart("modal").catch(showFailure);
+      // Причина отказа уже видна в строке статуса — тоста здесь не нужно,
+      // иначе закрытие браузера самим человеком читалось бы как ошибка.
+      sessionStart("modal").catch(function () {});
     });
     byId("metaModalSessionClose").addEventListener("click", function () {
       sessionStop();
@@ -5362,20 +8580,6 @@
       state.wizard.step -= 1;
       wizardError("");
       renderWizard();
-    });
-    byId("metaWizPickAll").addEventListener("click", function () {
-      var wizard = state.wizard;
-      var all = wizard.picked.length === wizard.accounts.length;
-      wizard.picked = all ? [] : wizard.accounts.map(function (a) { return a.external_id; });
-      renderWizardAccounts();
-    });
-    byId("metaWizAccounts").addEventListener("change", function (event) {
-      var input = event.target.closest ? event.target.closest("[data-wizard-account]") : null;
-      if (!input) return;
-      var id = input.getAttribute("data-wizard-account");
-      var index = state.wizard.picked.indexOf(id);
-      if (input.checked && index < 0) state.wizard.picked.push(id);
-      if (!input.checked && index >= 0) state.wizard.picked.splice(index, 1);
     });
 
     byId("metaFormClose").addEventListener("click", closeForm);
@@ -5486,6 +8690,7 @@
       if (pour) {
         // «Залить» открывает мастер уже с выбранной связкой: это то же самое,
         // что зайти в него и выбрать её из списка, только без лишнего шага.
+        clearUploadPreviews();
         state.upload = null;
         setLaunchView("wizard");
         state.upload.values.template_id = pour.getAttribute("data-bundle-pour");
@@ -5529,19 +8734,12 @@
       renderMacroList();
     });
 
-    byId("metaRuleCreate").addEventListener("click", function () {
-      openRuleForm(null);
-    });
     byId("metaRulesRun").addEventListener("click", runRules);
+    // Кнопка в шапке вкладки раньше была декорацией: обработчика у неё не было,
+    // а из JS её ещё и прятали.
+    byId("metaRuleCreate").addEventListener("click", createFromHeader);
+    bindComments();
     byId("metaEventsAck").addEventListener("click", ackEvents);
-    byId("metaRulesBody").addEventListener("click", function (event) {
-      var target = event.target.closest ? event.target : null;
-      if (!target) return;
-      var preview = target.closest("[data-rule-preview]");
-      if (preview) return previewRule(preview.getAttribute("data-rule-preview"));
-      var open = target.closest("[data-rule-open]");
-      if (open) openRuleForm(open.getAttribute("data-rule-open"));
-    });
   }
 
   function showFailure(error) {
@@ -5558,11 +8756,16 @@
     state.user = user;
     state.canManage = hasPermission(user, "meta.manage");
     state.canLaunch = hasPermission(user, "meta.launch");
+    // Чистка комментариев не тратит деньги, но необратима и видна снаружи —
+    // поэтому право своё, и его дают тем, кому заливы не доверены.
+    state.canComments = hasPermission(user, "meta.comments");
     // Фиксацию делает баер со своего аккаунта, а `meta.launch` — про заливы и
     // деньги в кабинете, и у баера его нет. Расход он и так заводит руками в
     // Медиаборде: это то же самое право, только считает сумму Meta.
     state.canFixSpend = state.canLaunch || hasPermission(user, "media.manage");
-    byId("metaConnect").style.display = state.canManage ? "" : "none";
+    // Подключение персональное: любой пользователь с доступом к Meta Ads может
+    // создать несколько своих подключений, даже без административного права.
+    byId("metaConnect").style.display = "";
     bind();
     if (state.canManage || state.canLaunch || state.canFixSpend) {
       try {
@@ -5572,6 +8775,9 @@
         state.buyers = [];
       }
     }
+    // Вкладку восстанавливаем до загрузки данных: её содержимое рисует себя
+    // скелетом и наполняется по мере ответов, а не появляется целиком в конце.
+    restoreTab();
     await loadConnections();
     await load();
     schedulePoll();

@@ -28,6 +28,25 @@ METRIC_LABELS = {
     "leads": "Лиды",
     "clicks": "Клики",
     "impressions": "Показы",
+    "link_clicks": "Клики по ссылке",
+    "link_ctr": "CTR по ссылке, %",
+    "cpm": "CPM",
+    "results": "Результаты",
+    "cpa": "Цена результата",
+    "result_cr": "Клик-конверсия, %",
+    "sales": "Продажи (Keitaro)",
+    "reach": "Охват",
+    "pixel_leads": "Лиды (пиксель)",
+    "pixel_purchases": "Покупки (пиксель)",
+    "actions_total": "Действия",
+    "entity_name": "Название объекта",
+    "campaign_name": "Название кампании",
+    "objective": "Цель",
+    "buying_type": "Закупочный тип",
+    "spend_cap": "Предел затрат",
+    "bid_amount": "Сумма ставки",
+    "daily_budget": "Дневной бюджет",
+    "lifetime_budget": "Бюджет на весь срок",
 }
 REVENUE_METRICS = {"roi", "profit", "revenue", "cpl", "leads"}
 
@@ -46,6 +65,18 @@ def metrics(
     *,
     link_clicks: int = 0,
     results: int = 0,
+    reach: int = 0,
+    pixel_leads: int = 0,
+    pixel_purchases: int = 0,
+    actions: dict | None = None,
+    entity_name: str = "",
+    campaign_name: str = "",
+    objective: str = "",
+    buying_type: str = "",
+    spend_cap: Decimal | None = None,
+    bid_amount: Decimal | None = None,
+    daily_budget: Decimal | None = None,
+    lifetime_budget: Decimal | None = None,
 ) -> dict:
     """Общий набор чисел строки отчёта.
 
@@ -54,6 +85,7 @@ def metrics(
     Они приходят из Meta и живут отдельно от лидов Keitaro, которые считаются
     по постбекам партнёрки: сходиться эти два числа не обязаны.
     """
+    action_values = [value for value in (actions or {}).values() if isinstance(value, int | float)]
     payload = {
         "spend": float(q2(spend)),
         "impressions": impressions,
@@ -78,6 +110,20 @@ def metrics(
         "revenue": None,
         "profit": None,
         "roi": None,
+        "reach": reach,
+        "pixel_leads": pixel_leads,
+        "pixel_purchases": pixel_purchases,
+        "actions_total": sum(action_values),
+        "entity_name": entity_name,
+        "campaign_name": campaign_name,
+        "objective": objective,
+        "buying_type": buying_type,
+        "spend_cap": float(q2(spend_cap)) if spend_cap is not None else None,
+        "bid_amount": float(q2(bid_amount)) if bid_amount is not None else None,
+        "daily_budget": float(q2(daily_budget)) if daily_budget is not None else None,
+        "lifetime_budget": (
+            float(q2(lifetime_budget)) if lifetime_budget is not None else None
+        ),
     }
     if revenue is not None:
         profit = revenue - spend

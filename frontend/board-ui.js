@@ -133,16 +133,40 @@
       "outline:none;text-overflow:ellipsis;transition:border-color .18s,box-shadow .18s}" +
       ".board-edit-overlay--media .board-edit-input:focus,.board-edit-overlay--media .board-edit-select:focus{" +
       "border-color:#D06060!important;box-shadow:0 0 0 3px rgba(185,20,20,.09)}" +
-      ".board-edit-overlay--media .board-edit-section{margin-top:14px;padding:14px;" +
+      // Safari ставит значение даты по центру поля, и «01.09.2026» висело
+      // отдельно от подписи и от соседних полей.
+      '.board-edit-overlay--media .board-edit-input[type="date"]{text-align:left}' +
+      '.board-edit-overlay--media .board-edit-input[type="date"]::-webkit-datetime-edit{padding:0;' +
+      "text-align:left}" +
+      '.board-edit-overlay--media .board-edit-input[type="date"]::-webkit-date-and-time-value{' +
+      "margin:0;text-align:left}" +
+      '.board-edit-overlay--media .board-edit-input[type="date"]::-webkit-calendar-picker-indicator{' +
+      "margin-left:auto;opacity:.5;cursor:pointer}" +
+      // Агенты добавляются строками, поэтому у секции своя раскладка.
+      ".board-edit-overlay--media .board-edit-agents{display:grid;gap:9px}" +
+      ".board-edit-overlay--media .board-edit-agent{display:grid;align-items:end;gap:10px;" +
+      "grid-template-columns:minmax(0,1fr) 190px 38px}" +
+      ".board-edit-overlay--media .board-edit-agent-drop{display:flex;align-items:center;" +
+      "justify-content:center;width:38px;height:42px;border:1px solid #EBE6E6;border-radius:10px;" +
+      "background:#fff;color:#9B9292;cursor:pointer;transition:border-color .18s,background .18s,color .18s}" +
+      ".board-edit-overlay--media .board-edit-agent-drop:hover{border-color:#E7C9C9;" +
+      "background:#FCF1F1;color:#B91414}" +
+      ".board-edit-overlay--media .board-edit-agents-empty{color:#9B9292;font-size:11.5px;font-weight:600}" +
+      ".board-edit-overlay--media .board-edit-agents-empty[hidden]{display:none}" +
+      ".board-edit-overlay--media .board-edit-agent-add{display:inline-flex;align-items:center;gap:7px;" +
+      "margin-top:11px;height:38px;padding:0 14px;border:1px dashed #D9CFCF;border-radius:10px;" +
+      "background:#fff;font:700 12px 'Inter',sans-serif;color:#B91414;cursor:pointer;" +
+      "transition:border-color .18s,background .18s}" +
+      ".board-edit-overlay--media .board-edit-agent-add:hover{border-color:#D06060;background:#FCF7F7}" +
+      ".board-edit-overlay--media .board-edit-agent-add:disabled{border-color:#EBE6E6;" +
+      "background:#FBF9F9;color:#9B9292;cursor:default}" +
+      ".board-edit-overlay--media .board-edit-section{margin-top:0;padding:14px;" +
       "border:1px solid #EBE6E6;border-radius:14px;background:#fff}" +
-      ".board-edit-overlay--media .board-edit-section-heading{display:flex;align-items:center;" +
-      "justify-content:space-between;gap:12px;margin:0 0 11px!important}" +
-      ".board-edit-overlay--media .board-edit-section-title{font-family:'Alumni Sans','Inter',sans-serif;" +
-      "font-size:11px;font-weight:700!important;letter-spacing:.25px!important;text-transform:none!important;" +
-      "color:#4A3E3E!important}" +
-      ".board-edit-overlay--media .board-edit-section--services .board-edit-section-title{color:#B91414!important}" +
-      ".board-edit-overlay--media .board-edit-section--providers .board-edit-section-title{color:#C9821F!important}" +
-      ".board-edit-overlay--media .board-edit-section-note{color:#9B9292;font-size:10px;font-weight:600}" +
+      // Подпись блока стоит над рамкой и выглядит как подписи полей рядом:
+      // внутри рамки она читалась как часть содержимого, а не как её название.
+      ".board-edit-overlay--media .board-edit-section-label{margin:16px 0 7px;" +
+      "font:700 11px 'Inter',sans-serif;letter-spacing:.6px;text-transform:uppercase;" +
+      "color:#857D7D}" +
       ".board-edit-overlay--media .board-edit-grid{display:grid!important;" +
       "grid-template-columns:repeat(auto-fit,minmax(145px,1fr))!important;gap:10px!important}" +
       ".board-edit-overlay--media .board-edit-footer{display:flex;align-items:center;" +
@@ -161,12 +185,17 @@
       ".board-edit-overlay--media .board-edit-header{padding:18px 18px 15px!important}" +
       ".board-edit-overlay--media .board-edit-footer{padding:13px 16px 15px!important}" +
       "}" +
+      "@media(max-width:620px){" +
+      ".board-edit-overlay--media .board-edit-agent{grid-template-columns:minmax(0,1fr) 38px}" +
+      ".board-edit-overlay--media .board-edit-agent > label:first-child{grid-area:1/1}" +
+      ".board-edit-overlay--media .board-edit-agent > label:nth-child(2){grid-area:2/1}" +
+      ".board-edit-overlay--media .board-edit-agent-drop{grid-area:1/2/3/3;height:100%}" +
+      "}" +
       "@media(max-width:480px){" +
       ".board-edit-overlay--media .board-edit-main-grid{grid-template-columns:1fr!important}" +
       ".board-edit-overlay--media .board-edit-offer-field{grid-column:auto}" +
       ".board-edit-overlay--media .board-edit-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}" +
       ".board-edit-overlay--media .board-edit-section{padding:12px}" +
-      ".board-edit-overlay--media .board-edit-section-heading{align-items:flex-start;flex-direction:column;gap:3px}" +
       ".board-edit-overlay--media .board-edit-footer{display:grid;grid-template-columns:1fr 1fr}" +
       ".board-edit-overlay--media .board-edit-button{width:100%;padding:0 10px!important}" +
       "}";
@@ -222,6 +251,246 @@
       "body.cs-dragging .cs-chip{cursor:grabbing}" +
       "@media(prefers-reduced-motion:reduce){.cs-chip,.cs-slot{transition:none!important}}";
     document.head.appendChild(style);
+  }
+
+  /* ---------- фильтр с несколькими значениями ---------- */
+
+  /* Обычный <select> держит одно значение, а на медиаборде так не смотрят:
+   * «эти три баера», «Аргентина и Австралия» — обычный вопрос, и раньше на него
+   * приходилось отвечать тремя заходами подряд. Поле держит набор значений:
+   * выбранное показывается плашкой с крестиком, снять можно точечно.
+   *
+   * Панель списка — та же csel-*, что у одиночных списков, поэтому выпадашки
+   * по всей CRM выглядят одинаково.
+   */
+
+  var MF_CARET =
+    '<svg class="cmf-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+    '<path d="m7 10 5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+    'stroke-linejoin="round"/></svg>';
+  var MF_CROSS =
+    '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+    '<path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="3.4" ' +
+    'stroke-linecap="round"/></svg>';
+  var MF_TICK =
+    '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+    '<path d="m5 12.5 5 5 9-11" stroke="currentColor" stroke-width="3" stroke-linecap="round" ' +
+    'stroke-linejoin="round"/></svg>';
+
+  var openFilter = null;
+
+  function closeFilterPanel() {
+    if (!openFilter) return;
+    var current = openFilter;
+    openFilter = null;
+    current.close();
+  }
+
+  document.addEventListener("pointerdown", function (event) {
+    if (!openFilter) return;
+    if (openFilter.owns(event.target)) return;
+    closeFilterPanel();
+  }, true);
+
+  document.addEventListener("keydown", function (event) {
+    if (openFilter && event.key === "Escape") {
+      event.stopPropagation();
+      closeFilterPanel();
+    }
+  }, true);
+
+  window.addEventListener("resize", function () { closeFilterPanel(); });
+  window.addEventListener("scroll", function (event) {
+    // Прокрутка внутри самой панели её не закрывает.
+    if (openFilter && openFilter.owns(event.target)) return;
+    closeFilterPanel();
+  }, true);
+
+  function createMultiFilter(host, onChange) {
+    var items = [];
+    var chosen = [];
+    var panel = null;
+
+    host.classList.add("cmf");
+    host.setAttribute("role", "button");
+    host.setAttribute("tabindex", "0");
+    host.setAttribute("aria-haspopup", "listbox");
+
+    function labelOf(value) {
+      var found = null;
+      items.forEach(function (item) {
+        if (String(item.value) === String(value)) found = item;
+      });
+      return found ? found.label : String(value);
+    }
+
+    function renderField() {
+      var caption = host.getAttribute("data-label") || "";
+      var body;
+      if (!chosen.length) {
+        body = '<span class="cmf-empty">' +
+          escapeHtml(host.getAttribute("data-placeholder") || "Все") + "</span>";
+      } else {
+        body = '<span class="cmf-chips">' + chosen.map(function (value) {
+          var text = labelOf(value);
+          return '<span class="cmf-chip"><span class="cmf-chip-text">' + escapeHtml(text) +
+            '</span><button type="button" class="cmf-x" data-drop="' + escapeHtml(value) +
+            '" aria-label="Убрать: ' + escapeHtml(text) + '">' + MF_CROSS + "</button></span>";
+        }).join("") + "</span>";
+      }
+      host.innerHTML = '<span class="cmf-label">' + escapeHtml(caption) + ":</span>" +
+        body + MF_CARET;
+      host.setAttribute("aria-expanded", panel ? "true" : "false");
+    }
+
+    function rowsHtml() {
+      if (!items.length) {
+        return '<div class="csel-empty">Нет вариантов</div>';
+      }
+      return items.map(function (item) {
+        var on = chosen.indexOf(String(item.value)) >= 0;
+        return '<button type="button" role="option" aria-selected="' + (on ? "true" : "false") +
+          '" class="csel-option cmf-option' + (on ? " csel-option--on" : "") +
+          '" data-value="' + escapeHtml(item.value) +
+          '" data-search="' + escapeHtml((item.label + " " + (item.hint || "")).toLowerCase()) + '">' +
+          '<span class="cmf-box">' + (on ? MF_TICK : "") + "</span>" +
+          '<span class="csel-option-text">' + escapeHtml(item.label) +
+          (item.hint ? '<span class="csel-option-hint">' + escapeHtml(item.hint) + "</span>" : "") +
+          "</span></button>";
+      }).join("");
+    }
+
+    function place() {
+      if (!panel) return;
+      var box = host.getBoundingClientRect();
+      var width = Math.max(box.width, 240);
+      panel.style.width = Math.min(width, window.innerWidth - 16) + "px";
+      panel.style.left = Math.max(
+        8, Math.min(box.left, window.innerWidth - panel.offsetWidth - 8)
+      ) + "px";
+      var below = window.innerHeight - box.bottom - 10;
+      var above = box.top - 10;
+      // Панель прибита к окну, а не к полю: фильтры стоят вверху страницы, и
+      // обычно места хватает снизу — но у нижнего края разворачиваем вверх.
+      if (below >= 220 || below >= above) {
+        panel.style.top = box.bottom + 6 + "px";
+        panel.style.maxHeight = Math.min(320, below) + "px";
+      } else {
+        panel.style.maxHeight = Math.min(320, above) + "px";
+        panel.style.top = Math.max(8, box.top - 6 - panel.offsetHeight) + "px";
+      }
+    }
+
+    function applySearch(query) {
+      if (!panel) return;
+      var needle = query.trim().toLowerCase();
+      var shown = 0;
+      Array.prototype.forEach.call(panel.querySelectorAll(".cmf-option"), function (node) {
+        var hit = !needle || node.getAttribute("data-search").indexOf(needle) >= 0;
+        node.hidden = !hit;
+        if (hit) shown += 1;
+      });
+      var empty = panel.querySelector(".cmf-none");
+      if (empty) empty.hidden = shown > 0;
+    }
+
+    function close() {
+      if (panel) panel.remove();
+      panel = null;
+      renderField();
+    }
+
+    function toggle(value) {
+      var index = chosen.indexOf(String(value));
+      if (index >= 0) chosen.splice(index, 1);
+      else chosen.push(String(value));
+      renderField();
+      if (panel) {
+        var list = panel.querySelector(".csel-list");
+        var search = panel.querySelector(".csel-input");
+        var scrolled = list ? list.scrollTop : 0;
+        if (list) list.innerHTML = rowsHtml() +
+          '<div class="csel-empty cmf-none" hidden>Ничего не найдено</div>';
+        if (search) applySearch(search.value);
+        if (list) list.scrollTop = scrolled;
+        place();
+      }
+      if (onChange) onChange();
+    }
+
+    function open() {
+      if (panel) { closeFilterPanel(); return; }
+      closeFilterPanel();
+      panel = document.createElement("div");
+      panel.className = "csel-panel cmf-panel";
+      // Поиск есть во всех фильтрах, даже коротких: человек ищет одинаково во
+      // всех, и «здесь ищется, а здесь нет» само по себе сбивает.
+      panel.innerHTML =
+        '<div class="csel-search"><input type="text" class="csel-input" ' +
+        'placeholder="Поиск" autocomplete="off"></div>' +
+        '<div class="csel-list" role="listbox" aria-multiselectable="true">' + rowsHtml() +
+        '<div class="csel-empty cmf-none" hidden>Ничего не найдено</div></div>';
+      document.body.appendChild(panel);
+      place();
+      openFilter = { close: close, owns: owns };
+      renderField();
+      var search = panel.querySelector(".csel-input");
+      if (search) search.focus();
+      panel.addEventListener("click", function (event) {
+        var option = event.target.closest(".cmf-option");
+        if (!option) return;
+        toggle(option.getAttribute("data-value"));
+      });
+      if (search) {
+        search.addEventListener("input", function () { applySearch(search.value); });
+      }
+    }
+
+    function owns(node) {
+      return !!(node && ((panel && panel.contains(node)) || host.contains(node)));
+    }
+
+    host.addEventListener("click", function (event) {
+      var drop = event.target.closest(".cmf-x");
+      if (drop) {
+        event.stopPropagation();
+        toggle(drop.getAttribute("data-drop"));
+        return;
+      }
+      open();
+    });
+    host.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        open();
+      }
+    });
+
+    renderField();
+
+    return {
+      values: function () { return chosen.slice(); },
+      setValues: function (list) {
+        chosen = (list || []).map(String);
+        renderField();
+      },
+      setItems: function (list) {
+        items = list || [];
+        // Значение, которого в новом списке нет, молча оставлять нельзя: фильтр
+        // продолжил бы резать выдачу по невидимому значению.
+        chosen = chosen.filter(function (value) {
+          return items.some(function (item) { return String(item.value) === value; });
+        });
+        renderField();
+        if (panel) close();
+      },
+      clear: function () {
+        if (!chosen.length) return false;
+        chosen = [];
+        renderField();
+        return true;
+      }
+    };
   }
 
   // `filter` names the query parameter that narrows the leaf request down to this node.
@@ -356,7 +625,9 @@
     var style = document.createElement("style");
     style.id = "celestialViewStyles";
     style.textContent =
-      ".cs-view{position:relative;flex-shrink:0}" +
+      // Кнопка прижата к правому краю карточки сама: распорку между ней и
+      // уровнями убрали вместе с подписью, которая там стояла.
+      ".cs-view{position:relative;flex-shrink:0;margin-left:auto}" +
       ".cs-view-button{display:inline-flex;align-items:center;gap:7px;border:1px solid #E5DFDF;" +
       "background:#fff;border-radius:11px;padding:8px 14px;font:700 12.5px 'Inter',sans-serif;" +
       "color:#B91414;cursor:pointer;transition:border-color .18s,background .18s}" +
@@ -444,72 +715,82 @@
 
     /* ----- filters ----- */
 
-    function filterQuery() {
-      var params = [];
-      function add(name, id) {
-        var element = el(id);
-        if (element && element.value) params.push(name + "=" + encodeURIComponent(element.value));
-      }
-      add("buyer_id", "FilterBuyer");
-      add("date_from", "FilterDateFrom");
-      add("date_to", "FilterDateTo");
-      add("geo", "FilterGeo");
-      add("partner_id", "FilterPartner");
-      add("offer_id", "FilterOffer");
-      if (config.extraFilters) config.extraFilters(params);
-      return params.length ? "&" + params.join("&") : "";
+    // Каждый из этих фильтров держит набор значений, а не одно.
+    var LIST_FILTERS = [
+      { id: "FilterBuyer", param: "buyer_id" },
+      { id: "FilterGeo", param: "geo" },
+      { id: "FilterPartner", param: "partner_id" },
+      { id: "FilterOffer", param: "offer_id" }
+    ];
+
+    var filters = {};
+
+    function filterValues(id) {
+      return filters[id] ? filters[id].values() : [];
     }
 
-    /* The same filters as an object, so a node's own values can override the bar's. */
+    /* Фильтры объектом, чтобы ветка дерева могла перебить значение бара своим. */
     function filterParams() {
       var params = {};
-      filterQuery().replace(/^&/, "").split("&").forEach(function (pair) {
-        if (!pair) return;
-        var parts = pair.split("=");
-        params[parts[0]] = decodeURIComponent(parts[1] || "");
+      var from = el("FilterDateFrom");
+      var to = el("FilterDateTo");
+      if (from && from.value) params.date_from = from.value;
+      if (to && to.value) params.date_to = to.value;
+      LIST_FILTERS.forEach(function (item) {
+        var values = filterValues(item.id);
+        if (values.length) params[item.param] = values;
       });
+      if (config.extraFilters) config.extraFilters(params);
       return params;
     }
 
-    function queryString(params) {
-      return Object.keys(params).filter(function (key) {
-        return params[key] !== "" && params[key] != null;
-      }).map(function (key) {
-        return key + "=" + encodeURIComponent(params[key]);
-      }).join("&");
+    function filterQuery() {
+      var query = queryString(filterParams());
+      return query ? "&" + query : "";
     }
 
-    function fillSelect(id, items, valueKey, labelKey) {
-      var element = el(id);
-      if (!element) return;
-      var current = element.value;
-      element.innerHTML = '<option value="">Все</option>' + items.map(function (item) {
-        return '<option value="' + escapeHtml(item[valueKey]) + '">' +
-          escapeHtml(item[labelKey]) + "</option>";
-      }).join("");
-      element.value = current;
+    function queryString(params) {
+      var parts = [];
+      Object.keys(params).forEach(function (key) {
+        var value = params[key];
+        if (value == null || value === "") return;
+        // Набор уходит повторяющимся параметром — сервер принимает и один, и много.
+        (Array.isArray(value) ? value : [value]).forEach(function (single) {
+          if (single == null || single === "") return;
+          parts.push(key + "=" + encodeURIComponent(single));
+        });
+      });
+      return parts.join("&");
     }
 
     function bindFilters() {
-      ["FilterBuyer", "FilterDateFrom", "FilterDateTo", "FilterGeo", "FilterPartner", "FilterOffer"]
-        .forEach(function (id) {
-          var element = el(id);
-          if (!element) return;
-          element.addEventListener("change", function () {
-            // Смена баера меняет и список его офферов — иначе в фильтре остались
-            // бы чужие.
-            if (id === "FilterBuyer") fillOfferFilter();
-            loadRecords().catch(fail);
-          });
+      LIST_FILTERS.forEach(function (item) {
+        var host = el(item.id);
+        if (!host) return;
+        filters[item.id] = createMultiFilter(host, function () {
+          // Смена баеров меняет и список их офферов — иначе в фильтре остались
+          // бы чужие.
+          if (item.id === "FilterBuyer") fillOfferFilter();
+          reloadSoon();
         });
-      var reset = el("FilterReset");
-      if (reset) reset.addEventListener("click", function () {
-        ["FilterBuyer", "FilterDateFrom", "FilterDateTo", "FilterGeo", "FilterPartner", "FilterOffer"]
-          .forEach(function (id) { var element = el(id); if (element) element.value = ""; });
-        if (config.resetExtraFilters) config.resetExtraFilters();
-        fillOfferFilter();
-        loadRecords().catch(fail);
       });
+      ["FilterDateFrom", "FilterDateTo"].forEach(function (id) {
+        var element = el(id);
+        if (!element) return;
+        element.addEventListener("change", function () { reloadSoon(); });
+      });
+    }
+
+    // Плашки снимают и добавляют пачками, по одному клику на значение. Без
+    // паузы каждый клик уходил бы отдельным запросом за той же таблицей.
+    var reloadTimer = null;
+
+    function reloadSoon() {
+      if (reloadTimer) window.clearTimeout(reloadTimer);
+      reloadTimer = window.setTimeout(function () {
+        reloadTimer = null;
+        loadRecords().catch(fail);
+      }, 220);
     }
 
     /* ----- structure bar ----- */
@@ -791,8 +1072,10 @@
     }
 
     function renderViewPanel(panel) {
+      // Выключателю нечего выключать, когда колонок группы на этой доске нет.
       var groups = COLUMN_GROUPS.filter(function (group) {
-        return !(config.hideServices && group.key === "services");
+        if (config.hideServices && group.key === "services") return false;
+        return !(config.hideProviders && group.key === "providers");
       }).map(function (group) {
         var on = state.display.groups[group.key] !== false;
         return '<label class="cs-view-check"><input type="checkbox" data-group="' + group.key +
@@ -934,6 +1217,10 @@
       return result;
     }
 
+    // Колонки переименовали в верхний регистр, а в сохранённом порядке остались
+    // прежние подписи — без этого две колонки уезжали бы в конец своей группы.
+    var RENAMED_COLUMNS = { Revenue: "REVENUE", Profit: "PROFIT" };
+
     function orderColumns(groupKey, columns) {
       var saved = (state.display.columnOrder || {})[groupKey];
       if (!saved || !saved.length) return columns;
@@ -941,8 +1228,11 @@
       columns.forEach(function (column) { byLabel[column.label] = column; });
       var result = [];
       saved.forEach(function (label) {
+        var current = RENAMED_COLUMNS[label] || label;
         // Колонка могла исчезнуть — например, агента удалили из справочника.
-        if (byLabel[label] && result.indexOf(byLabel[label]) < 0) result.push(byLabel[label]);
+        if (byLabel[current] && result.indexOf(byLabel[current]) < 0) {
+          result.push(byLabel[current]);
+        }
       });
       columns.forEach(function (column) {
         if (result.indexOf(column) < 0) result.push(column);
@@ -1219,18 +1509,11 @@
         '<path d="m6 9 6 6 6-6" stroke="' +
         (depth === 0 ? "#B91414" : "#857D7D") + '" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       var background = depth === 0 ? "#FCF1F1" : "#fff";
-      // Уровень строки и так виден по отступу и по панели структуры — эта подпись
-      // рядом с названием только шумела. Счётчик записей остаётся: по нему видно,
-      // сколько строк раскроется.
-      var count = node.aggregate.records;
+      // Ни уровня строки, ни числа записей рядом с названием: и то и другое
+      // видно по отступу и по стрелке, а в столбце они только шумели.
       var label = '<div style="display:flex;align-items:center;gap:9px">' + arrow +
         '<span style="font-weight:' + (depth === 0 ? "800" : "700") + ';font-size:' +
-        (depth === 0 ? "13.5px" : "12.5px") + '">' + escapeHtml(node.name) + "</span>" +
-        (isLeafLevel
-          ? '<span style="font-size:10.5px;font-weight:700;color:#C9BFBF">' +
-            num(count) + " " + recordWord(count) + "</span>"
-          : "") +
-        "</div>";
+        (depth === 0 ? "13.5px" : "12.5px") + '">' + escapeHtml(node.name) + "</span></div>";
       output.push('<tr data-node="' + escapeHtml(path) + '"' +
         (isLeafLevel ? ' data-leaf-node="1"' : "") +
         ' data-open="' + (isOpen ? "1" : "0") +
@@ -1255,16 +1538,6 @@
       node.order.forEach(function (key) {
         renderNodeRows(node.children[key], depth + 1, nodePath(path, key), output);
       });
-    }
-
-    function recordWord(count) {
-      var tail = count % 100;
-      if (tail > 10 && tail < 20) return "записей";
-      switch (count % 10) {
-        case 1: return "запись";
-        case 2: case 3: case 4: return "записи";
-        default: return "записей";
-      }
     }
 
     function renderLeafRows(node, depth, path, output) {
@@ -1354,12 +1627,6 @@
     function renderTable() {
       var body = el("TableBody");
       if (!body) return;
-      var count = el("ResultCount");
-      if (count) {
-        count.textContent = state.truncated
-          ? "Показано " + num(state.groups.length) + " групп (срез ограничен) · записей: " + num(state.recordCount)
-          : "Групп: " + num(state.groups.length) + " · записей: " + num(state.recordCount);
-      }
       if (!state.groups.length) {
         currentTree = null;
         body.innerHTML = '<tr><td colspan="' + columnCount() +
@@ -1496,49 +1763,55 @@
       state.display = Object.assign(defaultDisplay(), display, {
         groups: Object.assign(defaultDisplay().groups, display.groups || {})
       });
-      fillSelect("FilterBuyer", state.buyers, "id", "name");
-      fillSelect("FilterPartner", state.partners, "id", "name");
+      setFilterItems("FilterBuyer", state.buyers.map(nameItem));
+      setFilterItems("FilterPartner", state.partners.map(nameItem));
       fillOfferFilter();
     }
 
-    /* Офферы выбранного баера: его группа Keitaro плюс то, что назначено лично ему.
-     * Без выбранного баера остаётся весь список, который сервер и так сузил до
-     * видимой ветки — баер видит свои офферы, тимлид — офферы своих баеров. */
-    function offersForBuyer(buyerId) {
-      if (!buyerId) return state.offers;
-      var buyer = state.buyers.find(function (item) { return item.id === buyerId; });
-      if (!buyer) return state.offers;
-      var group = (buyer.keitaro_offer_group || "").trim().toLowerCase();
-      var scoped = state.offers.filter(function (offer) {
-        var assigned = (offer.buyers || []).some(function (item) { return item.id === buyerId; });
-        return assigned || (group && (offer.group_name || "").trim().toLowerCase() === group);
+    function nameItem(row) {
+      return { value: row.id, label: row.name };
+    }
+
+    function setFilterItems(id, items) {
+      if (filters[id]) filters[id].setItems(items);
+    }
+
+    /* Офферы выбранных баеров: группа Keitaro каждого плюс то, что назначено
+     * лично ему. Без выбранного баера остаётся весь список, который сервер и так
+     * сузил до видимой ветки — баер видит свои офферы, тимлид — офферы своих
+     * баеров. */
+    function offersForBuyers(buyerIds) {
+      if (!buyerIds.length) return state.offers;
+      var known = state.buyers.filter(function (item) {
+        return buyerIds.indexOf(item.id) >= 0;
       });
-      // У баера без группы и без назначений сузить не по чему — прячем весь
+      if (!known.length) return state.offers;
+      var groups = known.map(function (buyer) {
+        return (buyer.keitaro_offer_group || "").trim().toLowerCase();
+      }).filter(Boolean);
+      var scoped = state.offers.filter(function (offer) {
+        var assigned = (offer.buyers || []).some(function (item) {
+          return buyerIds.indexOf(item.id) >= 0;
+        });
+        return assigned ||
+          groups.indexOf((offer.group_name || "").trim().toLowerCase()) >= 0;
+      });
+      // У баеров без группы и без назначений сузить не по чему — прячем весь
       // список только тогда, когда сужение действительно что-то нашло.
-      return scoped.length || group ? scoped : state.offers;
+      return scoped.length || groups.length ? scoped : state.offers;
     }
 
     function fillOfferFilter() {
-      var offers = offersForBuyer(el("FilterBuyer") ? el("FilterBuyer").value : "");
-      var selector = el("FilterOffer");
-      // Оффер, которого в новом списке нет, молча оставлять нельзя: фильтр
-      // продолжил бы резать выдачу по невидимому значению.
-      if (selector && selector.value && !offers.some(function (offer) {
-        return offer.id === selector.value;
-      })) {
-        selector.value = "";
-      }
-      fillSelect("FilterOffer", offers, "id", "name");
+      var offers = offersForBuyers(filterValues("FilterBuyer"));
+      setFilterItems("FilterOffer", offers.map(nameItem));
       var geos = [];
       offers.forEach(function (offer) {
         if (offer.geo && geos.indexOf(offer.geo) < 0) geos.push(offer.geo);
       });
       geos.sort();
-      var geoSelector = el("FilterGeo");
-      if (geoSelector && geoSelector.value && geos.indexOf(geoSelector.value) < 0) {
-        geoSelector.value = "";
-      }
-      fillSelect("FilterGeo", geos.map(function (geo) { return { id: geo, name: geo }; }), "id", "name");
+      setFilterItems("FilterGeo", geos.map(function (geo) {
+        return { value: geo, label: geo };
+      }));
     }
 
     /* One request for the whole board: the server returns rows already summed per
@@ -1642,6 +1915,126 @@
         "</label>";
     }
 
+    /* ----- агенты и платёжки ----- */
+
+    /* Раньше секция раскладывала сразу всех агентов сеткой полей, а заполняли
+     * из них один-два: остальные стояли пустыми и только мешали читать форму.
+     * Теперь агента добавляют строкой — сам агент и сумма. */
+
+    var AGENT_DROP_SVG =
+      '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round"/></svg>';
+
+    /* Процент агента прямо в списке: сумму вводят до комиссии, и без него
+       непонятно, во что она превратится. Ноль не пишем — скобка «(0%)» только
+       занимает место. */
+    function agentLabel(provider) {
+      var percent = Number(provider.commission_pct || 0);
+      if (!isFinite(percent) || percent <= 0) return provider.name;
+      // 7 вместо 7.0000, но 7.5 остаётся 7.5.
+      var shown = String(Number(percent.toFixed(2)));
+      return provider.name + " (" + shown + "%)";
+    }
+
+    function agentRows() {
+      var host = byId(p + "EditAgents");
+      return host
+        ? Array.prototype.slice.call(host.querySelectorAll("[data-agent-row]"))
+        : [];
+    }
+
+    function agentPick(row) {
+      return row.querySelector("[data-agent-select]");
+    }
+
+    function takenProviders(except) {
+      return agentRows().filter(function (row) { return row !== except; })
+        .map(function (row) { return agentPick(row).value; });
+    }
+
+    /* Один агент в записи может быть только один раз, поэтому занятые варианты
+     * гасим прямо в списке — так видно, что агент уже добавлен строкой выше. */
+    function refreshAgentRows() {
+      var rows = agentRows();
+      rows.forEach(function (row) {
+        var taken = takenProviders(row);
+        Array.prototype.forEach.call(agentPick(row).options, function (option) {
+          option.disabled = taken.indexOf(option.value) >= 0;
+        });
+      });
+      var button = byId(p + "EditAgentAdd");
+      if (button) button.disabled = rows.length >= state.providers.length;
+      var empty = byId(p + "EditAgentsEmpty");
+      if (empty) empty.hidden = rows.length > 0;
+    }
+
+    function addAgentRow(providerId, amount) {
+      var host = byId(p + "EditAgents");
+      if (!host) return null;
+      var taken = takenProviders(null);
+      var free = state.providers.filter(function (provider) {
+        return taken.indexOf(provider.id) < 0;
+      });
+      var chosen = providerId || (free.length ? free[0].id : null);
+      if (!chosen) return null;
+      var row = document.createElement("div");
+      row.className = "board-edit-agent";
+      row.setAttribute("data-agent-row", "1");
+      row.innerHTML =
+        '<label class="board-edit-field" style="display:flex;flex-direction:column;gap:5px;' +
+        'font-size:11.5px;font-weight:700;color:#6A6161">Агент' +
+        '<select class="board-edit-select" data-agent-select style="border:1px solid #EBE6E6;' +
+        'border-radius:9px;padding:9px 11px;font:600 13px Inter,sans-serif;outline:none">' +
+        state.providers.map(function (provider) {
+          return '<option value="' + escapeHtml(provider.id) + '"' +
+            (provider.id === chosen ? " selected" : "") + ">" +
+            escapeHtml(agentLabel(provider)) + "</option>";
+        }).join("") +
+        "</select></label>" +
+        '<label class="board-edit-field" style="display:flex;flex-direction:column;gap:5px;' +
+        'font-size:11.5px;font-weight:700;color:#6A6161">Сумма до комиссии, USD' +
+        '<input class="board-edit-input" type="number" data-agent-amount inputmode="decimal" ' +
+        'step="any" min="0" autocomplete="off" value="' +
+        escapeHtml(amount == null ? "" : amount) +
+        '" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;' +
+        'font:600 13px Inter,sans-serif;outline:none;color:#070505"></label>' +
+        '<button type="button" class="board-edit-agent-drop" data-agent-drop ' +
+        'aria-label="Убрать агента">' + AGENT_DROP_SVG + "</button>";
+      host.appendChild(row);
+      refreshAgentRows();
+      return row;
+    }
+
+    function bindAgentSection(record) {
+      var host = byId(p + "EditAgents");
+      if (!host) return;
+      host.addEventListener("click", function (event) {
+        var drop = event.target.closest("[data-agent-drop]");
+        if (!drop) return;
+        drop.closest("[data-agent-row]").remove();
+        refreshAgentRows();
+      });
+      host.addEventListener("change", function (event) {
+        if (event.target.closest("[data-agent-select]")) refreshAgentRows();
+      });
+      var add = byId(p + "EditAgentAdd");
+      if (add) add.addEventListener("click", function () {
+        var row = addAgentRow(null, null);
+        if (row) row.querySelector("[data-agent-amount]").focus();
+      });
+      // Порядок берём из справочника, а не из записи: так строки не прыгают
+      // между открытиями одной и той же записи.
+      state.providers.forEach(function (provider) {
+        var value = record && record.providers && record.providers[provider.id];
+        if (!value) return;
+        var amount = Number(value.base_amount);
+        if (!isFinite(amount) || amount <= 0) return;
+        addAgentRow(provider.id, amount);
+      });
+      refreshAgentRows();
+    }
+
     var modalKeydownHandler = null;
 
     function closeModal() {
@@ -1670,19 +2063,16 @@
           escapeHtml(buyer.name) + "</option>";
       }).join("");
       var offersOptions = state.offers.map(function (offer) {
+        // Только название: GEO у оффера одно, и приписка к нему ничего не
+        // различала — оффер и так уникален по имени.
         return '<option value="' + escapeHtml(offer.id) + '"' +
           (record && record.offer_id === offer.id ? " selected" : "") + ">" +
-          escapeHtml(offer.name + (offer.geo ? " · " + offer.geo : "")) + "</option>";
+          escapeHtml(offer.name) + "</option>";
       }).join("");
       var servicesInputs = state.services.map(function (service) {
         var value = record && record.services && record.services[service.id];
         return modalInput(service.name, p + "EditService_" + service.id, "number",
           value ? Number(value.quantity) : "", 'step="any" min="0"');
-      }).join("");
-      var providersInputs = state.providers.map(function (provider) {
-        var value = record && record.providers && record.providers[provider.id];
-        return modalInput(provider.name + " (до комиссии)", p + "EditProvider_" + provider.id, "number",
-          value ? Number(value.base_amount) : "", 'step="any" min="0"');
       }).join("");
       overlay.innerHTML =
         '<div class="board-edit-card" role="dialog" aria-modal="true" tabindex="-1" aria-labelledby="' + p +
@@ -1715,23 +2105,27 @@
         offersOptions + "</select></label>" +
         "</div></div>" +
         (!config.hideServices && state.services.length
-          ? '<section class="board-edit-section board-edit-section--services">' +
-            '<div class="board-edit-section-heading" style="font-size:11px;font-weight:800;color:#B91414;text-transform:uppercase;letter-spacing:.6px;margin:14px 0 8px">' +
-            '<span class="board-edit-section-title">Сервисы</span><span class="board-edit-section-note">Количество инсталлов</span></div>' +
+          ? '<div class="board-edit-section-label">Сервисы</div>' +
+            '<section class="board-edit-section board-edit-section--services">' +
             '<div class="board-edit-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
             servicesInputs + "</div></section>"
           : "") +
         (state.providers.length
+          // Подписи у блока нет: в карточке он один, и «Агенты и платёжки»
+          // повторяли то, что и так написано в самой строке — «Агент».
           ? '<section class="board-edit-section board-edit-section--providers">' +
-            '<div class="board-edit-section-heading" style="font-size:11px;font-weight:800;color:#C9821F;text-transform:uppercase;letter-spacing:.6px;margin:14px 0 8px">' +
-            '<span class="board-edit-section-title">Агенты и платёжки</span><span class="board-edit-section-note">Сумма до комиссии, USD</span></div>' +
-            '<div class="board-edit-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
-            providersInputs + "</div></section>"
+            '<div class="board-edit-agents" id="' + p + 'EditAgents"></div>' +
+            '<div class="board-edit-agents-empty" id="' + p +
+            'EditAgentsEmpty">Ни одного агента ещё не добавлено</div>' +
+            '<button type="button" class="board-edit-agent-add" id="' + p + 'EditAgentAdd">' +
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+            '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" ' +
+            'stroke-linecap="round"/></svg>Добавить агента</button>' +
+            "</section>"
           : "") +
         (config.modalMetricInputs
-          ? '<section class="board-edit-section board-edit-section--metrics">' +
-            '<div class="board-edit-section-heading" style="font-size:11px;font-weight:800;color:#6A6161;text-transform:uppercase;letter-spacing:.6px;margin:14px 0 8px">' +
-            '<span class="board-edit-section-title">Показатели</span><span class="board-edit-section-note">Ручные значения и override</span></div>' +
+          ? '<div class="board-edit-section-label">Показатели</div>' +
+            '<section class="board-edit-section board-edit-section--metrics">' +
             '<div class="board-edit-grid board-edit-grid--metrics" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
             config.modalMetricInputs(record, modalInput) +
             "</div></section>"
@@ -1740,7 +2134,7 @@
         '<button class="board-edit-button board-edit-cancel" id="' + p +
         'EditCancel" type="button" style="border:1px solid #EBE6E6;background:#fff;border-radius:11px;padding:11px 18px;font:700 13px Inter,sans-serif;color:#6A6161;cursor:pointer">Отмена</button>' +
         '<button class="board-edit-button board-edit-save" id="' + p +
-        'EditSave" type="button" style="border:none;background:#B91414;color:#fff;border-radius:11px;padding:11px 22px;font:700 13px Inter,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.28)">Сохранить</button>' +
+        'EditSave" type="button" style="border:none;background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;border-radius:11px;padding:11px 22px;font:600 15px Alumni Sans,Inter,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.28)">Сохранить</button>' +
         "</div></div>";
       document.body.appendChild(overlay);
       document.body.style.overflow = "hidden";
@@ -1756,6 +2150,7 @@
       byId(p + "EditSave").addEventListener("click", function () {
         saveModal(record).catch(fail);
       });
+      bindAgentSection(record);
       var dialog = overlay.querySelector(".board-edit-card");
       if (dialog) dialog.focus();
     }
@@ -1787,12 +2182,18 @@
           }
         });
       }
+      // Строка без суммы — недозаполненная, а не нулевая: сохранять её нечем.
+      // Убранная строка тем самым и снимает сумму агента с записи.
       var providers = [];
-      state.providers.forEach(function (provider) {
-        var value = numberValue(p + "EditProvider_" + provider.id);
-        if (value != null && value > 0) {
-          providers.push({ provider_id: provider.id, base_amount: value });
-        }
+      var seenProviders = {};
+      agentRows().forEach(function (row) {
+        var providerId = agentPick(row).value;
+        var input = row.querySelector("[data-agent-amount]");
+        var value = input.value === "" ? null : Number(input.value);
+        if (!providerId || seenProviders[providerId]) return;
+        if (value == null || !isFinite(value) || value <= 0) return;
+        seenProviders[providerId] = true;
+        providers.push({ provider_id: providerId, base_amount: value });
       });
       var saveButton = byId(p + "EditSave");
       saveButton.disabled = true;
@@ -1848,6 +2249,8 @@
       var pendingGroups = fetchGroups();
       // A rejection handled later still counts as unhandled until then.
       pendingGroups.catch(function () { /* surfaced by loadRecords below */ });
+      // Раньше ссылок: справочники наполняют уже созданные поля фильтров.
+      bindFilters();
       await loadRefs();
       renderStructureBar();
       bindViewControls();
@@ -1855,7 +2258,6 @@
         table.classList.add("celestial-board-table--dense");
       }
       renderHead();
-      bindFilters();
       bindTableEvents();
       if (config.afterInit) config.afterInit(state, { loadRecords: loadRecords, fail: fail, filterQuery: filterQuery });
       await loadRecords(pendingGroups);
@@ -1889,9 +2291,9 @@
       { group: "funnel", label: "REG", kind: "num", get: function (s) { return s.registrations; } },
       { group: "funnel", label: "FTD", kind: "num", get: function (s) { return s.ftd; } },
       { group: "costs", label: "SPEND", kind: "money", get: function (s) { return s.spend; } },
-      { group: "result", label: "Revenue", kind: "money", get: function (s) { return s.revenue; } },
+      { group: "result", label: "REVENUE", kind: "money", get: function (s) { return s.revenue; } },
       {
-        group: "result", label: "Profit", kind: "money", bold: true, tone: signTone,
+        group: "result", label: "PROFIT", kind: "money", bold: true, tone: signTone,
         get: function (s) { return amount(s.revenue) - amount(s.spend); }
       },
       {

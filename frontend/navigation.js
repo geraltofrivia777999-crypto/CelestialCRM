@@ -20,6 +20,7 @@
     "Финансы": "/Finance.dc.html",
     "Оффера": "/Offers.dc.html",
     "Команда": "/Team.dc.html",
+    "Рекрутинг": "/Recruitment.dc.html",
     "Утилиты": "/Utilities.dc.html",
     "Настройки": "/Settings.dc.html"
   };
@@ -35,7 +36,7 @@
       permission: "media.view",
       title: "Медиаборд",
       containers: ["mediaTableHead", "mediaTableBody"],
-      values: ["mediaResultCount"]
+      values: []
     },
     {
       id: "meta",
@@ -43,8 +44,7 @@
       permission: "meta.view",
       title: "Meta Ads",
       containers: ["metaLevelHead", "metaTableBody", "metaAttribution"],
-      values: ["metaSpend", "metaSpendHint", "metaClicks", "metaCtr", "metaLeads",
-        "metaCpl", "metaProfit", "metaRoi", "metaResultCount"]
+      values: ["metaSpend", "metaClicks", "metaLeads", "metaProfit", "metaResultCount"]
     },
     {
       id: "tasks",
@@ -77,7 +77,7 @@
       match: "offer",
       permission: "offers.view",
       title: "Оффера",
-      containers: ["offersTableBody", "offersKeitaroStatus"],
+      containers: ["offersTableBody"],
       values: ["offersTotal", "offersFree", "offersAtLeads", "offersActive",
         "offersResultCount"]
     },
@@ -89,6 +89,14 @@
       containers: ["teamTableBody", "rolesGrid", "hierarchyContent", "teamPagination"],
       values: ["teamTotal", "teamActive", "teamRoles", "teamSidebarTotal",
         "teamUsersTabCount", "teamRolesTabCount", "usersResultCount", "hierarchyLevelCount"]
+    },
+    {
+      id: "recruitment",
+      match: "recruitment",
+      permission: "recruitment.view",
+      title: "Рекрутинг",
+      containers: ["recBody", "recError", "recHeaderNote"],
+      values: []
     },
     {
       id: "utilities",
@@ -107,6 +115,7 @@
         "tierOneList", "tierTwoList"],
       values: ["settingsProvidersTotal", "settingsConnectionsTotal",
         "settingsProvidersTabCount", "settingsConnectionsTabCount",
+        "settingsPartnersTabCount", "settingsPartnersTotal",
         "settingsProvidersResultCount", "settingsSyncSummary",
         "settingsTiersTabCount", "tierOneCount", "tierTwoCount"]
     },
@@ -117,9 +126,7 @@
       title: "Dashboard",
       containers: ["dashboardWorkingOffers", "dashboardChartSvg", "dashboardChartLabels"],
       values: ["dashboardRevenue", "dashboardSpend", "dashboardProfit", "dashboardRoi",
-        "dashboardLeads", "dashboardSales", "dashboardEpl", "dashboardOffersCount",
-        "dashboardRevenueDelta", "dashboardSpendDelta", "dashboardProfitDelta",
-        "dashboardRoiDelta", "dashboardLeadsDelta", "dashboardSalesDelta", "dashboardEplDelta"]
+        "dashboardLeads", "dashboardSales", "dashboardEpl", "dashboardOffersCount"]
     }
   ];
 
@@ -189,7 +196,7 @@
       '<p style="margin-top:10px;font-size:13px;color:#6A6161;line-height:1.55">У вашей роли нет прав на раздел «' +
       escapeHtml(rule.title) + '». Обратитесь к администратору, если доступ нужен для работы.</p>' +
       '<a href="/" style="display:inline-block;margin-top:20px;height:40px;line-height:40px;padding:0 20px;' +
-      "background:#B91414;color:#fff;border-radius:10px;font:700 12.5px Inter,sans-serif;text-decoration:none\">" +
+      "background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;border-radius:10px;font:600 14px Alumni Sans,Inter,sans-serif;text-decoration:none\">" +
       "На дашборд</a></section>";
   }
 
@@ -633,7 +640,7 @@
         ? '<button type="button" data-profile-settings style="height:38px;border:1px solid #EBE6E6;background:#fff;' +
           'border-radius:9px;padding:0 14px;font:700 12px Inter,sans-serif;color:#B91414;cursor:pointer">Настройки</button>'
         : "") +
-      '<button type="button" data-profile-close style="height:38px;border:0;background:#B91414;color:#fff;' +
+      '<button type="button" data-profile-close style="height:38px;border:0;background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;' +
       'border-radius:9px;padding:0 17px;font:700 12px Inter,sans-serif;cursor:pointer">Закрыть</button></div></section>';
     document.body.appendChild(overlay);
     var close = overlay.querySelector("[data-profile-close]");
@@ -724,19 +731,6 @@
     card.title = actionable
       ? (status.configured ? "Нажмите, чтобы синхронизировать" : "Открыть настройки Keitaro")
       : text;
-    renderKeitaroBadge(status, color, text);
-  }
-
-  /* The offers page ships a "Keitaro подключён" badge in its mock-up markup that nothing
-   * ever updated — it claimed a live connection regardless of the real state. It is
-   * blanked with the rest of the mock data and filled in from the status we already poll. */
-  function renderKeitaroBadge(status, color, text) {
-    var badge = document.getElementById("offersKeitaroStatus");
-    if (!badge) return;
-    badge.innerHTML =
-      '<span style="width:7px;height:7px;border-radius:50%;background:' + color + '"></span>' +
-      '<span style="font-size:12px;color:#6A6161;font-weight:700">' +
-      escapeHtml(status.configured ? "Keitaro · " + text : "Keitaro не подключён") + "</span>";
   }
 
   function renderSyncLoading() {

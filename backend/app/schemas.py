@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models import ArticleStatus, OfferStatus, ProviderType, Status, TaskPriority
+from app.services.meta_spend import validate_window as meta_spend_validate_window
 
 
 class ORMModel(BaseModel):
@@ -56,6 +57,9 @@ class UserCreate(BaseModel):
     role_id: uuid.UUID
     status: Status = Status.active
     parent_ids: list[uuid.UUID] = Field(default_factory=list)
+    # Подчинённые — та же связь с другой стороны: в базе она одна, но в карточке
+    # человека удобнее назначать иерархию в обе стороны сразу.
+    child_ids: list[uuid.UUID] = Field(default_factory=list)
     keitaro_company_group: str | None = None
     keitaro_offer_group: str | None = None
     team_name: str | None = Field(default=None, max_length=120)
@@ -67,6 +71,7 @@ class UserUpdate(BaseModel):
     role_id: uuid.UUID | None = None
     status: Status | None = None
     parent_ids: list[uuid.UUID] | None = None
+    child_ids: list[uuid.UUID] | None = None
     keitaro_company_group: str | None = Field(default=None, max_length=160)
     keitaro_offer_group: str | None = Field(default=None, max_length=160)
     team_name: str | None = Field(default=None, max_length=120)
@@ -190,6 +195,9 @@ class MetaConnectionCreate(BaseModel):
     # Шаг «Импорт» в мастере. Пустой список означает «все, что видно токеном»:
     # так ведёт себя подключение, созданное без мастера.
     import_accounts: list[str] = Field(default_factory=list, max_length=200)
+    # Живая браузерная сессия мастера: проверка токена сессии идёт через её
+    # контекст — обычный httpx-запрос Meta отклонит.
+    session_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("business_id")
     @classmethod
@@ -224,6 +232,9 @@ class MetaConnectionUpdate(BaseModel):
     sync_interval_minutes: int | None = Field(default=None, ge=15, le=1440)
     lookback_days: int | None = Field(default=None, ge=1, le=14)
     attribution_sub_id: int | None = Field(default=None, ge=1, le=10)
+    # Живая браузерная сессия (повторный вход через модалку) — для проверки
+    # нового токена сессии из её контекста.
+    session_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("business_id")
     @classmethod
@@ -248,6 +259,9 @@ def validate_proxy_url(value: str | None) -> str | None:
 
 class MetaConnectionOut(ORMModel):
     id: uuid.UUID
+    owner_id: uuid.UUID | None = None
+    owner_name: str | None = None
+    can_edit: bool = False
     name: str
     status: Status
     sync_interval_minutes: int
@@ -278,6 +292,8 @@ class MetaConnectionPreview(BaseModel):
     # обещанием, которое не выполнится при первой синхронизации.
     proxy_url: str | None = Field(default=None, max_length=500)
     user_agent: str | None = Field(default=None, max_length=500)
+    # Живая браузерная сессия мастера для токена сессии.
+    session_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("business_id")
     @classmethod
@@ -297,7 +313,9 @@ class MetaSessionStart(BaseModel):
     бана (cookies, показанные чужому IP, помечают сессию как угнанную).
     """
 
-    cookies: str = Field(default="", max_length=60000)
+    # Экспорт cookies из расширений (JSON-массив с доменами и флагами) бывает
+    # в десятки раз больше простой строки «имя=значение» — запас нужен щедрый.
+    cookies: str = Field(default="", max_length=500000)
     proxy_url: str = Field(..., max_length=500)
     user_agent: str | None = Field(default=None, max_length=500)
     # Для повторного входа существующего подключения: сохранённая сессия
@@ -520,11 +538,18 @@ class MetaLaunchAdText(BaseModel):
     """Тексты объявления на одном языке."""
 
     language: str = Field(default="", max_length=12)
+    # Человеческое имя языка («English (US)»). Meta в multi-language ads
+    # принимает числовые ID локалей, а не коды, — по имени их ищем при
+    # публикации живым токеном (adlocale-словарь).
+    language_name: str | None = Field(default=None, max_length=120)
     headline: str | None = Field(default=None, max_length=600)
     description: str | None = Field(default=None, max_length=600)
     primary_text: str | None = Field(default=None, max_length=3000)
     link_url: str | None = Field(default=None, max_length=2000)
     call_to_action: str | None = Field(default=None, max_length=40)
+    # Свой креатив этого языка: у каждого языка объявления может быть своя
+    # картинка/видео (правило показа ссылается на него через adlabel).
+    creative_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
 
 
 class MetaLaunchAd(BaseModel):
@@ -575,6 +600,36 @@ class MetaLaunchFields(BaseModel):
     adset_count: int = Field(default=1, ge=1, le=20)
     url_tags: str | None = Field(default=None, max_length=1000)
     display_link: str | None = Field(default=None, max_length=240)
+    # Кастомный нейминг: шаблон имени кампании этого кабинета. Поддерживает те
+    # же макросы, что и связка («{{cab.name}}», «{{date}}»…); пустое значение
+    # оставляет шаблон связки.
+    campaign_name: str | None = Field(default=None, max_length=240)
+    # Бенефициар/плательщик DSA-прозрачности. Meta требует его для рекламы на
+    # ЕС; одно значение уходит в оба поля адсета.
+    beneficiary: str | None = Field(default=None, max_length=255)
+    # --- Расширенный режим мастера ---
+    # Цель кампании и количество кампаний поверх связки.
+    objective: str | None = Field(default=None, max_length=40)
+    campaign_count: int = Field(default=1, ge=1, le=20)
+    # Блок «Бюджет и ставка»: пусто — берётся из связки.
+    budget_level: Literal["campaign", "adset"] | None = None
+    budget_kind: Literal["daily", "lifetime"] | None = None
+    budget_randomize: bool = False
+    adset_budget_limit: Decimal | None = Field(default=None, ge=0)
+    bid_strategy: str | None = Field(default=None, max_length=40)
+    # Автоправила, которые будут привязаны к созданным объектам залива.
+    rule_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
+    # Теги (adlabels) после создания: {"level","names","mode"}.
+    tags: dict | None = None
+    # --- Расширенный режим v2: цель и прочее поверх связки ---
+    custom_event_type: str | None = Field(default=None, max_length=60)
+    attribution: str | None = Field(default=None, max_length=20)
+    engaged_view: str | None = Field(default=None, max_length=5)
+    budget_limit_min: Decimal | None = Field(default=None, ge=0)
+    budget_limit_max: Decimal | None = Field(default=None, ge=0)
+    # Периоды увеличения бюджета: [{"start_at","end_at","kind","amount"}].
+    budget_increases: list[dict] | None = Field(default=None, max_length=50)
+    rule_group: str | None = Field(default=None, max_length=160)
 
     @field_validator("link_url")
     @classmethod
@@ -644,15 +699,51 @@ class MetaLaunchUpdate(BaseModel):
     creative_ids: list[uuid.UUID] | None = Field(default=None, max_length=20)
 
 
+# Настройки объекта — строки, а не числа: сравнивать их можно только на
+# совпадение и вхождение, а порог для них — тоже строка.
+RULE_TEXT_METRICS = frozenset(
+    {"entity_name", "campaign_name", "objective", "buying_type"}
+)
+RULE_TEXT_OPERATORS = frozenset({"eq", "ne", "in", "nin"})
+
+
 class MetaRuleCondition(BaseModel):
-    """Одно условие правила. Несколько соединяются И."""
+    """Одно условие правила. Несколько соединяются И.
+
+    Набор метрик и операторов повторяет то, что умеет движок правил
+    (`meta_metrics.METRIC_LABELS` и `meta_rules.OPERATORS`): форма показывает
+    их все, и сузить список здесь означало бы отдавать 422 на половину
+    выбранного в ней.
+    """
 
     metric: Literal[
         "spend", "roi", "profit", "revenue", "cpl", "cpc", "ctr", "leads", "clicks",
-        "impressions", "link_clicks", "results", "cpa", "cpm",
+        "impressions", "link_clicks", "link_ctr", "results", "cpa", "cpm",
+        "result_cr", "sales", "reach", "pixel_leads", "pixel_purchases",
+        "actions_total", "entity_name", "campaign_name", "objective", "buying_type",
+        "spend_cap", "bid_amount", "daily_budget", "lifetime_budget",
     ] = "roi"
-    operator: Literal["lt", "lte", "gt", "gte", "eq"] = "lt"
-    value: Decimal = Decimal("0")
+    operator: Literal["lt", "lte", "gt", "gte", "eq", "ne", "in", "nin"] = "lt"
+    # Порог числовой у метрик-чисел и строковый у настроек объекта.
+    value: Decimal | str = Decimal("0")
+
+    @model_validator(mode="after")
+    def validate_pair(self) -> "MetaRuleCondition":
+        if self.metric in RULE_TEXT_METRICS:
+            if self.operator not in RULE_TEXT_OPERATORS:
+                raise ValueError(
+                    "Текстовое условие сравнивается только на =, !=, ∈ или ∉"
+                )
+            if not str(self.value).strip():
+                raise ValueError("Укажите текст для сравнения")
+        elif isinstance(self.value, str):
+            # Числовая метрика с пустым полем — почти наверняка недозаполненная
+            # строка условия, а не «сравнить с нулём».
+            try:
+                self.value = Decimal(self.value.strip() or "x")
+            except (ArithmeticError, ValueError) as exc:
+                raise ValueError("Укажите число для сравнения") from exc
+        return self
 
 
 class MetaRuleCreate(BaseModel):
@@ -668,15 +759,32 @@ class MetaRuleCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     account_id: uuid.UUID | None = None
     launch_id: uuid.UUID | None = None
+    group_id: uuid.UUID | None = None
     level: Literal["campaign", "adset", "ad"] = "campaign"
+    scope_kind: Literal["cabinet", "campaign"] = "cabinet"
+    campaign_external_id: str | None = Field(default=None, max_length=100)
     entity_status: Literal["active", "paused", "any"] = "active"
-    window: Literal["today", "yesterday", "last_3d", "last_7d", "last_30d"] = "today"
+    window: Literal[
+        "today", "yesterday", "last_2d", "last_3d", "last_7d",
+        "last_14d", "last_28d", "last_30d", "month"
+    ] = "today"
+    schedule_kind: Literal["always", "daily_midnight", "custom"] = "always"
+    # {"days": [1..7], "intervals": [{"begin":"HH:MM","end":"HH:MM"}]}.
+    schedule: dict | None = None
+    convert_currency: bool = False
+    currency: str | None = Field(default=None, max_length=8)
     conditions: list[MetaRuleCondition] = Field(default_factory=list, max_length=10)
     min_spend: Decimal = Field(default=Decimal("10"), ge=0)
     action: Literal[
-        "notify", "pause", "resume", "increase_budget", "decrease_budget"
+        "notify", "pause", "resume",
+        "increase_budget", "decrease_budget",
+        "change_budget", "change_bid",
     ] = "notify"
-    action_value: Decimal | None = Field(default=None, ge=0, le=500)
+    action_value: Decimal | None = Field(default=None, ge=0, le=100000)
+    action_sign: Literal["plus", "minus"] = "plus"
+    action_mode: Literal["pct", "sum"] = "pct"
+    action_max: Decimal | None = Field(default=None, ge=0)
+    budget_kind: Literal["daily", "lifetime"] = "daily"
     is_enabled: bool = True
     frequency_minutes: int = Field(default=60, ge=15, le=1440)
     cooldown_minutes: int = Field(default=180, ge=0, le=10080)
@@ -690,18 +798,33 @@ class MetaRuleCreate(BaseModel):
                 raise ValueError(
                     "У объявления нет собственного бюджета — выберите кампанию или адсет"
                 )
+        if self.action in {"change_budget", "change_bid"} and not self.action_value:
+            raise ValueError("Укажите, на сколько менять")
+        if self.action == "change_budget" and self.level == "ad":
+            raise ValueError(
+                "У объявления нет собственного бюджета — выберите кампанию или адсет"
+            )
+        # Ставка живёт только на адсете: на кампании и объявлении менять нечего.
+        if self.action == "change_bid" and self.level != "adset":
+            raise ValueError("Ставка задаётся на адсете — выберите уровень «Адсет»")
+        if self.scope_kind == "campaign" and not self.campaign_external_id:
+            raise ValueError("Выберите кампанию, с которой работает правило")
         return self
 
 
 class MetaSpendCommitIn(BaseModel):
-    """Привязка расхода кампаний за отрезок дня к офферу.
+    """Привязка расхода кампаний за отрезок времени к офферу.
 
-    Окно — полуинтервал: «с 12:00 по 16:00» это часы 12, 13, 14 и 15. Иначе
-    шестнадцатый час попадал бы и в это окно, и в следующее.
+    Окно задаётся от часа одного дня до часа другого и может переходить через
+    полночь. Полуинтервал: «с 12:00 по 16:00» это часы 12, 13, 14 и 15 — иначе
+    шестнадцатый час попадал бы и в это окно, и в следующее. Медиаборд живёт
+    записями «день + баер + оффер», поэтому длинное окно сервер раскладывает
+    на посуточные части сам.
     """
 
-    record_date: date
+    date_from: date
     hour_from: int = Field(ge=0, le=23)
+    date_to: date
     hour_to: int = Field(ge=1, le=24)
     campaign_ids: list[str] = Field(min_length=1, max_length=50)
     offer_id: uuid.UUID
@@ -710,8 +833,12 @@ class MetaSpendCommitIn(BaseModel):
 
     @model_validator(mode="after")
     def validate_window(self) -> "MetaSpendCommitIn":
-        if self.hour_to <= self.hour_from:
-            raise ValueError("Конец окна должен быть позже начала")
+        try:
+            meta_spend_validate_window(
+                self.date_from, self.hour_from, self.date_to, self.hour_to
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
         return self
 
 
@@ -719,16 +846,64 @@ class MetaRuleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
     account_id: uuid.UUID | None = None
     launch_id: uuid.UUID | None = None
+    group_id: uuid.UUID | None = None
     level: Literal["campaign", "adset", "ad"] | None = None
+    scope_kind: Literal["cabinet", "campaign"] | None = None
+    campaign_external_id: str | None = Field(default=None, max_length=100)
     entity_status: Literal["active", "paused", "any"] | None = None
-    window: Literal["today", "yesterday", "last_3d", "last_7d", "last_30d"] | None = None
+    window: Literal[
+        "today", "yesterday", "last_2d", "last_3d", "last_7d",
+        "last_14d", "last_28d", "last_30d", "month"
+    ] | None = None
+    schedule_kind: Literal["always", "daily_midnight", "custom"] | None = None
+    schedule: dict | None = None
+    convert_currency: bool | None = None
+    currency: str | None = Field(default=None, max_length=8)
     conditions: list[MetaRuleCondition] | None = Field(default=None, max_length=10)
     frequency_minutes: int | None = Field(default=None, ge=15, le=1440)
     min_spend: Decimal | None = Field(default=None, ge=0)
     action: str | None = Field(default=None, max_length=30)
-    action_value: Decimal | None = Field(default=None, ge=0, le=500)
+    action_value: Decimal | None = Field(default=None, ge=0, le=100000)
+    action_sign: Literal["plus", "minus"] | None = None
+    action_mode: Literal["pct", "sum"] | None = None
+    action_max: Decimal | None = Field(default=None, ge=0)
+    budget_kind: Literal["daily", "lifetime"] | None = None
     is_enabled: bool | None = None
     cooldown_minutes: int | None = Field(default=None, ge=0, le=10080)
+
+
+class MetaCommentFetch(BaseModel):
+    """Задание на загрузку комментариев по выбранным постам."""
+
+    account_id: uuid.UUID
+    # Пусто — берём все посты кабинета, у которых есть активные объявления:
+    # чистят обычно то, что крутится прямо сейчас.
+    posts: list[str] = Field(default_factory=list, max_length=200)
+    active_only: bool = True
+
+
+class MetaCommentAction(BaseModel):
+    """Массовое действие над отмеченными комментариями.
+
+    `delete` необратим — Meta не отдаёт удалённый комментарий никогда, поэтому
+    интерфейс подтверждает его отдельно, а сюда приходит уже осознанный выбор.
+    """
+
+    account_id: uuid.UUID
+    action: Literal["hide", "unhide", "delete"]
+    comments: list[str] = Field(min_length=1, max_length=500)
+
+
+class MetaRuleGroupCreate(BaseModel):
+    """Группа правил: имя и, опционально, правила, входящие в неё."""
+
+    name: str = Field(min_length=1, max_length=160)
+    rule_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+
+
+class MetaRuleGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    rule_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
 
 
 def normalize_color(value: str | None) -> str | None:
@@ -891,6 +1066,7 @@ class TaskCreate(BaseModel):
     section_id: uuid.UUID | None = None
     status_id: uuid.UUID | None = None
     priority: TaskPriority = TaskPriority.medium
+    start_date: date | None = None
     due_date: date | None = None
     assignee_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     custom_values: dict = Field(default_factory=dict)
@@ -903,6 +1079,7 @@ class TaskUpdate(BaseModel):
     section_id: uuid.UUID | None = None
     status_id: uuid.UUID | None = None
     priority: TaskPriority | None = None
+    start_date: date | None = None
     due_date: date | None = None
     assignee_ids: list[uuid.UUID] | None = Field(default=None, max_length=20)
     custom_values: dict | None = None
@@ -1242,6 +1419,9 @@ class OfferIn(BaseModel):
     """
 
     name: str = Field(min_length=1, max_length=240)
+    # ID оффера в партнёрском сервисе: по нему депозиты из ПП находят оффер
+    # и раскладываются в книгу байера автоматически.
+    external_id: str | None = Field(default=None, max_length=100)
     geo: str | None = Field(default=None, max_length=64)
     cap: str | None = Field(default=None, max_length=160)
     # Ставка партнёрки: с ней оффер уезжает в книгу баера готовым.
@@ -1252,6 +1432,8 @@ class OfferIn(BaseModel):
     kpi: str | None = Field(default=None, max_length=4000)
     comment: str | None = Field(default=None, max_length=4000)
     partner_id: uuid.UUID | None = None
+    # Через какую интеграцию с ПП приходят депозиты по этому офферу.
+    partner_integration_id: uuid.UUID | None = None
     lead_ids: list[uuid.UUID] = Field(default_factory=list)
     buyer_ids: list[uuid.UUID] = Field(default_factory=list)
 
@@ -1261,7 +1443,15 @@ class AssignBuyers(BaseModel):
 
 
 class AssignLeads(BaseModel):
+    """Тимлиды оффера и капа каждого из них.
+
+    Капа приходит отдельным словарём, а не рядом с id: списком тимлидов
+    пользуются и форма оффера, и эта ручка, а цифру спрашивают только здесь.
+    Лишние ключи (тимлид, которого сняли) просто игнорируются.
+    """
+
     lead_ids: list[uuid.UUID]
+    caps: dict[uuid.UUID, str] = Field(default_factory=dict)
 
 
 class CatalogStatusUpdate(BaseModel):

@@ -51,6 +51,12 @@ services:
         condition: service_healthy
     expose:
       - "8000"
+    networks:
+      - default
+      # Сервис рекрутинга («Рекрутинг») живёт в соседней compose-сети той же
+      # VPS: без этого CRM-бэкенд не достучится до http://recruitment-api:8000.
+      # Локально сеть создаётся один раз: docker network create recruitmentservice_internal
+      - recruitment
 
   worker:
     build: ./backend
@@ -102,3 +108,8 @@ volumes:
   redis_data:
   uploads_data:
   meta_sessions_data:
+
+networks:
+  recruitment:
+    external: true
+    name: recruitmentservice_internal

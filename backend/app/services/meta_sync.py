@@ -11,7 +11,6 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -38,12 +37,17 @@ from app.services.meta import (
     account_status_label,
     action_counts,
     creative_page_id,
+    creative_post_id,
     decimal_value,
     integer_value,
     money_from_minor,
     stat_dimension_key,
 )
-from app.services.meta_session import get_session_manager
+from app.services.meta_session import (
+    MetaSessionError,
+    get_session_manager,
+    open_session_access,
+)
 
 logger = logging.getLogger("meta_sync")
 
@@ -103,6 +107,7 @@ class MetaSyncEngine:
             config = {
                 "id": connection.id,
                 "workspace_id": connection.workspace_id,
+                "owner_id": connection.owner_id,
                 "business_id": (connection.external_account_id or "").strip() or None,
                 "lookback_days": max(connection.lookback_days or 2, MIN_LOOKBACK_DAYS),
                 "checkpoint_at": connection.checkpoint_at,
@@ -111,102 +116,136 @@ class MetaSyncEngine:
                 "user_agent": connection.user_agent,
             }
 
+        transport = None
+        session_owned = False
+        try:
+            if config.get("auth_method") == "session":
+                # Токен сессии Meta принимает только из браузерного контекста
+                # (см. SessionHTTPTransport): без живой сессии любой httpx-запрос
+                # получит «Invalid request», сколько ни обновляй токен.
+                access = await open_session_access(
+                    self.session_factory,
+                    str(config["id"]),
+                    proxy_url=config.get("proxy_url"),
+                    user_agent=config.get("user_agent"),
+                )
+                transport = access["transport"]
+                session_owned = access["owned"]
+                if access.get("token"):
+                    access_token = access["token"]
+        except MetaSessionError as exc:
+            await self._fail_run(run_uuid, exc)
+            raise
+
         client = self.client_factory(
-            access_token, proxy=config["proxy_url"], user_agent=config["user_agent"]
+            access_token,
+            proxy=config["proxy_url"],
+            user_agent=config["user_agent"],
+            transport=transport,
         )
         # Токен сессии (EAAB) живёт, пока жива сессия браузера. Если Meta отбила
-        # его (190/102), сессию можно восстановить по сохранённому storage_state,
-        # извлечь новый EAAB и продолжить — ровно тем маршрутом (прокси/cookies),
-        # которым токен и был получен. Обновление пробуем один раз за прогон.
+        # его (190/102), из живой сессии извлекается новый EAAB — ровно тем
+        # маршрутом (прокси/cookies), которым токен и был получен. Обновление
+        # пробуем один раз за прогон.
         renewed = False
-        while True:
-            try:
-                social = await self._sync_social_graph(config, client)
-                accounts = await self._sync_accounts(config, client, social)
-                start, end = self._date_window(mode, config)
-                totals = {"accounts": len(accounts), "entities": 0, "stat_rows": 0}
-                per_account: dict[str, dict] = {}
+        try:
+            while True:
+                try:
+                    social = await self._sync_social_graph(config, client)
+                    accounts = await self._sync_accounts(config, client, social)
+                    start, end = self._date_window(mode, config)
+                    totals = {"accounts": len(accounts), "entities": 0, "stat_rows": 0}
+                    per_account: dict[str, dict] = {}
 
-                gentle = config.get("auth_method") != "system_user"
-                for index, account in enumerate(accounts):
-                    if gentle and index:
-                        # Пауза между кабинетами: двадцать кабинетов подряд без
-                        # передышки — это не поведение человека, открывшего кабинет
-                        # посмотреть статистику.
-                        await asyncio.sleep(GENTLE_PAUSE_SECONDS)
-                    entity_counts = await self._sync_entities(config, client, account)
-                    stat_rows = await self._sync_insights(config, client, account, start, end)
-                    totals["entities"] += sum(entity_counts.values())
-                    totals["stat_rows"] += stat_rows
-                    per_account[account["external_id"]] = {
-                        "name": account["name"],
-                        **entity_counts,
-                        "stat_rows": stat_rows,
-                    }
+                    gentle = config.get("auth_method") != "system_user"
+                    for index, account in enumerate(accounts):
+                        if gentle and index:
+                            # Пауза между кабинетами: двадцать кабинетов подряд без
+                            # передышки — это не поведение человека, открывшего кабинет
+                            # посмотреть статистику.
+                            await asyncio.sleep(GENTLE_PAUSE_SECONDS)
+                        entity_counts = await self._sync_entities(config, client, account)
+                        stat_rows = await self._sync_insights(config, client, account, start, end)
+                        totals["entities"] += sum(entity_counts.values())
+                        totals["stat_rows"] += stat_rows
+                        per_account[account["external_id"]] = {
+                            "name": account["name"],
+                            **entity_counts,
+                            "stat_rows": stat_rows,
+                        }
+                        async with self.session_factory() as db:
+                            run = await db.get(SyncRun, run_uuid)
+                            if not run:
+                                return {"status": "missing"}
+                            run.rows_processed = totals["entities"] + totals["stat_rows"]
+                            run.progress_pct = int(((index + 1) / max(len(accounts), 1)) * 100)
+                            run.details = {
+                                "phase": "insights",
+                                "current_account": account["name"],
+                                "range_from": start.isoformat(),
+                                "range_to": end.isoformat(),
+                                "accounts_completed": index + 1,
+                                "accounts_total": len(accounts),
+                            }
+                            await db.commit()
+
+                    now = datetime.now(UTC)
                     async with self.session_factory() as db:
                         run = await db.get(SyncRun, run_uuid)
-                        if not run:
+                        connection = await db.get(IntegrationConnection, connection_uuid)
+                        if not run or not connection:
                             return {"status": "missing"}
+                        run.status = SyncStatus.success
+                        run.progress_pct = 100
                         run.rows_processed = totals["entities"] + totals["stat_rows"]
-                        run.progress_pct = int(((index + 1) / max(len(accounts), 1)) * 100)
+                        run.finished_at = now
+                        run.error = None
                         run.details = {
-                            "phase": "insights",
-                            "current_account": account["name"],
+                            "phase": "complete",
                             "range_from": start.isoformat(),
                             "range_to": end.isoformat(),
-                            "accounts_completed": index + 1,
-                            "accounts_total": len(accounts),
+                            "totals": totals,
+                            "accounts": per_account,
                         }
+                        connection.last_sync_at = now
+                        connection.checkpoint_at = now
                         await db.commit()
-
-                now = datetime.now(UTC)
-                async with self.session_factory() as db:
-                    run = await db.get(SyncRun, run_uuid)
-                    connection = await db.get(IntegrationConnection, connection_uuid)
-                    if not run or not connection:
-                        return {"status": "missing"}
-                    run.status = SyncStatus.success
-                    run.progress_pct = 100
-                    run.rows_processed = totals["entities"] + totals["stat_rows"]
-                    run.finished_at = now
-                    run.error = None
-                    run.details = {
-                        "phase": "complete",
+                    return {
+                        "status": "success",
+                        "rows_processed": totals["entities"] + totals["stat_rows"],
                         "range_from": start.isoformat(),
                         "range_to": end.isoformat(),
-                        "totals": totals,
-                        "accounts": per_account,
                     }
-                    connection.last_sync_at = now
-                    connection.checkpoint_at = now
-                    await db.commit()
-                return {
-                    "status": "success",
-                    "rows_processed": totals["entities"] + totals["stat_rows"],
-                    "range_from": start.isoformat(),
-                    "range_to": end.isoformat(),
-                }
-            except MetaError as exc:
-                if (
-                    not renewed
-                    and exc.error_code in TOKEN_DEAD_CODES
-                    and config.get("auth_method") == "session"
-                ):
-                    token = await self._renew_session_token(config)
-                    if token:
-                        renewed = True
-                        access_token = token
-                        client = self.client_factory(
-                            access_token,
-                            proxy=config["proxy_url"],
-                            user_agent=config["user_agent"],
-                        )
-                        continue
-                await self._fail_run(run_uuid, exc)
-                raise
-            except Exception as exc:
-                await self._fail_run(run_uuid, exc)
-                raise
+                except MetaError as exc:
+                    if (
+                        not renewed
+                        and exc.error_code in TOKEN_DEAD_CODES
+                        and config.get("auth_method") == "session"
+                    ):
+                        token = await self._renew_session_token(config)
+                        if token:
+                            renewed = True
+                            access_token = token
+                            client = self.client_factory(
+                                access_token,
+                                proxy=config["proxy_url"],
+                                user_agent=config["user_agent"],
+                                transport=transport,
+                            )
+                            continue
+                    await self._fail_run(run_uuid, exc)
+                    raise
+                except Exception as exc:
+                    await self._fail_run(run_uuid, exc)
+                    raise
+        finally:
+            if session_owned:
+                # Браузер, восстановленный ради этого прогона, закрываем. Чужую
+                # живую сессию (мастер подключения) не трогаем.
+                try:
+                    await get_session_manager().close(str(config["id"]))
+                except Exception:  # noqa: BLE001 — очистка не должна маскировать результат
+                    pass
 
     async def _fail_run(self, run_uuid: uuid.UUID, exc: Exception) -> None:
         async with self.session_factory() as db:
@@ -221,53 +260,41 @@ class MetaSyncEngine:
                 await db.commit()
 
     async def _renew_session_token(self, config: dict) -> str | None:
-        """Восстановление браузерной сессии и извлечение нового EAAB-токена.
+        """Извлекает новый EAAB-токен из живой сессии и сохраняет его в подключение.
 
-        Возвращает новый токен или None, если обновить нельзя: нет сохранённой
-        сессии на диске, нет прокси или вход не удался (тогда остаётся ошибка
-        Meta, и она доходит до человека в исходном виде).
+        Возвращает новый токен или None, если обновить нельзя. Сессию НЕ закрывает:
+        повторный запрос пойдёт через тот же браузерный контекст — закрывается она
+        в конце прогона в run().
         """
-        proxy_url = config.get("proxy_url")
-        if not proxy_url:
-            logger.info("session renewal skipped: connection %s has no proxy", config["id"])
-            return None
-        session_file = Path(settings.meta_session_dir) / f"{config['id']}.json"
-        if not session_file.exists():
-            logger.info("session renewal skipped: %s not found", session_file)
-            return None
         manager = get_session_manager()
-        try:
-            state = await manager.restore(
-                str(config["id"]),
-                proxy_url=proxy_url,
-                user_agent=config.get("user_agent"),
-            )
-        except Exception as exc:
-            logger.warning("session renewal failed to restore: %s", exc)
+        session_id = str(config["id"])
+        state = manager.get(session_id)
+        if not state or not state.context or not state.page:
+            logger.info("session renewal skipped: no live session for %s", config["id"])
             return None
-        try:
-            deadline = time.time() + settings.meta_login_timeout_sec
-            while time.time() < deadline:
-                if state.status == "error":
-                    logger.warning("session renewal failed: %s", state.error)
-                    return None
-                if state.token:
-                    token = state.token
-                    async with self.session_factory() as db:
-                        connection = await db.get(IntegrationConnection, config["id"])
-                        if connection:
-                            connection.api_key_encrypted = encrypt_secret(token)
-                            await db.commit()
-                    logger.info("session renewal succeeded for connection %s", config["id"])
-                    return token
-                await asyncio.sleep(SESSION_RENEW_POLL_SECONDS)
-            logger.warning("session renewal timed out for connection %s", config["id"])
-            return None
-        finally:
+        deadline = time.time() + settings.meta_login_timeout_sec
+        while time.time() < deadline:
+            if state.status == "error":
+                logger.warning("session renewal failed: %s", state.error)
+                return None
+            if state.token:
+                token = state.token
+                async with self.session_factory() as db:
+                    connection = await db.get(IntegrationConnection, config["id"])
+                    if connection:
+                        connection.api_key_encrypted = encrypt_secret(token)
+                        await db.commit()
+                logger.info("session renewal succeeded for connection %s", config["id"])
+                return token
             try:
-                await manager.close(state.id)
-            except Exception:  # noqa: BLE001 — очистка не должна маскировать результат
-                pass
+                result = await manager.extract_token(session_id)
+                if result.get("token"):
+                    continue
+            except Exception as exc:
+                logger.warning("token extraction during renewal failed: %s", exc)
+            await asyncio.sleep(SESSION_RENEW_POLL_SECONDS)
+        logger.warning("session renewal timed out for connection %s", config["id"])
+        return None
 
     @staticmethod
     def _date_window(mode: str, config: dict) -> tuple[date, date]:
@@ -460,8 +487,13 @@ class MetaSyncEngine:
                         workspace_id=config["workspace_id"],
                         connection_id=config["id"],
                         external_id=external_id,
+                        owner_id=config["owner_id"],
                     )
                     db.add(account)
+                elif account.owner_id is None and config["owner_id"] is not None:
+                    # Старые и впервые найденные кабинеты наследуют владельца
+                    # подключения. Ручное назначение другому человеку не трогаем.
+                    account.owner_id = config["owner_id"]
                 account.business_id = owner_by_account.get(external_id)
                 account.social_account_id = social.get("social_id")
                 account.name = str(row.get("name") or external_id)[:240]
@@ -528,6 +560,7 @@ class MetaSyncEngine:
                     entity.parent_external_id = _parent_id(level, row)
                     if level == "ad":
                         entity.page_external_id = creative_page_id(row)
+                        entity.post_external_id = creative_post_id(row)
                     entity.effective_status = (
                         str(row.get("effective_status") or row.get("status") or "") or None
                     )

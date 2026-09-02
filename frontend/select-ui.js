@@ -35,6 +35,19 @@
       select.hasAttribute("data-native-select");
   }
 
+  /* Второй строкой варианта можно показать техническую подпись — `data-hint`
+     на <option>. Так рекламный кабинет остаётся в списке под своим именем, но
+     ищется ещё и по ID: в комментариях и в чужих ссылках имени часто нет, а
+     ID есть, и без этого кабинет было не найти. */
+  function optionRow(option) {
+    return {
+      value: option.value,
+      label: option.textContent,
+      hint: option.getAttribute("data-hint") || "",
+      disabled: option.disabled
+    };
+  }
+
   function entries(select) {
     /* Плоский список строк панели: заголовки групп идут вперемешку с
        вариантами, потому что рисуются они в одном столбце. */
@@ -43,20 +56,12 @@
       if (node.tagName === "OPTGROUP") {
         rows.push({ group: true, label: node.label });
         Array.prototype.forEach.call(node.children, function (option) {
-          rows.push({
-            value: option.value,
-            label: option.textContent,
-            disabled: option.disabled
-          });
+          rows.push(optionRow(option));
         });
         return;
       }
       if (node.tagName !== "OPTION") return;
-      rows.push({
-        value: node.value,
-        label: node.textContent,
-        disabled: node.disabled
-      });
+      rows.push(optionRow(node));
     });
     return rows;
   }
@@ -75,8 +80,12 @@
         var on = String(row.value) === String(current);
         return '<button type="button" class="csel-option' + (on ? " csel-option--on" : "") +
           '" role="option" aria-selected="' + on + '" data-index="' + index + '"' +
-          (row.disabled ? " disabled" : "") + ">" +
-          '<span class="csel-option-text">' + escapeHtml(row.label) + "</span>" +
+          (row.disabled ? " disabled" : "") +
+          (row.hint ? ' data-hint="' + escapeHtml(row.hint) + '"' : "") + ">" +
+          '<span class="csel-option-text">' + escapeHtml(row.label) +
+          (row.hint
+            ? '<span class="csel-option-hint">' + escapeHtml(row.hint) + "</span>"
+            : "") + "</span>" +
           (on
             ? '<svg class="csel-tick" width="15" height="15" viewBox="0 0 24 24" ' +
               'fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" ' +
@@ -108,13 +117,48 @@
     }
   }
 
+  function keepScrollFocus(element) {
+    /* Фокус без прыжка страницы. Safari умеет игнорировать preventScroll и
+       доскролливать документ уже после того, как мы вернули позицию: позицию
+       панелей он в этот момент считает по потоку документа, а панель лежит
+       в конце body — внизу страницы. Поэтому позицию возвращаем ещё пару
+       раз: следующим кадром и чуть позже. */
+    var left = window.pageXOffset;
+    var top = window.pageYOffset;
+    var restore = function () {
+      if (window.pageXOffset !== left || window.pageYOffset !== top) {
+        window.scrollTo(left, top);
+      }
+    };
+    try {
+      element.focus({ preventScroll: true });
+    } catch (_error) {
+      // Старые браузеры не знают preventScroll — позицию восстановим ниже.
+      element.focus();
+    }
+    restore();
+    if (window.requestAnimationFrame) window.requestAnimationFrame(restore);
+    window.setTimeout(restore, 50);
+  }
+
+  function scrollOptionIntoView(option) {
+    var list = option && option.parentElement;
+    if (!list) return;
+    var top = option.offsetTop;
+    var bottom = top + option.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    if (bottom > list.scrollTop + list.clientHeight) {
+      list.scrollTop = bottom - list.clientHeight;
+    }
+  }
+
   function close(restoreFocus) {
     if (!open) return;
     var select = open.select;
     open.panel.remove();
     select.removeAttribute("aria-expanded");
     open = null;
-    if (restoreFocus) select.focus();
+    if (restoreFocus) keepScrollFocus(select);
   }
 
   function choose(select, value) {
@@ -142,14 +186,16 @@
       : Math.max(0, Math.min(options.length - 1, index + step));
     options.forEach(function (node) { node.classList.remove("csel-option--active"); });
     options[next].classList.add("csel-option--active");
-    options[next].scrollIntoView({ block: "nearest" });
+    scrollOptionIntoView(options[next]);
   }
 
   function filter(query) {
     var clean = String(query || "").trim().toLowerCase();
     var shown = 0;
     Array.prototype.forEach.call(open.panel.querySelectorAll(".csel-option"), function (node) {
-      var hit = !clean || node.textContent.toLowerCase().indexOf(clean) >= 0;
+      var haystack = (node.textContent + " " + (node.getAttribute("data-hint") || ""))
+        .toLowerCase();
+      var hit = !clean || haystack.indexOf(clean) >= 0;
       node.hidden = !hit;
       if (hit) shown += 1;
     });
@@ -185,7 +231,7 @@
       panel.querySelector(".csel-option");
     if (active) {
       active.classList.add("csel-option--active");
-      active.scrollIntoView({ block: "nearest" });
+      scrollOptionIntoView(active);
     }
 
     panel.addEventListener("mousedown", function (event) { event.preventDefault(); });
@@ -206,7 +252,8 @@
     var search = panel.querySelector(".csel-input");
     if (search) {
       search.addEventListener("input", function () { filter(search.value); });
-      search.focus();
+      // Без защиты Safari на фокусе инпута уезжает всей страницей.
+      keepScrollFocus(search);
     }
   }
 
@@ -227,7 +274,7 @@
     // Отменяем родной список, но фокус ставим сами — без него поле не
     // подсвечивается и клавиатура после закрытия панели никуда не попадает.
     event.preventDefault();
-    select.focus();
+    keepScrollFocus(select);
     openPanel(select);
   }, true);
 

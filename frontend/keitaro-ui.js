@@ -34,10 +34,17 @@
     offerGroups: [],
     canManage: false
   };
-  var parentPickerState = {
-    selectedIds: new Set(),
-    editingUserId: null,
-    search: ""
+  /* Два одинаковых списка людей в карточке пользователя: кому он подчинён и
+     кто подчинён ему. Отличаются они только направлением связи, поэтому код
+     один, а расходятся они префиксом элементов и набором отметок. */
+  var PICKERS = {
+    parent: { prefix: "parentPicker", empty: "Не выбраны — верхний уровень" },
+    child: { prefix: "childPicker", empty: "Не выбраны — подчинённых нет" }
+  };
+  var pickerState = {
+    parent: { selectedIds: new Set(), search: "" },
+    child: { selectedIds: new Set(), search: "" },
+    editingUserId: null
   };
 
   function byId(id) {
@@ -299,17 +306,16 @@
     var body = byId("teamTableBody");
     if (!body) return;
     body.innerHTML = users.length ? users.map(function (user) {
-      var groups = [user.keitaro_company_group, user.keitaro_offer_group].filter(Boolean);
       var parents = user.parents || [];
-      var parentHtml = parents.length
-        ? '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-          parents.map(function (parent) {
-            return '<span style="display:inline-flex;align-items:center;gap:6px;background:#F7F4F4;' +
-              'border-radius:8px;padding:5px 8px;font-size:10.5px;font-weight:700">' +
-              '<span class="mini-avatar" style="margin-left:0;background:#B91414">' +
-              escapeHtml(initials(parent.name)) + "</span>" + escapeHtml(parent.name) + "</span>";
-          }).join("") + "</div>"
-        : '<span style="color:#9B9292;font-size:12.5px">—</span>';
+      // Подчинённых у пользователя не хранят списком: это те, у кого он записан
+      // родителем. Список команды уже загружен, поэтому считаем прямо здесь.
+      var children = users.filter(function (candidate) {
+        return (candidate.parents || []).some(function (parent) {
+          return parent.id === user.id;
+        });
+      });
+      var parentHtml = peopleChips(parents);
+      var childHtml = peopleChips(children);
       var actions = teamState.canManage
         ? '<details class="row-actions" style="position:relative"><summary style="width:34px;height:34px;' +
           'border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer">•••</summary>' +
@@ -336,14 +342,35 @@
         '<td style="padding:14px 18px;font-size:12.5px;font-weight:700">' +
         escapeHtml(user.role.name) + "</td>" +
         '<td style="padding:14px 18px">' + parentHtml + "</td>" +
-        '<td style="padding:14px 18px;font-size:12px">' +
-        escapeHtml(groups.join(" · ") || "Не заданы") + "</td>" +
+        '<td style="padding:14px 18px">' + childHtml + "</td>" +
         '<td style="padding:14px 18px">' + statusBadge(user.status) + "</td>" +
         '<td style="padding:14px 18px;color:#9B9292">' + actions + "</td></tr>";
     }).join("") : emptyRow(6, "Пользователей пока нет");
     renderRoles();
     renderHierarchy();
     bindTeamActions();
+  }
+
+  /* Плашки людей в ячейке: родители и подчинённые выглядят одинаково.
+     Больше трёх в строку не влезает, поэтому хвост сворачивается в счётчик. */
+  function peopleChips(people) {
+    if (!people || !people.length) {
+      return '<span style="color:#9B9292;font-size:12.5px">—</span>';
+    }
+    var shown = people.slice(0, 3).map(function (person) {
+      return '<span style="display:inline-flex;align-items:center;gap:6px;background:#F7F4F4;' +
+        'border-radius:8px;padding:5px 8px;font-size:10.5px;font-weight:700">' +
+        '<span class="mini-avatar" style="margin-left:0;background:#B91414">' +
+        escapeHtml(initials(person.name)) + "</span>" + escapeHtml(person.name) + "</span>";
+    }).join("");
+    var rest = people.length > 3
+      ? '<span title="' + escapeHtml(people.slice(3).map(function (person) {
+        return person.name;
+      }).join(", ")) + '" style="font-size:11px;color:#6A6161;font-weight:700">+' +
+        (people.length - 3) + "</span>"
+      : "";
+    return '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+      shown + rest + "</div>";
   }
 
   function uniqueValues(values) {
@@ -400,24 +427,34 @@
         return '<option value="' + escapeHtml(role.id) + '">' +
           escapeHtml(role.name) + "</option>";
       }).join("");
-    parentPickerState.editingUserId = editingUser ? editingUser.id : null;
-    renderParentPicker();
+    pickerState.editingUserId = editingUser ? editingUser.id : null;
+    Object.keys(PICKERS).forEach(renderPicker);
     selectOptions(form.elements.companyGroup, teamState.campaignGroups, "Без привязки");
     selectOptions(form.elements.offerGroup, teamState.offerGroups, "Без привязки");
   }
 
-  function availableParentUsers() {
+  /* Кого нельзя выбрать, чтобы иерархия не свернулась в кольцо: себя, а для
+     родителей — всех своих подчинённых, для подчинённых — всех своих
+     начальников. Направление обхода — единственная разница. */
+  function availablePickerUsers(kind) {
     var excludedIds = new Set();
-    if (parentPickerState.editingUserId) {
-      excludedIds.add(parentPickerState.editingUserId);
-      var queue = [parentPickerState.editingUserId];
+    var rootId = pickerState.editingUserId;
+    if (rootId) {
+      excludedIds.add(rootId);
+      var queue = [rootId];
       while (queue.length) {
         var currentId = queue.shift();
         teamState.users.forEach(function (candidate) {
-          var isChild = (candidate.parents || []).some(function (parent) {
-            return parent.id === currentId;
-          });
-          if (isChild && !excludedIds.has(candidate.id)) {
+          var linked = kind === "parent"
+            ? (candidate.parents || []).some(function (parent) {
+              return parent.id === currentId;
+            })
+            : candidate.id === currentId
+              ? false
+              : (currentUserParents(currentId) || []).some(function (parent) {
+                return parent.id === candidate.id;
+              });
+          if (linked && !excludedIds.has(candidate.id)) {
             excludedIds.add(candidate.id);
             queue.push(candidate.id);
           }
@@ -427,6 +464,11 @@
     return teamState.users.filter(function (user) {
       return !excludedIds.has(user.id);
     });
+  }
+
+  function currentUserParents(userId) {
+    var found = teamState.users.find(function (user) { return user.id === userId; });
+    return found ? found.parents || [] : [];
   }
 
   function parentSelectionLabel(count) {
@@ -441,78 +483,87 @@
     return "Выбрано: " + count + " " + word;
   }
 
-  function setParentPickerSelection(ids) {
-    var allowedIds = new Set(availableParentUsers().map(function (user) {
+  function setPickerSelection(kind, ids) {
+    var allowedIds = new Set(availablePickerUsers(kind).map(function (user) {
       return user.id;
     }));
-    parentPickerState.selectedIds = new Set((ids || []).filter(function (id) {
+    pickerState[kind].selectedIds = new Set((ids || []).filter(function (id) {
       return allowedIds.has(id);
     }));
-    parentPickerState.search = "";
-    var search = byId("parentPickerSearch");
+    pickerState[kind].search = "";
+    var search = byId(PICKERS[kind].prefix + "Search");
     if (search) search.value = "";
-    renderParentPicker();
+    renderPicker(kind);
   }
 
-  function renderParentPicker() {
-    var summary = byId("parentPickerSummary");
-    var options = byId("parentPickerOptions");
-    var count = byId("parentPickerCount");
+  function renderPicker(kind) {
+    var picker = PICKERS[kind];
+    var summary = byId(picker.prefix + "Summary");
+    var options = byId(picker.prefix + "Options");
+    var count = byId(picker.prefix + "Count");
     if (!summary || !options) return;
-    var users = availableParentUsers();
+    var users = availablePickerUsers(kind);
     var selectedUsers = users.filter(function (user) {
-      return parentPickerState.selectedIds.has(user.id);
+      return pickerState[kind].selectedIds.has(user.id);
     });
     summary.classList.toggle("is-empty", !selectedUsers.length);
     if (!selectedUsers.length) {
-      summary.innerHTML = '<span class="parent-picker-summary-text">Не выбраны — верхний уровень</span>';
+      summary.innerHTML = '<span class="people-picker-summary-text">' +
+        escapeHtml(picker.empty) + "</span>";
     } else {
-      var avatarHtml = '<span class="parent-picker-avatars">' + selectedUsers.slice(0, 3).map(
+      var avatarHtml = '<span class="people-picker-avatars">' + selectedUsers.slice(0, 3).map(
         function (user) {
-          return '<span class="parent-picker-avatar">' +
+          return '<span class="people-picker-avatar">' +
             escapeHtml(initials(user.name)) + "</span>";
         }
       ).join("") + "</span>";
       var selectedText = selectedUsers.length === 1
         ? selectedUsers[0].name
         : selectedUsers[0].name + " и ещё " + (selectedUsers.length - 1);
-      summary.innerHTML = avatarHtml + '<span class="parent-picker-summary-text">' +
+      summary.innerHTML = avatarHtml + '<span class="people-picker-summary-text">' +
         escapeHtml(selectedText) + "</span>";
     }
-    var query = parentPickerState.search.trim().toLocaleLowerCase("ru");
+    var query = pickerState[kind].search.trim().toLocaleLowerCase("ru");
     var visibleUsers = users.filter(function (user) {
       return !query || (user.name + " " + user.login + " " + user.role.name)
         .toLocaleLowerCase("ru").includes(query);
     });
     options.innerHTML = visibleUsers.length ? visibleUsers.map(function (user) {
-      var selected = parentPickerState.selectedIds.has(user.id);
-      return '<label class="parent-picker-option" role="option" aria-selected="' +
-        (selected ? "true" : "false") + '"><input type="checkbox" data-parent-id="' +
+      var selected = pickerState[kind].selectedIds.has(user.id);
+      return '<label class="people-picker-option" role="option" aria-selected="' +
+        (selected ? "true" : "false") + '"><input type="checkbox" data-picker-kind="' +
+        kind + '" data-picker-id="' +
         escapeHtml(user.id) + '"' + (selected ? " checked" : "") + ">" +
-        '<span class="parent-picker-option-avatar">' + escapeHtml(initials(user.name)) +
-        '</span><span class="parent-picker-option-copy"><span class="parent-picker-option-name">' +
-        escapeHtml(user.name) + '</span><span class="parent-picker-option-login">@' +
+        '<span class="people-picker-option-avatar">' + escapeHtml(initials(user.name)) +
+        '</span><span class="people-picker-option-copy"><span class="people-picker-option-name">' +
+        escapeHtml(user.name) + '</span><span class="people-picker-option-login">@' +
         escapeHtml(user.login) + " · " + escapeHtml(user.role.name) +
         "</span></span></label>";
-    }).join("") : '<div class="parent-picker-empty">' +
+    }).join("") : '<div class="people-picker-empty">' +
       (users.length ? "По вашему запросу никого не найдено" :
         "Других пользователей пока нет") + "</div>";
     if (count) count.textContent = parentSelectionLabel(selectedUsers.length);
-    var clear = byId("parentPickerClear");
+    var clear = byId(picker.prefix + "Clear");
     if (clear) clear.style.visibility = selectedUsers.length ? "visible" : "hidden";
   }
 
-  function setParentPickerOpen(open) {
-    var picker = byId("parentPicker");
-    var menu = byId("parentPickerMenu");
-    var trigger = byId("parentPickerTrigger");
-    if (!picker || !menu || !trigger) return;
-    picker.classList.toggle("open", open);
+  function setPickerOpen(kind, open) {
+    var prefix = PICKERS[kind].prefix;
+    var host = byId(prefix);
+    var menu = byId(prefix + "Menu");
+    var trigger = byId(prefix + "Trigger");
+    if (!host || !menu || !trigger) return;
+    host.classList.toggle("open", open);
     menu.hidden = !open;
     menu.classList.remove("open-up");
     trigger.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
-      renderParentPicker();
+      // Открытым может быть только один список: два раскрытых меню наезжают
+      // друг на друга внутри одной карточки.
+      Object.keys(PICKERS).forEach(function (other) {
+        if (other !== kind) setPickerOpen(other, false);
+      });
+      renderPicker(kind);
       window.setTimeout(function () {
         var modalCard = menu.closest(".modal-card");
         if (modalCard) {
@@ -520,10 +571,14 @@
           var modalBounds = modalCard.getBoundingClientRect();
           menu.classList.toggle("open-up", menuBounds.bottom > modalBounds.bottom - 10);
         }
-        var search = byId("parentPickerSearch");
+        var search = byId(prefix + "Search");
         if (search) search.focus();
       }, 20);
     }
+  }
+
+  function closeAllPickers() {
+    Object.keys(PICKERS).forEach(function (kind) { setPickerOpen(kind, false); });
   }
 
   function openUserEditor(user) {
@@ -531,11 +586,23 @@
     if (!form) return;
     form.reset();
     form.dataset.userId = user ? user.id : "";
-    parentPickerState.editingUserId = user ? user.id : null;
-    parentPickerState.selectedIds = new Set((user && user.parents || []).map(function (parent) {
-      return parent.id;
-    }));
-    parentPickerState.search = "";
+    pickerState.editingUserId = user ? user.id : null;
+    pickerState.parent.selectedIds = new Set((user && user.parents || []).map(
+      function (parent) { return parent.id; }
+    ));
+    // Подчинённых у пользователя не хранят списком — это те, у кого он записан
+    // родителем. Собираем их из уже загруженной команды.
+    pickerState.child.selectedIds = new Set(
+      user
+        ? teamState.users.filter(function (candidate) {
+          return (candidate.parents || []).some(function (parent) {
+            return parent.id === user.id;
+          });
+        }).map(function (candidate) { return candidate.id; })
+        : []
+    );
+    pickerState.parent.search = "";
+    pickerState.child.search = "";
     populateUserFormOptions(user);
     text("userModalTitle", user ? "Редактирование пользователя" : "Новый пользователь");
     text(
@@ -556,8 +623,9 @@
       form.elements.companyGroup.value = user.keitaro_company_group || "";
       form.elements.offerGroup.value = user.keitaro_offer_group || "";
     }
-    setParentPickerSelection(Array.from(parentPickerState.selectedIds));
-    setParentPickerOpen(false);
+    setPickerSelection("parent", Array.from(pickerState.parent.selectedIds));
+    setPickerSelection("child", Array.from(pickerState.child.selectedIds));
+    closeAllPickers();
     byId("userModal").classList.add("open");
     document.body.style.overflow = "hidden";
   }
@@ -565,23 +633,49 @@
   function closeTeamModal(id) {
     var modal = byId(id);
     if (modal) modal.classList.remove("open");
-    if (id === "userModal") setParentPickerOpen(false);
+    if (id === "userModal") closeAllPickers();
     document.body.style.overflow = "";
   }
 
+  /* Названия разделов — те же, что в меню: право «meta.launch» человек ищет
+     как «Meta Ads», а не как «meta». */
+  var PERMISSION_MODULES = {
+    dashboard: "Dashboard",
+    media: "Медиаборд",
+    meta: "Meta Ads",
+    finance: "Финансы",
+    salary: "Зарплаты",
+    offers: "Оффера",
+    team: "Команда",
+    recruitment: "Рекрутинг",
+    workspace: "Задачи",
+    knowledge: "База знаний",
+    utilities: "Утилиты",
+    settings: "Настройки"
+  };
+
+  /* Всё, что не «просмотр» и не «изменение», раньше подписывалось «просмотром»:
+     в списке стояли три одинаковых «meta · просмотр», хотя это заливы,
+     комментарии и собственно просмотр. */
+  var PERMISSION_ACTIONS = {
+    view: "просмотр",
+    view_all: "весь справочник",
+    manage: "изменение",
+    export: "экспорт",
+    launch: "заливы",
+    comments: "комментарии"
+  };
+
+  function permissionOrder(code) {
+    var modules = Object.keys(PERMISSION_MODULES);
+    var index = modules.indexOf(String(code).split(".")[0]);
+    return index < 0 ? modules.length : index;
+  }
+
   function permissionLabel(code) {
-    var labels = {
-      dashboard: "Dashboard",
-      media: "Медиаборд",
-      finance: "Финансы",
-      offers: "Офферы",
-      team: "Команда",
-      settings: "Настройки"
-    };
     var parts = String(code).split(".");
-    return (labels[parts[0]] || parts[0]) + " · " +
-      (parts[1] === "manage" ? "изменение" :
-        parts[1] === "export" ? "экспорт" : "просмотр");
+    return (PERMISSION_MODULES[parts[0]] || parts[0]) + " · " +
+      (PERMISSION_ACTIONS[parts[1]] || parts[1] || "");
   }
 
   /* Иконка роли — по её собственному имени, а не по позиции в списке: иначе
@@ -664,7 +758,7 @@
     if (!container) return;
     if (!teamState.users.length) {
       text("hierarchyLevelCount", "0 уровней");
-      container.innerHTML = '<div class="hierarchy-canvas"><div class="parent-picker-empty">' +
+      container.innerHTML = '<div class="hierarchy-canvas"><div class="people-picker-empty">' +
         "Добавьте первого пользователя, чтобы построить структуру команды</div></div>";
       return;
     }
@@ -798,13 +892,6 @@
   function hierarchyNode(user, childCount) {
     var parents = user.parents || [];
     var extraParents = Math.max(0, parents.length - 1);
-    var groups = uniqueValues(
-      [user.keitaro_company_group, user.keitaro_offer_group].filter(Boolean)
-    );
-    var tagHtml = '<span class="hierarchy-tag role">' + escapeHtml(user.role.name) + "</span>" +
-      groups.map(function (group) {
-        return '<span class="hierarchy-tag">' + escapeHtml(group) + "</span>";
-      }).join("");
     var reportLabel = childCount + " " +
       (childCount === 1 ? "подчинённый" :
         childCount >= 2 && childCount <= 4 ? "подчинённых" : "подчинённых");
@@ -835,7 +922,7 @@
       '</span></span><span class="hierarchy-status ' +
       (user.status === "active" ? "" : "blocked") + '" title="' +
       (user.status === "active" ? "Активен" : "Заблокирован") + '"></span></span>' +
-      teamNameHtml + '<span class="org-tags">' + tagHtml + "</span>" +
+      teamNameHtml +
       '<span class="org-foot"><span>' + reportLabel + "</span>" + extraHtml +
       editHtml + "</span></" + tagName + ">";
   }
@@ -852,7 +939,14 @@
     var selected = new Set((role && role.permissions || []).map(function (permission) {
       return permission.code;
     }));
-    byId("rolePermissions").innerHTML = teamState.permissions.map(function (code) {
+    // Порядок — как в меню, а не по коду: право ищут глазами, от раздела к
+    // разделу. По алфавиту «Meta Ads» уезжал бы в конец списка вслед за
+    // латиницей, хотя в меню он третий.
+    var codes = teamState.permissions.slice().sort(function (left, right) {
+      var byModule = permissionOrder(left) - permissionOrder(right);
+      return byModule || permissionLabel(left).localeCompare(permissionLabel(right), "ru");
+    });
+    byId("rolePermissions").innerHTML = codes.map(function (code) {
       return '<label style="display:flex;align-items:center;gap:9px;border:1px solid #E8E2E2;' +
         'border-radius:10px;padding:10px 11px;font-size:11.5px;font-weight:700;color:#5A5050">' +
         '<input type="checkbox" name="permission" value="' + escapeHtml(code) + '"' +
@@ -890,21 +984,31 @@
       var openUser = event.target.closest("#openUserModal");
       var openRole = event.target.closest("#openRoleModal");
       var action = event.target.closest("[data-team-action]");
-      var parentTrigger = event.target.closest("#parentPickerTrigger");
-      var parentClear = event.target.closest("#parentPickerClear");
-      if (parentTrigger) {
+      var pickerHit = null;
+      Object.keys(PICKERS).forEach(function (kind) {
+        var prefix = PICKERS[kind].prefix;
+        if (event.target.closest("#" + prefix + "Trigger")) {
+          pickerHit = { kind: kind, action: "toggle" };
+        } else if (event.target.closest("#" + prefix + "Clear")) {
+          pickerHit = { kind: kind, action: "clear" };
+        } else if (!pickerHit && event.target.closest("#" + prefix)) {
+          pickerHit = { kind: kind, action: "inside" };
+        }
+      });
+      if (pickerHit && pickerHit.action === "toggle") {
         event.preventDefault();
-        setParentPickerOpen(!byId("parentPicker").classList.contains("open"));
+        setPickerOpen(
+          pickerHit.kind,
+          !byId(PICKERS[pickerHit.kind].prefix).classList.contains("open")
+        );
         return;
       }
-      if (parentClear) {
+      if (pickerHit && pickerHit.action === "clear") {
         event.preventDefault();
-        setParentPickerSelection([]);
+        setPickerSelection(pickerHit.kind, []);
         return;
       }
-      if (!event.target.closest("#parentPicker")) {
-        setParentPickerOpen(false);
-      }
+      if (!pickerHit) closeAllPickers();
       if (openUser) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -1027,25 +1131,27 @@
       }
     }, true);
     document.addEventListener("input", function (event) {
-      if (event.target.id !== "parentPickerSearch") return;
-      parentPickerState.search = event.target.value;
-      renderParentPicker();
+      var kind = Object.keys(PICKERS).find(function (name) {
+        return event.target.id === PICKERS[name].prefix + "Search";
+      });
+      if (!kind) return;
+      pickerState[kind].search = event.target.value;
+      renderPicker(kind);
     });
     document.addEventListener("change", function (event) {
-      var parentCheckbox = event.target.closest("[data-parent-id]");
-      if (!parentCheckbox) return;
-      if (parentCheckbox.checked) {
-        parentPickerState.selectedIds.add(parentCheckbox.dataset.parentId);
-      } else {
-        parentPickerState.selectedIds.delete(parentCheckbox.dataset.parentId);
-      }
-      renderParentPicker();
+      var box = event.target.closest("[data-picker-id]");
+      if (!box) return;
+      var kind = box.dataset.pickerKind;
+      if (box.checked) pickerState[kind].selectedIds.add(box.dataset.pickerId);
+      else pickerState[kind].selectedIds.delete(box.dataset.pickerId);
+      renderPicker(kind);
     });
     document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && byId("parentPicker") &&
-          byId("parentPicker").classList.contains("open")) {
-        setParentPickerOpen(false);
-      }
+      if (event.key !== "Escape") return;
+      Object.keys(PICKERS).forEach(function (kind) {
+        var host = byId(PICKERS[kind].prefix);
+        if (host && host.classList.contains("open")) setPickerOpen(kind, false);
+      });
     });
     var userForm = byId("createUserForm");
     if (userForm) {
@@ -1069,7 +1175,8 @@
       login: form.elements.login.value.trim().replace(/^@/, ""),
       role_id: form.elements.role.value,
       status: form.elements.status.value,
-      parent_ids: Array.from(parentPickerState.selectedIds),
+      parent_ids: Array.from(pickerState.parent.selectedIds),
+      child_ids: Array.from(pickerState.child.selectedIds),
       keitaro_company_group: form.elements.companyGroup.value || null,
       keitaro_offer_group: form.elements.offerGroup.value || null
     };
@@ -1268,8 +1375,10 @@
   function updateSettingsHeaderAction() {
     var button = byId("openEntityModal");
     if (!button) return;
-    if (settingsState.activeTab === "integrations" ||
-      settingsState.activeTab === "salary" || !settingsCanManage()) {
+    // У интеграций и расчёта ЗП свои кнопки внутри вкладки — общая «Добавить
+    // агента» там ни при чём.
+    if (["tracker", "partners", "salary"].indexOf(settingsState.activeTab) >= 0 ||
+      !settingsCanManage()) {
       button.style.display = "none";
       return;
     }

@@ -82,7 +82,7 @@ def test_targeting_carries_devices_and_exclusions() -> None:
         },
     )
     targeting = build_targeting(template)
-    assert targeting["geo_locations"]["location_types"] == ["recent"]
+    assert "location_types" not in targeting["geo_locations"]
     assert targeting["excluded_geo_locations"] == {"countries": ["AT"]}
     assert targeting["exclusions"]["interests"][0]["id"] == "6004"
     assert targeting["user_os"] == ["Android_ver_10.0_and_above"]
@@ -492,12 +492,14 @@ async def test_languages_make_one_ad_and_adsets_are_copied(launch_setup) -> None
                 "texts": [
                     {
                         "language": "en_US",
+                        "language_name": "English (US)",
                         "headline": "Buy",
                         "primary_text": "Text EN",
                         "link_url": "https://track.example/en",
                     },
                     {
                         "language": "de_DE",
+                        "language_name": "Deutsch",
                         "headline": "Kaufen",
                         "primary_text": "Text DE",
                         "link_url": "https://track.example/de",
@@ -531,12 +533,15 @@ async def test_languages_make_one_ad_and_adsets_are_copied(launch_setup) -> None
         "https://track.example/de?sub_id_5={{campaign.id}}",
     ]
     # Правило соответствия — то, ради чего всё затевалось: текст выбирается
-    # по языку зрителя, а не крутится вперемешку.
-    languages = [
-        rule["customization_spec"]["language"][0]
-        for rule in feed["asset_customization_rules"]
-    ]
-    assert languages == ["en_US", "de_DE"]
+    # по языку зрителя, а не крутится вперемешку. Meta принимает только
+    # числовые ID локалей (adlocale) + одно правило должно быть по умолчанию.
+    rules = feed["asset_customization_rules"]
+    assert [rule["customization_spec"]["locales"] for rule in rules] == [[6], [3]]
+    assert [rule["is_default"] for rule in rules] == [True, False]
+    # Метки правил — коды языков, Meta числовые строки не принимает.
+    assert [rule["title_label"]["name"] for rule in rules] == ["en_US", "de_DE"]
+    # Общий креатив: ни одного image_label (картинка без метки на всех).
+    assert all("image_label" not in rule for rule in rules)
 
     # Повтор ничего не задваивает: ID уже записаны.
     async with SessionLocal() as db:
@@ -546,6 +551,174 @@ async def test_languages_make_one_ad_and_adsets_are_copied(launch_setup) -> None
     sent.clear()
     await publisher.publish(str(launch_setup["launch"]), str(launch_setup["admin"]))
     assert [path for path, _ in sent if not path.endswith("/insights")] == []
+
+
+async def test_own_creative_per_language_goes_to_the_rules(launch_setup) -> None:
+    """«На каждый язык свой креатив»: у ассетов adlabels, в правилах —
+    image_label, каждый язык ссылается на свою картинку."""
+    from sqlalchemy import select as _select
+
+    from app.models import MetaCreative, MetaLaunchCreative
+
+    async with SessionLocal() as db:
+        db.add(
+            MetaCreative(
+                workspace_id=launch_setup["workspace"],
+                account_id=launch_setup["account"],
+                kind="image",
+                name="banner-de",
+                external_hash="def456hash",
+            )
+        )
+        await db.flush()
+        second = await db.scalar(
+            _select(MetaCreative).where(MetaCreative.external_hash == "def456hash")
+        )
+        launch = await db.get(MetaLaunch, launch_setup["launch"])
+        launch.ads = [
+            {
+                "creative_ids": [],
+                "texts": [
+                    {
+                        "language": "en_US",
+                        "language_name": "English (US)",
+                        "headline": "Buy",
+                        "primary_text": "Text EN",
+                        "link_url": "https://track.example/en",
+                        "creative_ids": [str(launch_setup["creative"])],
+                    },
+                    {
+                        "language": "de_DE",
+                        "language_name": "Deutsch",
+                        "headline": "Kaufen",
+                        "primary_text": "Text DE",
+                        "link_url": "https://track.example/de",
+                        "creative_ids": [str(second.id)],
+                    },
+                ],
+            }
+        ]
+        db.add(MetaLaunchCreative(launch_id=launch.id, creative_id=second.id, position=1))
+        await db.commit()
+
+    sent: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            sent.append((request.url.path, dict(httpx.QueryParams(request.content.decode()))))
+        return _write_handler(request)
+
+    await MetaLaunchPublisher(
+        SessionLocal, _client_factory(handler)
+    ).publish(str(launch_setup["launch"]), str(launch_setup["admin"]))
+
+    creatives = [body for path, body in sent if path.endswith("/adcreatives")]
+    assert len(creatives) == 1
+    feed = json.loads(creatives[0]["asset_feed_spec"])
+    images = feed["images"]
+    assert all("adlabels" in image for image in images)
+    # Метки языков — коды (не числовые строки: их Meta читает как id).
+    labels = {image["adlabels"][0]["name"] for image in images}
+    assert labels == {"en_US", "de_DE"}
+    rules = {rule["image_label"]["name"] for rule in feed["asset_customization_rules"]}
+    assert rules == {"en_US", "de_DE"}
+    assert [rule["customization_spec"]["locales"] for rule in feed["asset_customization_rules"]] == [
+        [6],
+        [3],
+    ]
+
+
+async def test_advanced_mode_creates_several_campaigns_with_overrides(
+    launch_setup,
+) -> None:
+    """Расширенный режим: 2 кампании, своя цель, бюджет на адсетах на весь
+    срок, лимит адсета, стратегия ставок — всё уходит в Meta."""
+    from sqlalchemy import delete as _delete
+
+    from app.models import MetaRule, User
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        rule = MetaRule(
+            workspace_id=launch_setup["workspace"],
+            account_id=launch_setup["account"],
+            name="Advanced rule",
+            level="campaign",
+            conditions=[{"metric": "roi", "operator": "lt", "value": "0"}],
+            min_spend=Decimal("10"),
+            created_by_id=admin.id,
+        )
+        db.add(rule)
+        launch = await db.get(MetaLaunch, launch_setup["launch"])
+        launch.campaign_count = 2
+        launch.objective = "OUTCOME_TRAFFIC"
+        launch.custom_event_type = "LEAD"
+        launch.attribution = "1d_click"
+        launch.engaged_view = "7d"
+        launch.budget_level = "adset"
+        launch.budget_kind = "lifetime"
+        launch.budget_randomize = False
+        launch.budget_limit_min = Decimal("1")
+        launch.budget_limit_max = Decimal("15")
+        launch.bid_strategy = "LOWEST_COST_WITH_BID_CAP"
+        launch.daily_budget = Decimal("30")
+        launch.rule_ids = [str(rule.id)]
+        launch.rule_group = "Группа №1"
+        launch.tags = {"level": "campaign", "names": ["Новая волна"], "mode": "add"}
+        await db.commit()
+        rule_id = rule.id
+
+    sent: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            sent.append((request.url.path, dict(httpx.QueryParams(request.content.decode()))))
+            if request.url.path.endswith("/adlabels"):
+                return httpx.Response(200, json={"id": "label-42"})
+        return _write_handler(request)
+
+    from app.services.meta_launch import attach_rules_to_launch
+
+    async with SessionLocal() as db:
+        launch = await db.get(MetaLaunch, launch_setup["launch"])
+        await attach_rules_to_launch(db, launch, launch.rule_ids)
+        await db.commit()
+
+    await MetaLaunchPublisher(
+        SessionLocal, _client_factory(handler)
+    ).publish(str(launch_setup["launch"]), str(launch_setup["admin"]))
+
+    campaigns = [body for path, body in sent if path.endswith("/campaigns")]
+    adsets = [body for path, body in sent if path.endswith("/adsets")]
+    labels = [
+        body for path, body in sent
+        if path.endswith("/adlabels") and "name" in body
+    ]
+    attaches = [
+        body for path, body in sent
+        if path.endswith("/adlabels") and "adlabel_id" in body
+    ]
+    assert len(campaigns) == 2
+    assert all(campaigns[0]["objective"] == "OUTCOME_TRAFFIC" for campaign in campaigns)
+    assert all("daily_budget" not in campaign for campaign in campaigns)
+    assert len(adsets) == 2
+    assert all("lifetime_budget" in adset for adset in adsets)
+    assert all(adset["daily_budget_min"] == "100" for adset in adsets)  # 1 USD
+    assert all(adset["daily_budget_max"] == "1500" for adset in adsets)  # 15 USD
+    assert all(adset["bid_strategy"] == "LOWEST_COST_WITH_BID_CAP" for adset in adsets)
+    assert len(labels) == 1 and labels[0]["name"] == "Новая волна"
+    assert len(attaches) == 2
+
+    async with SessionLocal() as db:
+        bound = await db.scalar(
+            select(MetaRule).where(MetaRule.id == rule_id)
+        )
+        assert bound.launch_id == launch_setup["launch"]
+        stored = await db.get(MetaLaunch, launch_setup["launch"])
+        payload = stored.external_payload or {}
+        assert len(payload.get("campaign_ids") or []) == 2
+        await db.execute(_delete(MetaRule).where(MetaRule.id == rule_id))
+        await db.commit()
 
 
 def test_uniquify_changes_the_hash_without_breaking_the_file() -> None:

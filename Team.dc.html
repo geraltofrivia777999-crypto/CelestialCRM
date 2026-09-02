@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Alumni+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Alumni+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;background:#F4F1F1;color:#070505;-webkit-font-smoothing:antialiased}
@@ -37,29 +37,31 @@
   .role-card{background:#fff;border:1px solid #EBE6E6;border-radius:17px;padding:20px;transition:transform .2s,box-shadow .2s}
   .role-card:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(45,32,32,.08)}
   .permission-pill{display:inline-flex;align-items:center;gap:5px;padding:5px 8px;background:#F7F4F4;border-radius:7px;color:#6A6161;font-size:10.5px;font-weight:700}
-  .parent-picker{position:relative}
-  .parent-picker-trigger{display:flex;align-items:center;gap:9px;text-align:left;padding-right:38px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
-  .parent-picker.open .parent-picker-trigger{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.09)}
-  .parent-picker-summary{min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden}
-  .parent-picker-summary-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
-  .parent-picker-summary.is-empty .parent-picker-summary-text{color:#857D7D;font-weight:500}
-  .parent-picker-avatars{display:flex;flex-shrink:0;padding-left:5px}
-  .parent-picker-avatar{width:25px;height:25px;margin-left:-5px;border:2px solid #fff;border-radius:8px;background:linear-gradient(135deg,#B91414,#D06060);color:#fff;display:flex;align-items:center;justify-content:center;font-size:7.5px;font-weight:800}
-  .parent-picker-menu{position:absolute;z-index:45;top:calc(100% + 7px);left:0;width:100%;min-width:280px;padding:8px;background:#fff;border:1px solid #E8E2E2;border-radius:13px;box-shadow:0 18px 42px rgba(32,22,22,.18)}
-  .parent-picker-menu.open-up{top:auto;bottom:calc(100% + 7px)}
-  .parent-picker-menu[hidden]{display:none}
-  .parent-picker-search{height:38px;padding-left:12px;background:#FAF8F8}
-  .parent-picker-options{max-height:196px;overflow:auto;margin-top:6px}
-  .parent-picker-option{min-height:48px;padding:7px 8px;border-radius:9px;display:flex;align-items:center;gap:9px;cursor:pointer;transition:background .16s}
-  .parent-picker-option:hover{background:#F5F6FB}
-  .parent-picker-option input{width:16px;height:16px;accent-color:#B91414;flex-shrink:0}
-  .parent-picker-option-avatar{width:31px;height:31px;border-radius:9px;background:#FCF1F1;color:#B91414;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0}
-  .parent-picker-option-copy{min-width:0;flex:1}
-  .parent-picker-option-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2A2020;font-size:12px;font-weight:700}
-  .parent-picker-option-login{display:block;margin-top:2px;color:#9B9292;font-size:10.5px}
-  .parent-picker-empty{padding:20px 12px;text-align:center;color:#9B9292;font-size:11.5px;line-height:1.5}
-  .parent-picker-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;padding:8px 7px 1px;border-top:1px solid #F0F1F5;color:#857D7D;font-size:10.5px;font-weight:600}
-  .parent-picker-clear{border:0;background:transparent;color:#B91414;font-size:10.5px;font-weight:700}
+  /* Один и тот же список людей: им выбирают и родителей, и подчинённых —
+     отличаются они только направлением связи. */
+  .people-picker{position:relative}
+  .people-picker-trigger{display:flex;align-items:center;gap:9px;text-align:left;padding-right:38px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+  .people-picker.open .people-picker-trigger{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.09)}
+  .people-picker-summary{min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden}
+  .people-picker-summary-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .people-picker-summary.is-empty .people-picker-summary-text{color:#857D7D;font-weight:500}
+  .people-picker-avatars{display:flex;flex-shrink:0;padding-left:5px}
+  .people-picker-avatar{width:25px;height:25px;margin-left:-5px;border:2px solid #fff;border-radius:8px;background:linear-gradient(135deg,#B91414,#D06060);color:#fff;display:flex;align-items:center;justify-content:center;font-size:7.5px;font-weight:800}
+  .people-picker-menu{position:absolute;z-index:45;top:calc(100% + 7px);left:0;width:100%;min-width:280px;padding:8px;background:#fff;border:1px solid #E8E2E2;border-radius:13px;box-shadow:0 18px 42px rgba(32,22,22,.18)}
+  .people-picker-menu.open-up{top:auto;bottom:calc(100% + 7px)}
+  .people-picker-menu[hidden]{display:none}
+  .people-picker-search{height:38px;padding-left:12px;background:#FAF8F8}
+  .people-picker-options{max-height:196px;overflow:auto;margin-top:6px}
+  .people-picker-option{min-height:48px;padding:7px 8px;border-radius:9px;display:flex;align-items:center;gap:9px;cursor:pointer;transition:background .16s}
+  .people-picker-option:hover{background:#F5F6FB}
+  .people-picker-option input{width:16px;height:16px;accent-color:#B91414;flex-shrink:0}
+  .people-picker-option-avatar{width:31px;height:31px;border-radius:9px;background:#FCF1F1;color:#B91414;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0}
+  .people-picker-option-copy{min-width:0;flex:1}
+  .people-picker-option-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2A2020;font-size:12px;font-weight:700}
+  .people-picker-option-login{display:block;margin-top:2px;color:#9B9292;font-size:10.5px}
+  .people-picker-empty{padding:20px 12px;text-align:center;color:#9B9292;font-size:11.5px;line-height:1.5}
+  .people-picker-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;padding:8px 7px 1px;border-top:1px solid #F0F1F5;color:#857D7D;font-size:10.5px;font-weight:600}
+  .people-picker-clear{border:0;background:transparent;color:#B91414;font-size:10.5px;font-weight:700}
   .hierarchy-overview{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:18px}
   .hierarchy-overview-item{display:inline-flex;align-items:center;gap:7px;min-height:32px;padding:0 10px;border:1px solid #EBE6E6;background:#FAF8F8;border-radius:9px;color:#7A7070;font-size:10.5px;font-weight:700}
   .hierarchy-overview-item strong{color:#2A2020;font-family:'Alumni Sans';font-size:12px}
@@ -84,8 +86,6 @@
   .hierarchy-status{width:8px;height:8px;border-radius:50%;background:#16B57F;box-shadow:0 0 0 4px #E4F7F0;flex-shrink:0}
   .hierarchy-status.blocked{background:#EF6472;box-shadow:0 0 0 4px #FDECEF}
   .hierarchy-card-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:11px}
-  .hierarchy-tag{display:inline-flex;align-items:center;max-width:100%;min-height:25px;padding:0 8px;border-radius:7px;background:#F2EEEE;color:#6A6161;font-size:9.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .hierarchy-tag.role{background:#FCF1F1;color:#B91414}
   .hierarchy-card-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding-top:11px;border-top:1px solid #F0F1F5}
   .hierarchy-parent-list{min-width:0;display:flex;align-items:center;gap:7px;color:#857D7D;font-size:9.5px;font-weight:600}
   .hierarchy-parent-names{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -116,7 +116,6 @@
   .org-copy{min-width:0;flex:1}
   .org-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2A2020;font-size:12.5px;font-weight:800}
   .org-login{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9B9292;font-size:10.5px;margin-top:2px}
-  .org-tags{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:10px}
   .org-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #F0F1F5;color:#857D7D;font-size:9.5px;font-weight:700}
   .org-extra{color:#B91414;background:#FCF1F1;border-radius:6px;padding:2px 7px;white-space:nowrap}
   .org-team-name{display:grid;grid-template-columns:1fr auto;gap:4px 8px;align-items:center;margin-top:10px;padding:8px 9px;border-radius:9px;background:#FCF1F1;text-align:left}
@@ -147,7 +146,7 @@
     .stat-grid{grid-template-columns:1fr!important}
     .role-grid,.hierarchy-grid{grid-template-columns:1fr!important}
     .form-grid{grid-template-columns:1fr!important}
-    .parent-picker-menu{min-width:100%}
+    .people-picker-menu{min-width:100%}
     .hierarchy-canvas{padding:16px}
   }
   @media(max-width:540px){
@@ -182,6 +181,7 @@
 
       <div style="font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#AFA6A6;padding:16px 12px 8px">Рабочее</div>
       <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;background:#B91414;color:#fff;font-weight:600;font-size:14px;box-shadow:0 8px 18px rgba(185,20,20,.28)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="#fff" stroke-width="2"/><path d="M3 20a6 6 0 0 1 12 0M16 3.5a3 3 0 0 1 0 7M18 20a6 6 0 0 0-3-5.2" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>Команда</div>
+      <a href="Recruitment.dc.html" style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="10" cy="8" r="3.5" stroke="#9B9292" stroke-width="2"/><path d="M3.5 20a6.5 6.5 0 0 1 13 0" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/><circle cx="17" cy="16" r="3" stroke="#9B9292" stroke-width="2"/><path d="m19.5 18.5 2 2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>Рекрутинг</a>
       <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="5" height="16" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="10" y="4" width="5" height="10" rx="1.5" stroke="#9B9292" stroke-width="2"/><rect x="17" y="4" width="4" height="7" rx="1.5" stroke="#9B9292" stroke-width="2"/></svg>Задачи</div>
       <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v14H6.5A2.5 2.5 0 0 0 4 19.5V5.5Z" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" stroke="#9B9292" stroke-width="2" stroke-linejoin="round"/><path d="M8 7.5h7M8 11h5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>База знаний</div>
       <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" stroke="#9B9292" stroke-width="2"/></svg>Утилиты</div>
@@ -204,15 +204,14 @@
   <main class="team-main" style="flex:1;min-width:0;padding:26px 34px 40px">
     <div class="team-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:24px">
       <div>
-        <div style="font-size:13px;color:#9B9292;font-weight:600">Управление доступом</div>
-        <h1 class="team-heading" style="font-size:27px;font-weight:700;letter-spacing:-.6px;margin-top:5px">Команда</h1>
+        <h1 class="team-heading" style="font-size:27px;font-weight:700;letter-spacing:-.6px">Команда</h1>
       </div>
       <div class="team-header-actions" style="display:flex;align-items:center;gap:10px">
         <label class="team-search" style="display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #EBE6E6;border-radius:12px;padding:0 14px;height:44px;width:250px">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="#9B9292" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
           <input id="teamSearch" type="search" placeholder="Поиск пользователя..." style="border:0;outline:0;background:transparent;width:100%;min-width:0;color:#3A3030;font-size:13px">
         </label>
-        <button id="openUserModal" type="button" style="height:44px;border:0;border-radius:12px;background:#B91414;color:#fff;padding:0 17px;display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;box-shadow:0 8px 18px rgba(185,20,20,.28)">
+        <button id="openUserModal" type="button" style="height:44px;border:0;border-radius:12px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 17px;display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;box-shadow:0 8px 18px rgba(185,20,20,.28)">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
           Создать пользователя
         </button>
@@ -250,14 +249,14 @@
       </div>
 
       <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
-        <div style="padding:20px 24px 16px"><h3 class="team-heading" style="font-size:18px;font-weight:700">Список пользователей</h3><div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Роли, статусы и группы доступа Keitaro</div></div>
+        <div style="padding:20px 24px 16px"><h3 class="team-heading" style="font-size:18px;font-weight:700">Список пользователей</h3><div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Роли, статусы и структура подчинённости</div></div>
         <div style="overflow-x:auto">
           <table style="border-collapse:collapse;width:100%;min-width:1120px">
             <thead><tr style="border-top:1px solid #F0EBEB;border-bottom:1px solid #F0EBEB">
               <th style="text-align:left;padding:12px 24px;font-size:11px;color:#9B9292;text-transform:uppercase;letter-spacing:.6px">Пользователь</th>
               <th style="text-align:left;padding:12px 18px;font-size:11px;color:#9B9292;text-transform:uppercase;letter-spacing:.6px">Роль</th>
               <th style="text-align:left;padding:12px 18px;font-size:11px;color:#9B9292;text-transform:uppercase;letter-spacing:.6px">Родитель</th>
-              <th style="text-align:left;padding:12px 18px;font-size:11px;color:#9B9292;text-transform:uppercase;letter-spacing:.6px">Группы Keitaro</th>
+              <th style="text-align:left;padding:12px 18px;font-size:11px;color:#9B9292;text-transform:uppercase;letter-spacing:.6px">Дочерние пользователи</th>
               <th style="text-align:left;padding:12px 18px;font-size:11px;color:#9B9292;text-transform:uppercase;letter-spacing:.6px">Статус</th>
               <th style="width:68px"></th>
             </tr></thead>
@@ -314,13 +313,13 @@
             </tbody>
           </table>
         </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 24px;border-top:1px solid #F0EBEB"><span id="usersResultCount" style="font-size:12px;color:#857D7D;font-weight:600">Показано 6 из 24</span><div id="teamPagination" style="display:flex;gap:8px"><span style="width:34px;height:34px;border-radius:9px;background:#B91414;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">1</span><span style="width:34px;height:34px;border:1px solid #EBE6E6;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6A6161">2</span><span style="width:34px;height:34px;border:1px solid #EBE6E6;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6A6161">3</span><span style="width:34px;height:34px;border:1px solid #EBE6E6;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6A6161">4</span></div></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 24px;border-top:1px solid #F0EBEB"><span id="usersResultCount" style="font-size:12px;color:#857D7D;font-weight:600">Показано 6 из 24</span><div id="teamPagination" style="display:flex;gap:8px"><span style="width:34px;height:34px;border-radius:9px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;font-size:13.5px;font-weight:600">1</span><span style="width:34px;height:34px;border:1px solid #EBE6E6;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6A6161">2</span><span style="width:34px;height:34px;border:1px solid #EBE6E6;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6A6161">3</span><span style="width:34px;height:34px;border:1px solid #EBE6E6;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6A6161">4</span></div></div>
       </div>
     </section>
 
     <!-- ROLES -->
     <section class="team-panel" data-team-panel="roles">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin:2px 0 16px;gap:16px"><div><h3 class="team-heading" style="font-size:18px;font-weight:700">Роли и права доступа</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Настройте доступ к разделам и функциям CRM</div></div><button id="openRoleModal" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;padding:0 15px;font-size:12px;font-weight:700">+ Создать роль</button></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:2px 0 16px;gap:16px"><div><h3 class="team-heading" style="font-size:18px;font-weight:700">Роли и права доступа</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Настройте доступ к разделам и функциям CRM</div></div><button id="openRoleModal" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 15px;font-size:13.5px;font-weight:600">+ Создать роль</button></div>
       <div id="rolesGrid" class="role-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
         <article class="role-card"><div style="display:flex;align-items:center;justify-content:space-between"><div style="width:42px;height:42px;border-radius:12px;background:#FCF1F1;display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3 4 7v5c0 4.8 3.3 7.7 8 9 4.7-1.3 8-4.2 8-9V7l-8-4Z" stroke="#B91414" stroke-width="2"/></svg></div><span style="font-size:11px;color:#9B9292;font-weight:700">2 пользователя</span></div><h4 class="team-heading" style="font-size:16px;margin-top:15px">Administrator</h4><p style="font-size:11.5px;color:#857D7D;line-height:1.55;margin-top:5px">Полный доступ ко всем разделам, настройкам и журналам.</p><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px"><span class="permission-pill">Dashboard</span><span class="permission-pill">Финансы</span><span class="permission-pill">Команда</span><span class="permission-pill">+8</span></div><div style="display:flex;gap:8px;margin-top:18px"><button type="button" style="flex:1;height:36px;border:1px solid #EBE6E6;background:#fff;border-radius:9px;color:#B91414;font-size:11.5px;font-weight:700">Редактировать</button><button type="button" style="width:38px;height:36px;border:1px solid #EBE6E6;background:#fff;border-radius:9px;color:#857D7D" title="Копировать роль"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="2"/></svg></button></div></article>
         <article class="role-card"><div style="display:flex;align-items:center;justify-content:space-between"><div style="width:42px;height:42px;border-radius:12px;background:#E4F7F0;display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="3" stroke="#16B57F" stroke-width="2"/><circle cx="17" cy="8" r="3" stroke="#16B57F" stroke-width="2"/><path d="M2 20a6 6 0 0 1 12 0M11 20a6 6 0 0 1 12 0" stroke="#16B57F" stroke-width="2"/></svg></div><span style="font-size:11px;color:#9B9292;font-weight:700">4 пользователя</span></div><h4 class="team-heading" style="font-size:16px;margin-top:15px">Team Lead</h4><p style="font-size:11.5px;color:#857D7D;line-height:1.55;margin-top:5px">Просмотр команды, статистики и финансов подчинённых.</p><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px"><span class="permission-pill">Dashboard</span><span class="permission-pill">Медиаборд</span><span class="permission-pill">Команда</span><span class="permission-pill">+4</span></div><div style="display:flex;gap:8px;margin-top:18px"><button type="button" style="flex:1;height:36px;border:1px solid #EBE6E6;background:#fff;border-radius:9px;color:#B91414;font-size:11.5px;font-weight:700">Редактировать</button><button type="button" style="width:38px;height:36px;border:1px solid #EBE6E6;background:#fff;border-radius:9px;color:#857D7D" title="Копировать роль"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="2"/></svg></button></div></article>
@@ -363,7 +362,7 @@
         <label id="userPasswordField"><span class="field-label">Пароль</span><input class="form-input" name="password" type="password" required minlength="8" placeholder="Минимум 8 символов"></label>
         <label><span class="field-label">Роль</span><select class="form-input" name="role" required><option value="">Выберите роль</option></select></label>
         <label><span class="field-label">Статус</span><select class="form-input" name="status"><option value="active">Активен</option><option value="blocked">Заблокирован</option></select></label>
-        <div><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span class="field-label">Родительские пользователи</span><span style="color:#9B9292;font-size:9.5px;font-weight:600;margin-bottom:7px">можно несколько</span></div><div id="parentPicker" class="parent-picker"><button id="parentPickerTrigger" class="form-input parent-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false"><span id="parentPickerSummary" class="parent-picker-summary is-empty"><span class="parent-picker-summary-text">Не выбраны — верхний уровень</span></span></button><div id="parentPickerMenu" class="parent-picker-menu" role="listbox" aria-multiselectable="true" hidden><input id="parentPickerSearch" class="form-input parent-picker-search" type="search" autocomplete="off" placeholder="Найти пользователя"><div id="parentPickerOptions" class="parent-picker-options"></div><div class="parent-picker-footer"><span id="parentPickerCount">Не выбрано</span><button id="parentPickerClear" class="parent-picker-clear" type="button">Очистить</button></div></div></div></div>
+        <div><span class="field-label">Родительские пользователи</span><div id="parentPicker" class="people-picker"><button id="parentPickerTrigger" class="form-input people-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false"><span id="parentPickerSummary" class="people-picker-summary is-empty"><span class="people-picker-summary-text">Не выбраны — верхний уровень</span></span></button><div id="parentPickerMenu" class="people-picker-menu" role="listbox" aria-multiselectable="true" hidden><input id="parentPickerSearch" class="form-input people-picker-search" type="search" autocomplete="off" placeholder="Найти пользователя"><div id="parentPickerOptions" class="people-picker-options"></div><div class="people-picker-footer"><span id="parentPickerCount">Не выбрано</span><button id="parentPickerClear" class="people-picker-clear" type="button">Очистить</button></div></div></div></div><div><span class="field-label">Дочерние пользователи</span><div id="childPicker" class="people-picker"><button id="childPickerTrigger" class="form-input people-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false"><span id="childPickerSummary" class="people-picker-summary is-empty"><span class="people-picker-summary-text">Не выбраны — подчинённых нет</span></span></button><div id="childPickerMenu" class="people-picker-menu" role="listbox" aria-multiselectable="true" hidden><input id="childPickerSearch" class="form-input people-picker-search" type="search" autocomplete="off" placeholder="Найти пользователя"><div id="childPickerOptions" class="people-picker-options"></div><div class="people-picker-footer"><span id="childPickerCount">Не выбрано</span><button id="childPickerClear" class="people-picker-clear" type="button">Очистить</button></div></div></div></div>
         <label><span class="field-label">Группа кампаний Keitaro</span><select class="form-input" name="companyGroup"><option value="">Без привязки</option></select></label>
         <label><span class="field-label">Группа офферов Keitaro</span><select class="form-input" name="offerGroup"><option value="">Без привязки</option></select></label>
       </div>

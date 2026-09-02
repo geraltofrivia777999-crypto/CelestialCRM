@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.services.meta_session import MetaSessionError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +56,27 @@ async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse
             "error": {
                 "code": f"http_{exc.status_code}",
                 "message": str(exc.detail),
+                "details": {},
+            }
+        },
+    )
+
+
+@app.exception_handler(MetaSessionError)
+async def meta_session_exception_handler(
+    _: Request, exc: MetaSessionError
+) -> JSONResponse:
+    """Проблемы браузерной сессии Meta — понятным текстом, а не 500.
+
+    Сюда попадают «сессия не найдена на диске», «требуется ручной вход» и т.п.
+    из любого эндпоинта, который работает с токеном сессии.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": "meta_session_error",
+                "message": str(exc),
                 "details": {},
             }
         },

@@ -98,17 +98,6 @@
     return { from: iso(from), to: iso(to) };
   }
 
-  function previousRange(range) {
-    if (!range.from || !range.to) return null;
-    var from = parseIso(range.from);
-    var to = parseIso(range.to);
-    var lengthDays = Math.round((to - from) / 86400000) + 1;
-    var prevTo = new Date(from);
-    prevTo.setDate(prevTo.getDate() - 1);
-    var prevFrom = new Date(prevTo);
-    prevFrom.setDate(prevFrom.getDate() - (lengthDays - 1));
-    return { from: iso(prevFrom), to: iso(prevTo) };
-  }
 
   function queryString(range, buyerId) {
     var params = [];
@@ -116,37 +105,6 @@
     if (range.to) params.push("date_to=" + range.to);
     if (buyerId) params.push("buyer_id=" + encodeURIComponent(buyerId));
     return params.length ? "?" + params.join("&") : "";
-  }
-
-  /* ---------- delta badges ---------- */
-
-  function arrowSvg(color, up) {
-    return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none">' +
-      (up
-        ? '<path d="M12 19V5M5 12l7-7 7 7" stroke="' + color + '" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>'
-        : '<path d="M12 5v14M5 12l7 7 7-7" stroke="' + color + '" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>') +
-      "</svg>";
-  }
-
-  // goodWhenUp: true → рост это хорошо (зелёный). false → рост это плохо (например Расход, EPL).
-  function renderDelta(id, current, previous, goodWhenUp, hero) {
-    var element = byId(id);
-    if (!element) return;
-    if (previous == null || previous === 0 || current == null) {
-      element.innerHTML = hero ? "нет данных" : "—";
-      element.style.color = hero ? "#fff" : "#9B9292";
-      element.style.background = hero ? "rgba(255,255,255,.18)" : "transparent";
-      return;
-    }
-    var change = (current - previous) / Math.abs(previous) * 100;
-    var up = change >= 0;
-    var color = hero
-      ? "#C7F9E3"
-      : up ? "#16B57F" : "#FF1A1A";
-    element.innerHTML = arrowSvg(color, up) +
-      "&nbsp;" + new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(Math.abs(change)) + "%";
-    element.style.color = color;
-    if (hero) element.style.background = "rgba(123,235,184,.22)";
   }
 
   /* ---------- chart ---------- */
@@ -256,26 +214,24 @@
      остаётся только назвать её так же, как она называется на доске. */
   var OFFER_WIDGET = {
     free: {
-      title: "Нераспределённые оффера",
-      hint: "Не занят — ждут тимлида",
-      empty: "Все оффера уже у тимлидов"
+      title: "Оффера",
+      empty: "Офферов пока нет — заведите их в разделе «Оффера»"
     },
     active: {
       title: "Ваши оффера",
-      hint: "Активен — назначены вам, ждут баеров",
       empty: "На вас пока нет офферов"
     },
     working: {
-      title: "Оффера в работе",
-      hint: "В работе — назначены вам",
-      empty: "На вас пока нет офферов в работе"
+      title: "Ваши оффера",
+      empty: "На вас пока нет офферов"
     }
   };
 
   function offerWidgetKind(user) {
     var codes = ((user && user.role && user.role.permissions) || [])
       .map(function (permission) { return permission.code; });
-    if (codes.indexOf("*") >= 0) return "free";
+    // Кто видит весь справочник — тому и заголовок общий, остальным «Ваши».
+    if (codes.indexOf("*") >= 0 || codes.indexOf("offers.view_all") >= 0) return "free";
     if (codes.indexOf("offers.manage") >= 0) return "active";
     return "working";
   }
@@ -283,7 +239,6 @@
   function renderOfferWidgetLabels(user) {
     var copy = OFFER_WIDGET[offerWidgetKind(user)];
     setText("dashboardOffersTitle", copy.title);
-    setText("dashboardOffersHint", copy.hint);
   }
 
   function renderWorkingOffers(offers) {
@@ -346,7 +301,7 @@
     return periodRange(preset);
   }
 
-  function renderKpi(data, previous) {
+  function renderKpi(data) {
     setText("dashboardRevenue", money(data.revenue));
     setText("dashboardSpend", money(data.spend));
     setText("dashboardProfit", money(data.profit));
@@ -356,24 +311,7 @@
     setText("dashboardEpl", data.epl == null ? "—" : money(data.epl));
     var profitElement = byId("dashboardProfit");
     if (profitElement) profitElement.style.color = Number(data.profit) >= 0 ? "#16B57F" : "#FF1A1A";
-
-    if (previous) {
-      renderDelta("dashboardRevenueDelta", Number(data.revenue), Number(previous.revenue), true, true);
-      renderDelta("dashboardSpendDelta", Number(data.spend), Number(previous.spend), false, false);
-      renderDelta("dashboardProfitDelta", Number(data.profit), Number(previous.profit), true, false);
-      renderDelta("dashboardRoiDelta", numOrNull(data.roi), numOrNull(previous.roi), true, false);
-      renderDelta("dashboardLeadsDelta", data.leads, previous.leads, true, false);
-      renderDelta("dashboardSalesDelta", data.sales, previous.sales, true, false);
-      renderDelta("dashboardEplDelta", numOrNull(data.epl), numOrNull(previous.epl), false, false);
-    } else {
-      ["dashboardRevenueDelta", "dashboardSpendDelta", "dashboardProfitDelta", "dashboardRoiDelta",
-        "dashboardLeadsDelta", "dashboardSalesDelta", "dashboardEplDelta"].forEach(function (id) {
-        renderDelta(id, null, null, true, id === "dashboardRevenueDelta");
-      });
-    }
   }
-
-  function numOrNull(value) { return value == null ? null : Number(value); }
 
   async function load() {
     var range = currentRange();
@@ -381,14 +319,7 @@
     var buyerId = byId("dashboardBuyer") ? byId("dashboardBuyer").value : "";
     var data = await api.get("/dashboard" + queryString(range, buyerId));
     state.data = data;
-    var previous = null;
-    var prevRange = previousRange(range);
-    if (prevRange) {
-      try {
-        previous = await api.get("/dashboard" + queryString(prevRange, buyerId));
-      } catch (error) { previous = null; }
-    }
-    renderKpi(data, previous);
+    renderKpi(data);
     renderChart(data.series || []);
     renderHeroSpark(data.series || []);
     renderWorkingOffers(data.working_offers || []);
@@ -428,11 +359,6 @@
     setText("dashboardUserName", user.name || user.login);
     setText("dashboardUserRole", user.role ? user.role.name : "");
     setText("dashboardUserAvatar", initials(user.name || user.login));
-    var today = new Date();
-    var formatted = today.toLocaleDateString("ru-RU", {
-      weekday: "long", day: "numeric", month: "long", year: "numeric"
-    });
-    setText("dashboardToday", formatted.charAt(0).toUpperCase() + formatted.slice(1));
   }
 
   function bindControls() {

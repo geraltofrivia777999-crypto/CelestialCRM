@@ -222,6 +222,7 @@ async def create_task(
     custom_values = _clean_custom_values(raw_values, visible)
     assignees = await _valid_assignees(db, current, values.get("assignee_ids") or [])
     title = _required_text(values.get("title"), "Название задачи")
+    _check_task_dates(values.get("start_date"), values.get("due_date"))
 
     task = Task(
         workspace_id=current.workspace_id,
@@ -229,6 +230,7 @@ async def create_task(
         status_id=status.id,
         title=title,
         description=values.get("description"),
+        start_date=values.get("start_date"),
         due_date=values.get("due_date"),
         priority=values.get("priority") or TaskPriority.medium,
         custom_values=custom_values,
@@ -331,10 +333,11 @@ async def update_task(
         visible = _visible_fields(fields, template, raw_values)
         task.custom_values = _clean_custom_values(raw_values, visible)
         dropped = await _bind_task_attachments(db, current, task, task.custom_values, visible)
-    for field in ("title", "description", "due_date", "priority"):
+    for field in ("title", "description", "start_date", "due_date", "priority"):
         if field in changes:
             value = changes[field]
             setattr(task, field, value.strip() if field == "title" and value else value)
+    _check_task_dates(task.start_date, task.due_date)
 
     await audit(
         db, current, "workspace.task_updated", f"Изменена задача «{task.title}»",
@@ -1565,6 +1568,15 @@ async def _valid_assignees(
     return wanted
 
 
+def _check_task_dates(start: date | None, due: date | None) -> None:
+    """Начать позже срока нельзя — это не задача, а опечатка."""
+    if start and due and start > due:
+        raise HTTPException(
+            status_code=422,
+            detail="Дата начала не может быть позже срока выполнения",
+        )
+
+
 def _required_text(value: str | None, label: str) -> str:
     clean = (value or "").strip()
     if not clean:
@@ -1808,6 +1820,7 @@ def _task_row(
         "field_ids": [str(field.id) for field in visible],
         "status_id": str(task.status_id),
         "priority": task.priority.value,
+        "start_date": task.start_date.isoformat() if task.start_date else None,
         "due_date": task.due_date.isoformat() if task.due_date else None,
         "position": task.position,
         "custom_values": task.custom_values or {},

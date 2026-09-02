@@ -166,6 +166,7 @@ def _graph_response(request: httpx.Request) -> httpx.Response:
 
 def _client_factory(handler=_graph_response):
     def factory(access_token: str, **kwargs) -> MetaClient:
+        kwargs.pop("transport", None)
         return MetaClient(access_token, transport=httpx.MockTransport(handler), **kwargs)
 
     return factory
@@ -177,6 +178,7 @@ async def meta_connection(database):
         admin = await db.scalar(select(User).where(User.login == "admin"))
         connection = IntegrationConnection(
             workspace_id=admin.workspace_id,
+            owner_id=admin.id,
             name="Meta test BM",
             kind="meta",
             base_url="https://graph.facebook.com/v23.0",
@@ -280,6 +282,46 @@ async def test_expired_token_gets_an_actionable_message() -> None:
     assert raised.value.retryable is False
 
 
+async def test_video_upload_fetches_thumbnail_from_meta(meta_connection, monkeypatch) -> None:
+    """/advideos возвращает только id — превью для объявления дозапрашиваем."""
+    import app.api.routers.meta as meta_router
+
+    await _run_sync(meta_connection["connection"])
+    async with SessionLocal() as db:
+        account = await db.scalar(
+            select(MetaAdAccount).where(
+                MetaAdAccount.connection_id == meta_connection["connection"]
+            )
+        )
+        account_id = str(account.id)
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        if request.url.path.endswith("/advideos"):
+            return httpx.Response(200, json={"id": "video-1"})
+        if request.url.path.endswith("/video-1"):
+            return httpx.Response(200, json={"picture": "https://cdn.example/prev.jpg"})
+        return httpx.Response(200, json={"data": []})
+
+    def factory(access_token: str, **kwargs) -> MetaClient:
+        kwargs.pop("transport", None)
+        return MetaClient(access_token, transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(meta_router, "MetaClient", factory)
+
+    with _admin_client() as client:
+        response = client.post(
+            f"/api/v1/meta/creatives?account_id={account_id}&name=Видео",
+            files={"file": ("video.mp4", b"fake-mp4-bytes", "video/mp4")},
+        )
+    assert response.status_code == 201
+    assert any(c.startswith("POST") and c.endswith("/advideos") for c in calls)
+    assert any(c.startswith("GET") and c.endswith("/video-1") for c in calls)
+    assert response.json()["thumbnail_url"] == "https://cdn.example/prev.jpg"
+
+
 async def test_rate_limit_is_retried_then_succeeds() -> None:
     attempts = {"count": 0}
 
@@ -357,6 +399,42 @@ async def test_sync_stores_accounts_entities_and_stats(meta_connection) -> None:
         assert stat.impressions == 12000
         assert stat.pixel_leads == 22
         assert stat.campaign_external_id == CAMPAIGN_ID
+
+
+async def test_account_assets_falls_back_to_visible_fan_pages(
+    meta_connection, monkeypatch
+) -> None:
+    """The page selector remains usable when ``promote_pages`` is empty."""
+    await _run_sync(meta_connection["connection"])
+
+    class AssetClient:
+        async def account_pages(self, _account_external_id: str) -> list[dict]:
+            return []
+
+        async def pages(self, _business_id: str | None = None) -> list[dict]:
+            return [{"id": PAGE_ID, "name": "Nervio Official"}]
+
+        async def pixels(self, _account_external_id: str) -> list[dict]:
+            return [{"id": "pixel-1", "name": "Nervio Pixel"}]
+
+    async def fake_client_for(_connection, _db):
+        return AssetClient()
+
+    monkeypatch.setattr("app.api.routers.meta.client_for", fake_client_for)
+    async with SessionLocal() as db:
+        account = await db.scalar(
+            select(MetaAdAccount).where(
+                MetaAdAccount.connection_id == meta_connection["connection"]
+            )
+        )
+        account_id = str(account.id)
+
+    with _admin_client() as client:
+        response = client.get(f"/api/v1/meta/accounts/{account_id}/assets")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["pages"] == [{"id": PAGE_ID, "name": "Nervio Official"}]
+    assert response.json()["pixels"] == [{"id": "pixel-1", "name": "Nervio Pixel"}]
 
 
 async def test_second_sync_updates_the_same_rows(meta_connection) -> None:
@@ -478,6 +556,7 @@ async def test_buyer_sees_only_the_accounts_assigned_to_them(meta_connection) ->
             account.owner_id = buyer_id
             await db.commit()
 
+
         with TestClient(app) as client:
             client.post(
                 "/api/v1/auth/login",
@@ -490,6 +569,129 @@ async def test_buyer_sees_only_the_accounts_assigned_to_them(meta_connection) ->
             await db.execute(delete(Session).where(Session.user_id == buyer_id))
             await db.execute(delete(UserParent).where(UserParent.user_id == buyer_id))
             await db.execute(delete(User).where(User.id == buyer_id))
+            await db.commit()
+
+
+async def test_meta_connections_follow_user_hierarchy_and_allow_multiple_own_connections(
+    database, monkeypatch
+) -> None:
+    """Баер владеет своими подключениями, тимлид их видит, админ видит все."""
+    from fastapi.testclient import TestClient
+
+    from app.api.routers import meta as meta_router
+    from app.main import app
+
+    suffix = uuid.uuid4().hex[:8]
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        buyer_role = await db.scalar(select(Role).where(Role.name == "Buyer"))
+        lead_role = await db.scalar(select(Role).where(Role.name == "Team Lead"))
+        lead = User(
+            workspace_id=admin.workspace_id,
+            role_id=lead_role.id,
+            name=f"Meta lead {suffix}",
+            login=f"meta-lead-{suffix}",
+            password_hash=hash_password("test-password"),
+        )
+        first_buyer = User(
+            workspace_id=admin.workspace_id,
+            role_id=buyer_role.id,
+            name=f"Meta buyer one {suffix}",
+            login=f"meta-buyer-one-{suffix}",
+            password_hash=hash_password("test-password"),
+        )
+        second_buyer = User(
+            workspace_id=admin.workspace_id,
+            role_id=buyer_role.id,
+            name=f"Meta buyer two {suffix}",
+            login=f"meta-buyer-two-{suffix}",
+            password_hash=hash_password("test-password"),
+        )
+        db.add_all([lead, first_buyer, second_buyer])
+        await db.flush()
+        db.add(UserParent(user_id=first_buyer.id, parent_id=lead.id))
+        await db.commit()
+        user_ids = {lead.id, first_buyer.id, second_buyer.id}
+
+    async def fake_verify(*_args, **_kwargs):
+        return [{
+            "id": f"act_{uuid.uuid4().int % 10**12}",
+            "name": "Личный кабинет",
+            "account_status": 1,
+            "currency": "USD",
+        }]
+
+    monkeypatch.setattr(meta_router, "_verify_token", fake_verify)
+
+    def create_as(login: str, name: str):
+        with TestClient(app) as client:
+            assert client.post(
+                "/api/v1/auth/login",
+                json={"login": login, "password": "test-password"},
+            ).status_code == 200
+            return client.post(
+                "/api/v1/meta/connections",
+                json={"name": name, "access_token": "personal-meta-token-long-enough"},
+            )
+
+    created_ids: set[uuid.UUID] = set()
+    try:
+        first = create_as(f"meta-buyer-one-{suffix}", f"Buyer one A {suffix}")
+        second = create_as(f"meta-buyer-one-{suffix}", f"Buyer one B {suffix}")
+        stranger = create_as(f"meta-buyer-two-{suffix}", f"Buyer two A {suffix}")
+        assert first.status_code == second.status_code == stranger.status_code == 201
+        created_ids = {
+            uuid.UUID(first.json()["id"]),
+            uuid.UUID(second.json()["id"]),
+            uuid.UUID(stranger.json()["id"]),
+        }
+        assert first.json()["owner_name"] == f"Meta buyer one {suffix}"
+        assert first.json()["can_edit"] is True
+
+        with TestClient(app) as client:
+            client.post(
+                "/api/v1/auth/login",
+                json={"login": f"meta-buyer-one-{suffix}", "password": "test-password"},
+            )
+            rows = client.get("/api/v1/meta/connections").json()["items"]
+            visible = {row["id"]: row for row in rows}
+            assert first.json()["id"] in visible and second.json()["id"] in visible
+            assert stranger.json()["id"] not in visible
+            assert visible[first.json()["id"]]["can_edit"] is True
+
+        with TestClient(app) as client:
+            client.post(
+                "/api/v1/auth/login",
+                json={"login": f"meta-lead-{suffix}", "password": "test-password"},
+            )
+            rows = client.get("/api/v1/meta/connections").json()["items"]
+            visible = {row["id"]: row for row in rows}
+            assert first.json()["id"] in visible and second.json()["id"] in visible
+            assert stranger.json()["id"] not in visible
+            assert visible[first.json()["id"]]["can_edit"] is False
+            denied = client.patch(
+                f"/api/v1/meta/connections/{first.json()['id']}",
+                json={"name": f"Lead edit {suffix}"},
+            )
+            assert denied.status_code == 403
+
+        with _admin_client() as client:
+            rows = client.get("/api/v1/meta/connections").json()["items"]
+            visible = {row["id"]: row for row in rows}
+            assert {str(value) for value in created_ids}.issubset(visible)
+            assert all(visible[str(value)]["can_edit"] for value in created_ids)
+    finally:
+        async with SessionLocal() as db:
+            if created_ids:
+                await db.execute(
+                    delete(MetaAdAccount).where(MetaAdAccount.connection_id.in_(created_ids))
+                )
+                await db.execute(
+                    delete(IntegrationConnection).where(IntegrationConnection.id.in_(created_ids))
+                )
+            await db.execute(delete(Session).where(Session.user_id.in_(user_ids)))
+            await db.execute(delete(UserParent).where(UserParent.user_id.in_(user_ids)))
+            await db.execute(delete(User).where(User.id.in_(user_ids)))
             await db.commit()
 
 
@@ -584,6 +786,62 @@ async def test_every_overview_level_answers(meta_connection) -> None:
         assert payload["rows"][0]["clicks"] == 400, level
 
 
+async def test_accounts_are_searchable_by_meta_id(meta_connection) -> None:
+    """Кабинет ищется по `act_...`, а не только по названию.
+
+    В комментариях и в чужих ссылках имени кабинета часто нет, а ID есть, — по
+    названию такой кабинет было не найти.
+    """
+    await _run_sync(meta_connection["connection"])
+    async with SessionLocal() as db:
+        account = await db.scalar(
+            select(MetaAdAccount).where(
+                MetaAdAccount.connection_id == meta_connection["connection"]
+            )
+        )
+        account.name = "Совершенно другое имя"
+        await db.commit()
+
+    window = "?date_from=2026-07-01&date_to=2026-07-01"
+    with _admin_client() as client:
+        by_id = client.get(
+            f"/api/v1/meta/overview/levels/accounts{window}&search={ACCOUNT_ID}"
+        ).json()
+        by_digits = client.get(
+            f"/api/v1/meta/overview/levels/accounts{window}&search=555000"
+        ).json()
+        by_name = client.get(
+            f"/api/v1/meta/overview/levels/accounts{window}&search=другое"
+        ).json()
+        miss = client.get(
+            f"/api/v1/meta/overview/levels/accounts{window}&search=act_000000"
+        ).json()
+
+    assert len(by_id["rows"]) == 1
+    # Ищем и по куску идентификатора: целиком его редко копируют.
+    assert len(by_digits["rows"]) == 1
+    # Поиск по названию продолжает работать.
+    assert len(by_name["rows"]) == 1
+    assert miss["rows"] == []
+    # ID виден в самой строке — его копируют отсюда же.
+    assert by_id["rows"][0]["external_id"] == ACCOUNT_ID
+
+
+async def test_campaigns_are_searchable_by_their_meta_id(meta_connection) -> None:
+    """Кампании, адсеты и объявления ищутся по числовому id из Ads Manager."""
+    await _run_sync(meta_connection["connection"])
+    window = "?date_from=2026-07-01&date_to=2026-07-01"
+    with _admin_client() as client:
+        found = client.get(
+            f"/api/v1/meta/overview/levels/campaigns{window}&search={CAMPAIGN_ID}"
+        ).json()
+        missing = client.get(
+            f"/api/v1/meta/overview/levels/campaigns{window}&search=99999999"
+        ).json()
+    assert len(found["rows"]) == 1
+    assert missing["rows"] == []
+
+
 async def test_revenue_stops_below_the_campaign(meta_connection) -> None:
     """Доход Keitaro привязан к ID кампании — у адсетов и объявлений его нет."""
     await _run_sync(meta_connection["connection"])
@@ -655,6 +913,169 @@ async def test_objects_without_spend_still_show_up(meta_connection) -> None:
     assert len(quiet["rows"]) == 1
     assert quiet["rows"][0]["spend"] == 0.0
     assert quiet["rows"][0]["name"] == "Celestial Main"
+
+
+async def test_structure_filters_by_connection_owner_then_social_account(
+    meta_connection,
+) -> None:
+    """Чекбоксы идут каскадом: владелец подключения → Meta-аккаунт → низы."""
+    await _run_sync(meta_connection["connection"])
+    suffix = uuid.uuid4().hex[:8]
+    created_user_id = None
+    created_connection_id = None
+    async with SessionLocal() as db:
+        admin = await db.get(User, meta_connection["admin"])
+        buyer_role = await db.scalar(select(Role).where(Role.name == "Buyer"))
+        buyer = User(
+            workspace_id=admin.workspace_id,
+            role_id=buyer_role.id,
+            name=f"Filter buyer {suffix}",
+            login=f"filter-buyer-{suffix}",
+            password_hash=hash_password("test-password"),
+        )
+        db.add(buyer)
+        await db.flush()
+        connection = IntegrationConnection(
+            workspace_id=admin.workspace_id,
+            owner_id=buyer.id,
+            name=f"Filter connection {suffix}",
+            kind="meta",
+            base_url="https://graph.facebook.com/v23.0",
+            api_key_encrypted=encrypt_secret("filter-meta-token-long-enough"),
+        )
+        db.add(connection)
+        await db.flush()
+        social = MetaSocialAccount(
+            workspace_id=admin.workspace_id,
+            connection_id=connection.id,
+            external_id=f"social-{suffix}",
+            name=f"Selected social {suffix}",
+        )
+        db.add(social)
+        await db.flush()
+        business = MetaBusiness(
+            workspace_id=admin.workspace_id,
+            connection_id=connection.id,
+            social_account_id=social.id,
+            external_id=f"business-{suffix}",
+            name=f"Selected BM {suffix}",
+        )
+        db.add(business)
+        await db.flush()
+        page = MetaFanPage(
+            workspace_id=admin.workspace_id,
+            connection_id=connection.id,
+            social_account_id=social.id,
+            business_id=business.id,
+            external_id=f"page-{suffix}",
+            name=f"Selected page {suffix}",
+        )
+        account = MetaAdAccount(
+            workspace_id=admin.workspace_id,
+            connection_id=connection.id,
+            social_account_id=social.id,
+            business_id=business.id,
+            external_id=f"act-{suffix}",
+            name=f"Selected cabinet {suffix}",
+            owner_id=admin.id,
+            currency="USD",
+        )
+        db.add_all([page, account])
+        await db.flush()
+        campaign_id = f"campaign-{suffix}"
+        db.add(
+            MetaEntity(
+                workspace_id=admin.workspace_id,
+                connection_id=connection.id,
+                account_id=account.id,
+                level="campaign",
+                external_id=campaign_id,
+                name=f"Selected campaign {suffix}",
+            )
+        )
+        db.add(
+            MetaStatDaily(
+                workspace_id=admin.workspace_id,
+                connection_id=connection.id,
+                account_id=account.id,
+                record_date=date(2026, 7, 1),
+                campaign_external_id=campaign_id,
+                dimension_key=f"cascade-{suffix}",
+                spend=Decimal("12.50"),
+            )
+        )
+        await db.commit()
+        created_user_id = buyer.id
+        created_connection_id = connection.id
+        social_id = social.id
+
+    window = {"date_from": "2026-07-01", "date_to": "2026-07-01"}
+    try:
+        with _admin_client() as client:
+            users = client.get("/api/v1/meta/overview/levels/users", params=window).json()
+            socials = client.get(
+                "/api/v1/meta/overview/levels/socials",
+                params={**window, "connection_owner_id": str(created_user_id)},
+            ).json()
+            common = {
+                **window,
+                "connection_owner_id": str(created_user_id),
+                "social_id": str(social_id),
+            }
+            pages = client.get(
+                "/api/v1/meta/overview/levels/fanpages", params=common
+            ).json()
+            accounts = client.get(
+                "/api/v1/meta/overview/levels/accounts", params=common
+            ).json()
+            campaigns = client.get(
+                "/api/v1/meta/overview/levels/campaigns", params=common
+            ).json()
+
+        user_rows = {row["id"]: row for row in users["rows"]}
+        assert str(created_user_id) in user_rows
+        # Ответственным кабинета специально оставлен админ: строка всё равно
+        # принадлежит баеру, потому что источник — владелец подключения.
+        assert user_rows[str(created_user_id)]["spend"] == 12.5
+        assert [row["name"] for row in socials["rows"]] == [f"Selected social {suffix}"]
+        assert [row["name"] for row in pages["rows"]] == [f"Selected page {suffix}"]
+        assert [row["name"] for row in accounts["rows"]] == [f"Selected cabinet {suffix}"]
+        assert [row["name"] for row in campaigns["rows"]] == [
+            f"Selected campaign {suffix}"
+        ]
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(
+                delete(MetaStatDaily).where(
+                    MetaStatDaily.connection_id == created_connection_id
+                )
+            )
+            await db.execute(
+                delete(MetaEntity).where(MetaEntity.connection_id == created_connection_id)
+            )
+            await db.execute(
+                delete(MetaAdAccount).where(
+                    MetaAdAccount.connection_id == created_connection_id
+                )
+            )
+            await db.execute(
+                delete(MetaFanPage).where(MetaFanPage.connection_id == created_connection_id)
+            )
+            await db.execute(
+                delete(MetaBusiness).where(MetaBusiness.connection_id == created_connection_id)
+            )
+            await db.execute(
+                delete(MetaSocialAccount).where(
+                    MetaSocialAccount.connection_id == created_connection_id
+                )
+            )
+            await db.execute(
+                delete(IntegrationConnection).where(
+                    IntegrationConnection.id == created_connection_id
+                )
+            )
+            await db.execute(delete(User).where(User.id == created_user_id))
+            await db.commit()
 
 
 # --- фиксация расхода за отрезок дня (ТЗ 2.4.4) -------------------------------
@@ -731,6 +1152,7 @@ async def spend_window(meta_connection, monkeypatch):
         ids = {
             "day": day,
             "account": account.id,
+            "connection": meta_connection["connection"],
             "offer": offer.id,
             "provider": provider.id,
             "buyer": meta_connection["admin"],
@@ -765,9 +1187,11 @@ async def spend_window(meta_connection, monkeypatch):
 
 
 def _commit_payload(spend_window, **overrides) -> dict:
+    """Однодневное окно по умолчанию: с 12:00 по 16:00 того же дня."""
     payload = {
-        "record_date": spend_window["day"].isoformat(),
+        "date_from": spend_window["day"].isoformat(),
         "hour_from": 12,
+        "date_to": spend_window["day"].isoformat(),
         "hour_to": 16,
         "campaign_ids": [CAMPAIGN_ID],
         "offer_id": str(spend_window["offer"]),
@@ -791,6 +1215,7 @@ async def test_the_window_shows_only_its_own_hours(spend_window) -> None:
     # Дневная сумма остаётся видна рядом: по ней понятно, какую часть берём.
     assert row["day_spend"] == 24.0
     assert row["taken_hours"] == []
+    assert row["taken_windows"] == []
     assert payload["timezones"] == ["Europe/Kyiv"]
 
 
@@ -808,7 +1233,7 @@ async def test_committed_spend_lands_in_the_mediaboard_with_the_agent_percent(
     assert body["spend"] == 4.4
 
     async with SessionLocal() as db:
-        record = await db.get(MediaRecord, uuid.UUID(body["media_record_id"]))
+        record = await db.get(MediaRecord, uuid.UUID(body["media_record_ids"][0]))
         assert record.spend_calculated == Decimal("4.4000")
         assert record.record_date == spend_window["day"]
 
@@ -823,7 +1248,7 @@ async def test_two_windows_of_one_day_add_up_instead_of_overwriting(spend_window
             json=_commit_payload(spend_window, hour_from=16, hour_to=20),
         ).json()
 
-    assert first["media_record_id"] == second["media_record_id"]
+    assert first["media_record_ids"] == second["media_record_ids"]
     # 4 + 4 часа по доллару, и всё это с процентом агента.
     assert second["spend"] == 8.8
 
@@ -856,7 +1281,7 @@ async def test_removing_a_commit_takes_its_spend_back(spend_window) -> None:
         client.delete(f"/api/v1/meta/spend/commits/{items[0]['id']}")
 
     async with SessionLocal() as db:
-        record = await db.get(MediaRecord, uuid.UUID(body["media_record_id"]))
+        record = await db.get(MediaRecord, uuid.UUID(body["media_record_ids"][0]))
         assert record.spend_calculated == Decimal("4.4000")
 
 
@@ -886,6 +1311,151 @@ async def test_only_the_marked_campaigns_are_asked_about(spend_window) -> None:
     assert payload["rows"][0]["day_spend"] == 0.0
     # А в Meta за её часами не ходим — за день ноль, в окне тоже будет ноль.
     assert spend_window["hour_calls"] == []
+
+
+# --- окно через полночь ---------------------------------------------------------
+
+
+async def _add_spend_day(spend_window, day: date) -> None:
+    async with SessionLocal() as db:
+        db.add(
+            MetaStatDaily(
+                workspace_id=spend_window["workspace"],
+                connection_id=spend_window["connection"],
+                account_id=spend_window["account"],
+                record_date=day,
+                campaign_external_id=CAMPAIGN_ID,
+                dimension_key=f"{CAMPAIGN_ID}:{day.isoformat()}",
+                spend=Decimal("24.00"),
+            )
+        )
+        await db.commit()
+
+
+async def test_a_window_can_cross_midnight(spend_window) -> None:
+    """Окно с 22:00 до 06:00 следующего дня ложится в записи обоих дней.
+
+    Медиаборд живёт записями «день + баер + оффер», поэтому длинное окно
+    раскладывается на посуточные части — каждая со своей суммой и своим
+    процентом агента.
+    """
+    from app.models import MediaRecord
+
+    next_day = spend_window["day"] + timedelta(days=1)
+    await _add_spend_day(spend_window, next_day)
+    with _admin_client() as client:
+        result = client.post(
+            "/api/v1/meta/spend/commit",
+            json=_commit_payload(
+                spend_window, hour_from=22, date_to=next_day.isoformat(), hour_to=6
+            ),
+        )
+        items = client.get(
+            f"/api/v1/meta/spend/commits?from={spend_window['day']}&to={next_day}"
+        ).json()["items"]
+
+    assert result.status_code == 201
+    body = result.json()
+    # Часть первого дня (22–24) плюс часть второго (00–06): шесть часов по
+    # доллару и два часа по доллару, всё с 10 % агента.
+    assert body["base_amount"] == 8.0
+    assert body["spend"] == 8.8
+    assert len(body["media_record_ids"]) == 2
+
+    async with SessionLocal() as db:
+        records = [
+            await db.get(MediaRecord, uuid.UUID(record_id))
+            for record_id in body["media_record_ids"]
+        ]
+        assert sorted(record.record_date for record in records) == [
+            spend_window["day"],
+            next_day,
+        ]
+
+    # В списке видно обе части, каждая со своей датой.
+    assert [item["window"] for item in items] == [
+        f"{spend_window['day'].isoformat()} · 22:00–24:00",
+        f"{next_day.isoformat()} · 00:00–06:00",
+    ]
+
+
+async def test_taken_windows_are_visible_for_a_cross_day_window(spend_window) -> None:
+    """Занятые отрезки видны на экране и в окне, которое переходит через полночь."""
+    next_day = spend_window["day"] + timedelta(days=1)
+    await _add_spend_day(spend_window, next_day)
+    with _admin_client() as client:
+        client.post(
+            "/api/v1/meta/spend/commit",
+            json=_commit_payload(
+                spend_window, hour_from=22, date_to=next_day.isoformat(), hour_to=6
+            ),
+        )
+        payload = client.get(
+            f"/api/v1/meta/spend/window?from={spend_window['day']}&to={next_day}"
+            "&hour_from=4&hour_to=12"
+        ).json()
+
+    assert payload["rows"][0]["taken_windows"] == [
+        {"date": spend_window["day"].isoformat(), "from": 22, "to": 24},
+        {"date": next_day.isoformat(), "from": 0, "to": 6},
+    ]
+    # Окно 04:00–12:00 второго дня задевает занятые часы 04:00–06:00.
+    row = payload["rows"][0]
+    assert any(
+        taken["date"] == next_day.isoformat() and taken["from"] < 12
+        for taken in row["taken_windows"]
+    )
+
+
+async def test_a_conflict_is_caught_across_days(spend_window) -> None:
+    """Час кампании нельзя отнести дважды, даже если окна лежат в разных днях."""
+    next_day = spend_window["day"] + timedelta(days=1)
+    await _add_spend_day(spend_window, next_day)
+    with _admin_client() as client:
+        client.post(
+            "/api/v1/meta/spend/commit",
+            json=_commit_payload(
+                spend_window, hour_from=22, date_to=next_day.isoformat(), hour_to=6
+            ),
+        )
+        again = client.post(
+            "/api/v1/meta/spend/commit",
+            json=_commit_payload(
+                spend_window,
+                date_from=next_day.isoformat(),
+                hour_from=4,
+                date_to=next_day.isoformat(),
+                hour_to=10,
+            ),
+        )
+    assert again.status_code == 409
+    message = again.json()["error"]["message"]
+    assert "уже отнесена" in message
+    assert next_day.isoformat() in message
+
+
+async def test_an_inverted_or_overlong_window_is_rejected(spend_window) -> None:
+    """Конец раньше начала и окна длиной в квартал до Meta не доезжают."""
+    long_after = spend_window["day"] + timedelta(days=31)
+    with _admin_client() as client:
+        inverted = client.get(
+            f"/api/v1/meta/spend/window?from={long_after}&to={spend_window['day']}"
+        )
+        overlong = client.get(
+            f"/api/v1/meta/spend/window?from={spend_window['day']}&to={long_after}"
+        )
+        commit_inverted = client.post(
+            "/api/v1/meta/spend/commit",
+            json=_commit_payload(
+                spend_window,
+                date_from=(spend_window["day"] + timedelta(days=1)).isoformat(),
+                hour_from=10,
+                hour_to=12,
+            ),
+        )
+    assert inverted.status_code == 422
+    assert overlong.status_code == 422
+    assert commit_inverted.status_code == 422
 
 
 async def test_a_buyer_fixes_the_spend_on_their_own_day(spend_window) -> None:
@@ -956,3 +1526,130 @@ async def test_a_buyer_fixes_the_spend_on_their_own_day(spend_window) -> None:
             await db.execute(delete(User).where(User.id == buyer_id))
             await db.execute(delete(Role).where(Role.id == role_id))
             await db.commit()
+
+
+async def test_a_pick_narrows_every_level_below_it(meta_connection) -> None:
+    """Отметка строки сужает то, что ниже неё, и не трогает свой же уровень.
+
+    Цепочка обзора идёт пользователь → аккаунт → БМ → фан-пейдж → кабинет, и
+    каждый шаг связан по-своему: БМ знает свой аккаунт колонкой, а вот кабинет
+    к странице привязан только через объявления — «кабинеты этой страницы» это
+    те, где крутилась реклама от её лица.
+    """
+    await _run_sync(meta_connection["connection"])
+    window = "?date_from=2026-07-01&date_to=2026-07-01"
+    stranger = str(uuid.uuid4())
+    with _admin_client() as client:
+        business = client.get(f"/api/v1/meta/overview/levels/businesses{window}").json()
+        page = client.get(f"/api/v1/meta/overview/levels/fanpages{window}").json()
+        account = client.get(f"/api/v1/meta/overview/levels/accounts{window}").json()
+        business_id = business["rows"][0]["id"]
+        page_id = page["rows"][0]["id"]
+        account_id = account["rows"][0]["id"]
+
+        pages_of_business = client.get(
+            f"/api/v1/meta/overview/levels/fanpages{window}&business_id={business_id}"
+        ).json()
+        pages_of_stranger = client.get(
+            f"/api/v1/meta/overview/levels/fanpages{window}&business_id={stranger}"
+        ).json()
+        accounts_of_page = client.get(
+            f"/api/v1/meta/overview/levels/accounts{window}&page_id={page_id}"
+        ).json()
+        accounts_of_nothing = client.get(
+            f"/api/v1/meta/overview/levels/accounts{window}&page_id=404404404"
+        ).json()
+        campaigns_of_account = client.get(
+            f"/api/v1/meta/overview/levels/campaigns{window}&ad_account_id={account_id}"
+        ).json()
+        campaigns_of_stranger = client.get(
+            f"/api/v1/meta/overview/levels/campaigns{window}&ad_account_id={stranger}"
+        ).json()
+        # Свой уровень фильтром не режется — иначе снять отметку было бы нечем.
+        own_level = client.get(
+            f"/api/v1/meta/overview/levels/businesses{window}&business_id={stranger}"
+        ).json()
+
+    assert len(pages_of_business["rows"]) == 1
+    assert pages_of_business["rows"][0]["id"] == page_id
+    assert pages_of_stranger["rows"] == []
+    assert len(accounts_of_page["rows"]) == 1
+    assert accounts_of_page["rows"][0]["id"] == account_id
+    assert accounts_of_nothing["rows"] == []
+    assert len(campaigns_of_account["rows"]) == 1
+    assert campaigns_of_stranger["rows"] == []
+    assert len(own_level["rows"]) == 1
+
+
+async def test_every_level_shows_its_meta_id(meta_connection) -> None:
+    """ID объекта в Meta приходит на всех уровнях, кроме пользователя.
+
+    Ключ строки для этого не годится: у аккаунтов, БМов и кабинетов это
+    внутренний id CRM, а ищут и копируют везде метовский.
+    """
+    await _run_sync(meta_connection["connection"])
+    window = "?date_from=2026-07-01&date_to=2026-07-01"
+    with _admin_client() as client:
+        answers = {
+            level: client.get(f"/api/v1/meta/overview/levels/{level}{window}").json()
+            for level in (
+                "users", "socials", "businesses", "fanpages",
+                "accounts", "campaigns", "adsets", "ads",
+            )
+        }
+        by_id = client.get(
+            f"/api/v1/meta/overview/levels/businesses{window}"
+            f"&search={answers['businesses']['rows'][0]['external_id']}"
+        ).json()
+
+    assert answers["users"]["rows"][0]["external_id"] is None
+    for level, payload in answers.items():
+        if level == "users":
+            continue
+        assert payload["rows"][0]["external_id"], level
+    assert answers["accounts"]["rows"][0]["external_id"].startswith("act_")
+    # Фан-пейдж и объекты рекламы ключуются самим метовским ID.
+    assert answers["fanpages"]["rows"][0]["external_id"] == answers["fanpages"]["rows"][0]["id"]
+    # Раз ID виден, по нему должно и искаться — у БМа ключ строки чужой.
+    assert len(by_id["rows"]) == 1
+
+
+async def test_the_accounts_level_carries_its_connection(meta_connection) -> None:
+    """Подключения живут в уровне «Аккаунты»: строка знает своё подключение.
+
+    По этому id открываются сохранённые настройки прямо из таблицы, поэтому
+    без него подключение стало бы недоступным для правки.
+    """
+    await _run_sync(meta_connection["connection"])
+    window = "?date_from=2026-07-01&date_to=2026-07-01"
+    with _admin_client() as client:
+        socials = client.get(f"/api/v1/meta/overview/levels/socials{window}").json()
+
+    row = socials["rows"][0]
+    assert row["connection_id"] == str(meta_connection["connection"])
+    assert row["connection"]
+
+
+async def test_a_connection_without_an_account_still_shows_up(meta_connection) -> None:
+    """Подключение, у которого аккаунт ещё не подтянулся, тоже видно.
+
+    Первая синхронизация могла не пройти или токену не хватило прав — без строки
+    в таблице такое подключение стало бы нечинимым: его настройки некуда открыть.
+    """
+    async with SessionLocal() as db:
+        await db.execute(
+            delete(MetaSocialAccount).where(
+                MetaSocialAccount.connection_id == meta_connection["connection"]
+            )
+        )
+        await db.commit()
+
+    window = "?date_from=2026-07-01&date_to=2026-07-01"
+    with _admin_client() as client:
+        socials = client.get(f"/api/v1/meta/overview/levels/socials{window}").json()
+
+    rows = {row["id"]: row for row in socials["rows"]}
+    placeholder = rows.get(str(meta_connection["connection"]))
+    assert placeholder is not None
+    assert placeholder["connection_id"] == str(meta_connection["connection"])
+    assert placeholder["ad_accounts"] == 0

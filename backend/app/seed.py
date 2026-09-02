@@ -42,12 +42,21 @@ PERMISSIONS = {
     "finance.manage",
     "finance.export",
     "offers.view",
+    # Видеть весь справочник офферов, а не только назначенные лично. Право
+    # отдельное от `offers.manage`: СМО смотрит за всеми командами, но офферы
+    # не раздаёт, а тимлид раздаёт — но только свои.
+    "offers.view_all",
     "offers.manage",
     "team.view",
     "team.manage",
     "meta.view",
     "meta.manage",
     "meta.launch",
+    # Модерация комментариев под рекламой. Право отдельное от `meta.launch`:
+    # удаление комментария не тратит деньги, но необратимо и видно снаружи,
+    # а чистить обычно приходится тем, кому заливы не доверены. В role_defaults
+    # код не входит — существующим ролям его выдаёт админ вручную.
+    "meta.comments",
     "workspace.view",
     "workspace.manage",
     "knowledge.view",
@@ -58,6 +67,9 @@ PERMISSIONS = {
     "salary.manage",
     "utilities.view",
     "utilities.manage",
+    # Раздел «Рекрутинг» — пока только у администратора: в role_defaults ниже
+    # код не входит, а существующим ролям его выдаёт админ вручную.
+    "recruitment.view",
 }
 
 
@@ -95,6 +107,17 @@ async def seed() -> None:
             )
             db.add(admin_role)
             await db.flush()
+        else:
+            # Роль живёт давно: досыпаем права, появившиеся после её создания
+            # (иначе новый раздел остаётся у роли невидимым до правки руками).
+            existing = {permission.code for permission in admin_role.permissions}
+            missing = [
+                permission for code, permission in permission_rows.items()
+                if code not in existing
+            ]
+            if missing:
+                admin_role.permissions = list(admin_role.permissions) + missing
+                await db.flush()
 
         role_defaults = {
             "Team Lead": {
@@ -130,6 +153,7 @@ async def seed() -> None:
                 "dashboard.view",
                 "finance.view",
                 "offers.view",
+                "offers.view_all",
                 "team.view",
                 "workspace.view",
                 "knowledge.view",

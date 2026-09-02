@@ -346,10 +346,8 @@
   }
 
   function fileRowsHtml(ids) {
-    if (!ids.length) {
-      return '<div data-file-empty style="font-size:11.5px;color:#9B9292;font-weight:600">' +
-        "Файлов нет</div>";
-    }
+    // Пустой список ничего не сообщает: под полем и так стоит «Прикрепить файл».
+    if (!ids.length) return "";
     return ids.map(function (id) {
       var meta = state.attachments[id] || { file_name: "Файл", byte_size: 0, url: "" };
       return '<div class="ws-pick" data-file-row="' + escapeHtml(id) + '">' +
@@ -442,10 +440,8 @@
    */
   function fieldPickerHtml(field) {
     var picked = (field.value || []).slice();
-    if (!picked.length) {
-      return '<div class="ws-chip-empty">Полей пока нет — создайте первое ' +
-        "кнопкой ниже.</div>";
-    }
+    // Пустой список ничего не сообщает: кнопка «Создать поле» стоит прямо под ним.
+    if (!picked.length) return "";
     return picked.map(function (id) {
       var row = state.fields.filter(function (item) { return item.id === id; })[0];
       return row ? pickRowHtml(field.name, row) : "";
@@ -666,7 +662,7 @@
     var button = host.querySelector("[data-file-add]");
     var markup = fileRowsHtml(ids);
     Array.prototype.forEach.call(
-      host.querySelectorAll("[data-file-row],[data-file-empty]"),
+      host.querySelectorAll("[data-file-row]"),
       function (node) { node.remove(); }
     );
     button.insertAdjacentHTML("beforebegin", markup);
@@ -1167,7 +1163,6 @@
     var canDrag = canEdit;
     var overdue = task.due_date && !task.is_done &&
       new Date(task.due_date + "T00:00:00") < today();
-    var props = cardProps(task);
     return '<div class="ws-card' + (overdue ? " ws-card--overdue" : "") +
       (canEdit ? "" : " ws-card--readonly") + '" draggable="' + (canDrag ? "true" : "false") +
       '" role="button" tabindex="0" aria-label="Открыть задачу ' + escapeHtml(task.title) +
@@ -1182,9 +1177,8 @@
           'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">' +
           escapeHtml(task.description) + "</div>"
         : "") +
-      (props.length
-        ? '<div class="ws-props">' + props.join("") + "</div>"
-        : "") +
+      // Значения полей брифа на карточку не выносим: доска нужна, чтобы окинуть
+      // взглядом колонку, а не прочитать каждую задачу целиком.
       '<div style="display:flex;align-items:center;gap:7px;margin-top:11px;flex-wrap:wrap">' +
       '<span class="ws-chip" style="color:' + priority.color + ";background:" +
       priority.background + '">' + escapeHtml(priority.label) + "</span>" +
@@ -1202,67 +1196,6 @@
       "</div></div>";
   }
 
-  /* Свойства карточки — чипами. Метка становится отдельным чипом, потому что
-     её и читают как метку; у остальных типов рядом со значением остаётся имя
-     поля, иначе «12 000» на карточке ничего не значит.
-
-     Больше пяти чипов карточка не показывает: доска нужна, чтобы окинуть
-     взглядом колонку, а не прочитать каждую задачу целиком. */
-  var CARD_PROPS_LIMIT = 5;
-
-  function cardProps(task) {
-    var chips = [];
-    var hidden = 0;
-    state.fields.forEach(function (field) {
-      var value = (task.custom_values || {})[field.id];
-      if (value === undefined || value === null || value === "") return;
-      var made = propChips(field, value);
-      made.forEach(function (chip) {
-        if (chips.length < CARD_PROPS_LIMIT) chips.push(chip);
-        else hidden += 1;
-      });
-    });
-    if (hidden) {
-      chips.push('<span class="ws-prop ws-prop__key">+' + hidden + "</span>");
-    }
-    return chips;
-  }
-
-  function propChips(field, value) {
-    if (field.kind === "labels") {
-      return (value || []).map(function (item) {
-        return '<span class="ws-prop ws-prop--label" title="' + escapeHtml(field.name) + '">' +
-          escapeHtml(item) + "</span>";
-      });
-    }
-    if (field.kind === "checkbox") {
-      return value
-        ? ['<span class="ws-prop ws-prop--on">✓ ' + escapeHtml(field.name) + "</span>"]
-        : [];
-    }
-    if (field.kind === "file") {
-      return (value || []).length
-        ? [propChip(field.name, (value || []).length + " файл(ов)")]
-        : [];
-    }
-    if (field.kind === "user") {
-      var person = state.people.filter(function (item) { return item.id === value; })[0];
-      return [propChip(field.name, person ? person.name : "—")];
-    }
-    if (field.kind === "select") return [propChip(field.name, value)];
-    if (field.kind === "date") return [propChip(field.name, formatDay(value))];
-    if (field.kind === "money") {
-      return [propChip(field.name, value + " " + ((field.config || {}).currency || "USD"))];
-    }
-    if (field.kind === "url") return [propChip(field.name, shorten(value, 24))];
-    return [propChip(field.name, shorten(String(value), 28))];
-  }
-
-  function propChip(name, value) {
-    return '<span class="ws-prop" title="' + escapeHtml(name + ": " + value) + '">' +
-      '<span class="ws-prop__key">' + escapeHtml(name) + "</span>" +
-      escapeHtml(value) + "</span>";
-  }
 
   function shorten(value, limit) {
     var text = String(value);
@@ -1546,6 +1479,7 @@
         section_id: task.section_id || state.sectionId || null,
         status_id: task.status_id,
         priority: task.priority,
+        start_date: task.start_date || null,
         due_date: task.due_date || null,
         assignee_ids: (task.assignee_ids || []).slice(),
         custom_values: Object.assign({}, task.custom_values || {}),
@@ -1719,10 +1653,10 @@
           return { value: key, label: PRIORITIES[key].label,
             selected: key === (task.priority || "medium") };
         }) },
+      { name: "start_date", label: "Дата начала", type: "date", half: true,
+        value: task.start_date || "" },
       { name: "due_date", label: "Срок выполнения", type: "date", half: true,
         value: task.due_date || "" },
-      { name: "description", label: "Описание", type: "textarea",
-        value: task.description || "" },
       { name: "assignee_ids", label: "Исполнители", type: "checklist",
         empty: "В команде пока некому поручить",
         options: state.people.map(function (person) {
@@ -1882,7 +1816,7 @@
     byId("wsTaskTitle").textContent = editing ? "Задача" : "Новая задача";
     byId("wsTaskSubtitle").textContent = editing
       ? "Создана " + formatMoment(task.created_at)
-      : (state.templates.length ? "Можно начать с шаблона — выберите его ниже" : "");
+      : "";
     var body = byId("wsTaskBody");
     // У существующей задачи набор полей приходит с сервера, у новой — считается
     // по выбранному шаблону здесь же и пересобирается при его смене.
@@ -1969,8 +1903,7 @@
           (template.id === current ? " selected" : "") + ">" +
           escapeHtml(template.name) +
           (template.is_default ? " — по умолчанию" : "") + "</option>";
-      }).join("") + "</select>" +
-      '<span class="ws-hint">Добавит в карточку поля шаблона</span></label>';
+      }).join("") + "</select></label>";
   }
 
   function findTask(taskId) {
@@ -2000,14 +1933,16 @@
       taskError("Укажите название задачи");
       return;
     }
+    // Описание из карточки убрали, и в payload его нет намеренно: PATCH меняет
+    // только присланные поля, поэтому текст у старых задач остаётся на месте.
     var payload = {
       title: values.title.trim(),
-      description: values.description || null,
       // Без явного раздела задача ушла бы в первый доступный, а не в тот,
       // который сейчас открыт на доске.
       section_id: values.section_id || state.sectionId || null,
       status_id: values.status_id || null,
       priority: values.priority,
+      start_date: values.start_date || null,
       due_date: values.due_date || null,
       assignee_ids: values.assignee_ids || [],
       custom_values: collectCustomValues(values)
@@ -2213,9 +2148,7 @@
           value: (template.field_ids || []).slice(),
           footer: '<div class="ws-pick-tools">' +
             '<button class="ws-action" type="button" id="wsFieldNew">+ Создать поле</button>' +
-            "</div>" + inlineFieldHtml(null, "wsFieldInline"),
-          hint: "Поля появятся в карточке в этом порядке. Порядок меняется " +
-            "перетаскиванием." },
+            "</div>" + inlineFieldHtml(null, "wsFieldInline") },
         { name: "is_default", label: "Ставить по умолчанию", type: "checkbox",
           value: !!template.is_default,
           hint: "Новая задача сразу открывается с этим шаблоном. По умолчанию " +

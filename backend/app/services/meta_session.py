@@ -34,7 +34,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 
@@ -44,6 +44,15 @@ logger = logging.getLogger("meta_session")
 
 # Регулярка для извлечения EAAB-токена из DOM/JS-контекстов.
 EAAB_TOKEN_RE = re.compile(r"EAAB\w{50,300}")
+
+# JS-выражение для поиска EAAB в window.___fbConfig (используется несколько раз).
+FBCONFIG_TOKEN_JS = r"""() => {
+    try {
+        const raw = JSON.stringify(window.___fbConfig || {});
+        const m = raw.match(/EAAB\w{50,300}/);
+        return m ? m[0] : null;
+    } catch (e) { return null; }
+}"""
 
 # Facebook-cookies, которые обычно httpOnly/secure — выставляем флаги на основе имени.
 _HTTPONLY_COOKIES = {"xs", "fr", "c_user", "datr", "sb", "presence", "wd", "locale", "i_user", "dpr"}
@@ -238,27 +247,47 @@ def parse_proxy_url(proxy_url: str) -> dict | None:
 
     Поддерживаются http, https и socks5 — ровно то, что принимает Chromium.
     Для socks5h (разрешение DNS на прокси) Playwright принимает socks5.
+    Принимается и формат продавцов прокси host:port:user:pass (со схемой или
+    без неё — тогда подразумевается socks5) — он нормализуется в
+    user:pass@host:port.
     """
     proxy_url = (proxy_url or "").strip()
     if not proxy_url:
         return None
     if "://" not in proxy_url:
-        raise MetaSessionError(
-            "Прокси задаётся в виде http://логин:пароль@хост:порт (или socks5://…) — "
-            "без схемы браузер его не примет."
-        )
-    parsed = urlsplit(proxy_url)
-    scheme = (parsed.scheme or "").lower()
+        # Без схемы принимаем только формат продавцов прокси host:port:user:pass.
+        parts = proxy_url.split(":")
+        if len(parts) == 4 and parts[1].isdigit():
+            host, port, username, password = parts
+            proxy_url = f"socks5://{username}:{password}@{host}:{port}"
+        else:
+            raise MetaSessionError(
+                "Прокси задаётся в виде socks5://логин:пароль@хост:порт "
+                "(или socks5://хост:порт:логин:пароль) — без схемы браузер "
+                "его не примет."
+            )
+    scheme, _, rest = proxy_url.partition("://")
+    scheme = scheme.lower()
     if scheme == "socks5h":
         scheme = "socks5"
     if scheme not in {"http", "https", "socks5"}:
         raise MetaSessionError(
-            f"Тип прокси «{parsed.scheme}» не поддерживается браузером. "
+            f"Тип прокси «{scheme}» не поддерживается браузером. "
             "Используйте HTTP, HTTPS или SOCKS5."
         )
+    # Формат продавцов прокси: socks5://host:port:user:pass (4 части, без @).
+    if "@" not in rest and not rest.startswith("["):
+        parts = rest.split(":")
+        if len(parts) == 4 and parts[1].isdigit():
+            host, port, username, password = parts
+            rest = f"{username}:{password}@{host}:{port}"
+    try:
+        parsed = urlsplit(f"{scheme}://{rest}")
+        port = parsed.port
+    except ValueError as exc:
+        raise MetaSessionError(f"Некорректный адрес прокси: {exc}") from exc
     if not parsed.hostname:
         raise MetaSessionError("Некорректный адрес прокси: не указан хост.")
-    port = parsed.port
     if port is None:
         port = 443 if scheme == "https" else 80 if scheme == "http" else 1080
     cfg = {"server": f"{scheme}://{parsed.hostname}:{port}"}
@@ -269,6 +298,23 @@ def parse_proxy_url(proxy_url: str) -> dict | None:
     return cfg
 
 
+def normalize_proxy_url(proxy_url: str) -> str:
+    """Возвращает прокси-URL в каноническом виде scheme://user:pass@host:port.
+
+    Нужно httpx-клиенту (проверка прокси, MetaClient): он требует URL, а не
+    отдельные поля user/pass. Кидает MetaSessionError при некорректном адресе.
+    """
+    cfg = parse_proxy_url(proxy_url)
+    if not cfg:
+        return ""
+    scheme, _, hostport = cfg["server"].partition("://")
+    if cfg.get("username") or cfg.get("password"):
+        user = quote(cfg.get("username") or "", safe="")
+        password = quote(cfg.get("password") or "", safe="")
+        return f"{scheme}://{user}:{password}@{hostport}"
+    return cfg["server"]
+
+
 async def check_proxy_url(proxy_url: str) -> dict:
     """Проверка прокси перед запуском браузера: внешний IP, гео, задержка.
 
@@ -277,6 +323,12 @@ async def check_proxy_url(proxy_url: str) -> dict:
     пойдёт браузер — если здесь не прошло, браузер запускать нельзя.
     """
     proxy_url = (proxy_url or "").strip()
+    if not proxy_url:
+        return {"ok": False, "error": "Прокси не задан"}
+    try:
+        proxy_url = normalize_proxy_url(proxy_url)
+    except MetaSessionError as exc:
+        return {"ok": False, "error": str(exc)}
     if not proxy_url:
         return {"ok": False, "error": "Прокси не задан"}
     started = time.monotonic()
@@ -294,6 +346,78 @@ async def check_proxy_url(proxy_url: str) -> dict:
         }
     ip = str(data.get("ip") or "")
     return {"ok": True, "ip": ip, "country": None, "latency_ms": latency_ms}
+
+
+class SessionHTTPTransport(httpx.AsyncBaseTransport):
+    """httpx-транспорт, ходящий через APIRequestContext живой браузерной сессии.
+
+    Meta принимает запросы с сессионным EAAB-токеном только из браузерного
+    контекста (TLS-отпечаток браузера + cookies сессии + тот же IP). Обычный
+    httpx-запрос с таким токеном получает «Invalid request» (код 1) или 2500 —
+    а тот же запрос изнутри контекста сессии проходит. Проверено в бою:
+    curl/httpx через прокси — 400, ctx.request — 200.
+    """
+
+    def __init__(self, context, timeout_ms: int = 45000) -> None:
+        self.context = context
+        self.timeout_ms = timeout_ms
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        # Хост-заголовок браузер выставит сам по URL — отдавать его снаружи нельзя.
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        # У multipart-запросов (загрузка креативов) тело потоковое: .content
+        # упадёт с RequestNotRead — read() вычитывает стрим целиком. Стрим
+        # одноразовый, а MetaClient повторяет запросы тем же объектом request —
+        # кешируем тело, чтобы повторная попытка не ушла с пустым телом.
+        body = getattr(request, "_celestial_body", None)
+        if body is None:
+            body = request.read() or None
+            try:
+                request._celestial_body = body
+            except Exception:  # noqa: BLE001 — кеш не обязателен
+                pass
+        try:
+            if request.method == "GET":
+                response = await self.context.request.get(
+                    str(request.url), headers=headers, timeout=self.timeout_ms
+                )
+            elif request.method == "POST" and body:
+                # Graph API принимает form-urlencoded и multipart. httpx уже
+                # сериализовал тело — отдаём его как есть с его content-type.
+                response = await self.context.request.post(
+                    str(request.url), headers=headers, data=body, timeout=self.timeout_ms
+                )
+            elif request.method == "POST":
+                response = await self.context.request.post(
+                    str(request.url), headers=headers, timeout=self.timeout_ms
+                )
+            else:
+                response = await self.context.request.fetch(
+                    str(request.url),
+                    method=request.method,
+                    headers=headers,
+                    data=body,
+                    timeout=self.timeout_ms,
+                )
+        except Exception as exc:
+            # Внутренности MetaClient повторяют запросы по httpx-исключениям —
+            # сетевую ошибку браузерного контекста представляем как ConnectError.
+            raise httpx.ConnectError(f"session request failed: {exc}", request=request) from exc
+        text = await response.text()
+        # Playwright уже распаковал тело (gzip/br/deflate), поэтому заголовки
+        # кодирования убираем — иначе httpx попытается распаковать ещё раз и
+        # упадёт с DecodingError. content-length тоже устарел.
+        resp_headers = {
+            k: v
+            for k, v in response.headers.items()
+            if k.lower() not in {"content-encoding", "content-length", "transfer-encoding"}
+        }
+        return httpx.Response(
+            status_code=response.status,
+            headers=resp_headers,
+            text=text,
+            request=request,
+        )
 
 
 @dataclass
@@ -315,6 +439,10 @@ class MetaSessionState:
     bridge: object | None = None
     proxy_url: str = ""
     user_agent: str | None = None
+    # Сериализует извлечение токена: параллельные вызовы /token и фоновая задача
+    # не должны гоняться за одной страницей. Создаётся лениво в extract_token,
+    # потому что asyncio.Lock обязан родиться внутри работающего event loop.
+    extract_lock: object | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -650,7 +778,11 @@ class MetaSessionManager:
         fp = data.get("fingerprint") or {}
 
         state = self.sessions.get(session_id)
-        if state and state.status in {"waiting_login", "saved", "token", "starting"}:
+        if (
+            state
+            and state.context
+            and state.status in {"waiting_login", "saved", "token", "starting"}
+        ):
             return state
         state = MetaSessionState(
             id=session_id, status="restoring", proxy_url=proxy_url, user_agent=user_agent
@@ -719,7 +851,13 @@ class MetaSessionManager:
           1. localStorage ключи, содержащие EAAB;
           2. window.___fbConfig (глобальный конфиг, в котором часто лежит токен);
           3. DOM-страница adsmanager.facebook.com (regex EAAB...);
-          4. Перехват GraphQL-запросов (response body с EAAB).
+          4. Перехват GraphQL-запросов (response body с EAAB);
+          5. Повторная попытка ___fbConfig после всех навигаций.
+
+        Facebook сам редиректит страницу (чекпойнты, региональные перебросы),
+        из-за чего наши goto/reload падают с ERR_ABORTED, а evaluate — с
+        «Execution context was destroyed». Поэтому навигация повторяется с
+        паузами, а параллельные вызовы сериализуются локом сессии.
         """
         state = self.sessions.get(session_id)
         if not state or not state.context:
@@ -730,77 +868,140 @@ class MetaSessionManager:
                 "token": state.token,
                 "methods_tried": list(state.methods_tried),
             }
+        if state.extract_lock is None:
+            state.extract_lock = asyncio.Lock()
+        async with state.extract_lock:
+            # Пока ждали лока, параллельный вызов мог уже найти токен.
+            if state.token:
+                return {
+                    "session_id": session_id,
+                    "token": state.token,
+                    "methods_tried": list(state.methods_tried),
+                }
+            page = state.page
+            if not page or page.is_closed():
+                raise MetaSessionError(
+                    "Браузер сессии закрыт — запустите сессию заново и получите токен."
+                )
+            token = None
+            methods_tried: list[str] = []
 
-        page = state.page
-        token = None
-        methods_tried: list[str] = []
+            def alive() -> bool:
+                return bool(page) and not page.is_closed()
 
-        # 1) localStorage
+            # 1) localStorage
+            try:
+                methods_tried.append("localStorage")
+                await self._goto_retry(page, f"{settings.meta_facebook_url}/")
+                await self._settle(page)
+                lv = await self._evaluate_retry(
+                    page, "() => Object.entries(localStorage)"
+                )
+                for _key, value in lv:
+                    if "EAAB" in str(value):
+                        m = EAAB_TOKEN_RE.search(str(value))
+                        if m:
+                            token = m.group(0)
+                            break
+            except Exception as exc:
+                logger.warning("[%s] localStorage extraction failed: %s", session_id, exc)
+
+            # 2) window.___fbConfig
+            if not token and alive():
+                try:
+                    methods_tried.append("fbConfig")
+                    token = await self._evaluate_retry(page, FBCONFIG_TOKEN_JS)
+                except Exception as exc:
+                    logger.warning("[%s] fbConfig extraction failed: %s", session_id, exc)
+
+            # 3) DOM adsmanager
+            if not token and alive():
+                try:
+                    methods_tried.append("dom")
+                    await self._goto_retry(page, settings.meta_ads_manager_url)
+                    await self._settle(page, 3.0)
+                    content = await page.content()
+                    m = EAAB_TOKEN_RE.search(content)
+                    token = m.group(0) if m else None
+                except Exception as exc:
+                    logger.warning("[%s] DOM extraction failed: %s", session_id, exc)
+
+            # 4) Перехват GraphQL-ответов
+            if not token and alive():
+                methods_tried.append("graphql")
+                try:
+                    token = await self._capture_graphql_token(page, session_id)
+                except Exception as exc:
+                    logger.warning("[%s] GraphQL extraction failed: %s", session_id, exc)
+
+            # 5) Финальная попытка: после всех навигаций страница улеглась —
+            # спросим fbConfig ещё раз, не трогая её.
+            if not token and alive():
+                try:
+                    token = await self._evaluate_retry(page, FBCONFIG_TOKEN_JS)
+                    if token:
+                        methods_tried.append("fbConfig-retry")
+                except Exception:
+                    pass
+
+            if not alive():
+                raise MetaSessionError(
+                    "Браузер сессии закрыт во время извлечения — запустите сессию заново."
+                )
+            if token:
+                state.token = token
+                state.methods_tried = list(methods_tried)
+            logger.info(
+                "[%s] token extraction methods tried: %s -> %s",
+                session_id,
+                methods_tried,
+                "FOUND" if token else "NOT FOUND",
+            )
+            return {"session_id": session_id, "token": token, "methods_tried": methods_tried}
+
+    async def _goto_retry(self, page, url: str, *, attempts: int = 3) -> None:
+        """goto с повторами: во время собственных редиректов Facebook наш
+        переход отменяется (ERR_ABORTED) — повтор после паузы проходит."""
+        last: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                await page.goto(url, wait_until="domcontentloaded")
+                return
+            except Exception as exc:
+                last = exc
+                if attempt < attempts:
+                    await asyncio.sleep(random.uniform(1.5, 3.0))
+        assert last is not None
+        raise RuntimeError(f"goto failed after {attempts} attempts: {last}") from last
+
+    async def _evaluate_retry(self, page, expression: str, *, attempts: int = 3) -> object:
+        """evaluate с повторами: при навигации контекст уничтожается, и первый
+        вызов падает — повтор после паузы обычно проходит."""
+        last: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return await page.evaluate(expression)
+            except Exception as exc:
+                last = exc
+                if attempt < attempts:
+                    await asyncio.sleep(random.uniform(1.0, 2.0))
+        assert last is not None
+        raise RuntimeError(f"evaluate failed: {last}") from last
+
+    async def _settle(self, page, seconds: float = 2.0) -> None:
+        """Даём странице закончить собственные редиректы перед чтением."""
         try:
-            await page.goto(f"{settings.meta_facebook_url}/", wait_until="domcontentloaded")
-            await asyncio.sleep(1.5)
-            lv = await page.evaluate("() => Object.entries(localStorage)")
-            methods_tried.append("localStorage")
-            for _key, value in lv:
-                if "EAAB" in str(value):
-                    m = EAAB_TOKEN_RE.search(str(value))
-                    if m:
-                        token = m.group(0)
-                        break
-        except Exception as exc:
-            logger.warning("[%s] localStorage extraction failed: %s", session_id, exc)
+            await page.wait_for_load_state("load", timeout=5000)
+        except Exception:
+            pass
+        await asyncio.sleep(seconds)
 
-        # 2) window.___fbConfig
-        if not token:
-            try:
-                methods_tried.append("fbConfig")
-                token = await page.evaluate("""() => {
-                    try {
-                        const raw = JSON.stringify(window.___fbConfig || {});
-                        const m = raw.match(/EAAB\\w{50,300}/);
-                        return m ? m[0] : null;
-                    } catch (e) { return null; }
-                }""")
-            except Exception as exc:
-                logger.warning("[%s] fbConfig extraction failed: %s", session_id, exc)
-
-        # 3) DOM adsmanager
-        if not token:
-            try:
-                methods_tried.append("dom")
-                await page.goto(settings.meta_ads_manager_url, wait_until="domcontentloaded")
-                await asyncio.sleep(3.0)
-                content = await page.content()
-                m = EAAB_TOKEN_RE.search(content)
-                token = m.group(0) if m else None
-            except Exception as exc:
-                logger.warning("[%s] DOM extraction failed: %s", session_id, exc)
-
-        # 4) Перехват GraphQL-ответов
-        if not token:
-            methods_tried.append("graphql")
-            try:
-                token = await self._capture_graphql_token(page)
-            except Exception as exc:
-                logger.warning("[%s] GraphQL extraction failed: %s", session_id, exc)
-
-        if token:
-            state.token = token
-            state.methods_tried = list(methods_tried)
-        logger.info(
-            "[%s] token extraction methods tried: %s -> %s",
-            session_id,
-            methods_tried,
-            "FOUND" if token else "NOT FOUND",
-        )
-        return {"session_id": session_id, "token": token, "methods_tried": methods_tried}
-
-    async def _capture_graphql_token(self, page) -> str | None:
+    async def _capture_graphql_token(self, page, session_id: str) -> str | None:
         found: list[str] = []
 
         async def on_response(response):
             try:
-                if "graphql" in response.url or "api" in response.url:
+                if "graphql" in response.url or "adsmanager" in response.url:
                     body = await response.text()
                     if "EAAB" in body:
                         m = EAAB_TOKEN_RE.search(body)
@@ -810,9 +1011,22 @@ class MetaSessionManager:
                 pass
 
         page.on("response", on_response)
-        await page.reload(wait_until="domcontentloaded")
-        await asyncio.sleep(4.0)
-        page.remove_listener("response", on_response)
+        try:
+            for attempt in range(2):
+                if found:
+                    break
+                try:
+                    await page.reload(wait_until="domcontentloaded")
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] GraphQL reload aborted (attempt %d): %s",
+                        session_id,
+                        attempt + 1,
+                        exc,
+                    )
+                await asyncio.sleep(5.0)
+        finally:
+            page.remove_listener("response", on_response)
         return found[0] if found else None
 
     async def attach(self, session_id: str, connection_id: str) -> dict:
@@ -834,6 +1048,18 @@ class MetaSessionManager:
     def get(self, session_id: str) -> MetaSessionState | None:
         return self.sessions.get(session_id)
 
+    def live_transport(self, session_id: str) -> SessionHTTPTransport | None:
+        """Транспорт живой сессии: запросы пойдут из её браузерного контекста.
+
+        None, если сессии нет, браузер закрыт или вход ещё не выполнен.
+        """
+        state = self.sessions.get(session_id)
+        if not state or not state.context:
+            return None
+        if state.status in {"saved", "token"}:
+            return SessionHTTPTransport(state.context)
+        return None
+
     def list_sessions(self) -> list[dict]:
         return [state.to_dict() for state in self.sessions.values()]
 
@@ -841,6 +1067,11 @@ class MetaSessionManager:
         state = self.sessions.get(session_id)
         if state:
             await self._cleanup(state)
+            # Состояние удаляется полностью: иначе следующая публикация найдёт
+            # state со status="saved", но context=None (браузер закрыт) и
+            # восстановит «полумёртвый» транспорт — Meta жаловалась, что
+            # «не отвечает по адресу», хотя дело было в обнулённом контексте.
+            self.sessions.pop(session_id, None)
             logger.info("[%s] session closed", session_id)
 
     async def shutdown(self) -> None:
@@ -877,6 +1108,10 @@ class MetaSessionManager:
         state.browser = None
         state.pw = None
         state.bridge = None
+        # Статус — в error: ветка «уже есть состояние» в restore проверяет его,
+        # иначе полудохлое состояние могло бы выдать себя за живое.
+        state.status = "error"
+        state.error = "cleaned up"
 
 
 # --- Singleton ---
@@ -888,3 +1123,81 @@ def get_session_manager() -> MetaSessionManager:
     if _manager is None:
         _manager = MetaSessionManager()
     return _manager
+
+
+async def open_session_access(
+    session_factory,
+    connection_id: str,
+    *,
+    proxy_url: str | None,
+    user_agent: str | None = None,
+    store_token=None,
+) -> dict:
+    """Живой транспорт браузерной сессии для запросов Meta + свежий EAAB.
+
+    Для session-подключений: если сессия уже живёт в этом процессе — отдаёт её
+    транспорт; иначе восстанавливает её из сохранённого файла (прокси обязателен,
+    без него восстановление запрещено — защита аккаунта), извлекает свежий токен
+    и сохраняет его в подключение (через session_factory или явный async-колбэк
+    store_token — для вызовов из роутера, где фабрики нет).
+
+    Возвращает {"transport": SessionHTTPTransport, "owned": bool, "token": str|None}.
+    `owned=True` означает, что сессию восстановил этот вызов, и по завершении её
+    нужно закрыть через manager.close(connection_id). Кидает MetaSessionError,
+    если восстановление невозможно (нет файла/прокси/требуется вход).
+    """
+    manager = get_session_manager()
+    state = manager.get(connection_id)
+    if state and state.status in {"saved", "token"} and state.context:
+        return {
+            "transport": SessionHTTPTransport(state.context),
+            "owned": False,
+            "token": state.token,
+        }
+    if not (proxy_url or "").strip():
+        raise MetaSessionError(
+            "Подключение с токеном сессии не имеет прокси — восстановить "
+            "браузерную сессию не из чего. Пересоздайте подключение через мастер."
+        )
+    session_file = Path(settings.meta_session_dir) / f"{connection_id}.json"
+    if not session_file.exists():
+        raise MetaSessionError(
+            "Сохранённая браузерная сессия не найдена. Пройдите вход ещё раз "
+            "через «Браузер Facebook» в подключении — сессия запишется на диск."
+        )
+    try:
+        state = await manager.restore(
+            connection_id, proxy_url=proxy_url, user_agent=user_agent
+        )
+    except Exception as exc:
+        raise MetaSessionError(f"Не удалось восстановить браузерную сессию: {exc}") from exc
+    if state.status == "waiting_login":
+        raise MetaSessionError(
+            "Сессия Facebook требует ручного входа. Подключитесь по VNC (порт 5900), "
+            "войдите в аккаунт и повторите операцию."
+        )
+    token: str | None = None
+    try:
+        result = await manager.extract_token(connection_id)
+        token = result.get("token") or None
+    except Exception as exc:
+        logger.warning("[%s] token extraction during restore failed: %s", connection_id, exc)
+    if token:
+        state.token = token
+        if store_token is not None:
+            await store_token(token)
+        elif session_factory is not None:
+            from app.core.security import decrypt_secret, encrypt_secret
+            from app.models import IntegrationConnection
+
+            async with session_factory() as db:
+                connection = await db.get(IntegrationConnection, uuid.UUID(connection_id))
+                if connection and decrypt_secret(connection.api_key_encrypted) != token:
+                    connection.api_key_encrypted = encrypt_secret(token)
+                    await db.commit()
+        logger.info("[%s] fresh session token stored", connection_id)
+    return {
+        "transport": SessionHTTPTransport(state.context),
+        "owned": True,
+        "token": token,
+    }

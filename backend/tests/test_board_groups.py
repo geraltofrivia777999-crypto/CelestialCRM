@@ -264,3 +264,37 @@ async def test_groups_carry_the_filters_the_leaves_need(board_rows) -> None:
     assert group["geo"] == "PL"
     assert len(items) == group["records"]
     assert {item["partner_id"] for item in items} == {group["partner_id"]}
+
+
+async def test_media_filters_accept_several_values(board_rows) -> None:
+    """Медиаборд спрашивает не про одного баера и не про одно GEO сразу.
+
+    Набор значений уходит повторяющимся параметром, поэтому здесь проверяется
+    и то, что лишнее значение в наборе ничего не отрезает, и то, что само
+    сужение работает: одного чужого GEO хватает, чтобы выдача опустела.
+    """
+    _buyer_id, offer_id = board_rows
+    stranger = str(uuid.uuid4())
+    with _admin_client() as client:
+        one = client.get("/api/v1/media-records/groups", params=_period(offer_id))
+        several = client.get(
+            "/api/v1/media-records/groups",
+            params=_period(offer_id, {"offer_id": [offer_id, stranger]}),
+        )
+        both_geo = client.get(
+            "/api/v1/media-records/groups",
+            params=_period(offer_id, {"geo": ["PL", "DE"]}),
+        )
+        foreign_geo = client.get(
+            "/api/v1/media-records/groups", params=_period(offer_id, {"geo": "DE"})
+        )
+        leaves = client.get(
+            "/api/v1/media-records",
+            params=_period(offer_id, {"offer_id": [offer_id, stranger], "limit": 1000}),
+        )
+
+    assert several.status_code == 200
+    assert several.json() == one.json()
+    assert both_geo.json() == one.json()
+    assert foreign_geo.json()["record_count"] == 0
+    assert len(leaves.json()["items"]) == DAYS

@@ -78,6 +78,7 @@
     people: [],
     geos: [],
     partners: [],
+    integrations: [],
     canManage: false,
     canManageCaps: false,
     // Какие оффера раскрыты: KPI и комментарий показываются под строкой.
@@ -381,6 +382,42 @@
       (people.length ? avatars + extra : empty) + button + "</div></td>";
   }
 
+  /* Капа в списке — не одна и та же для всех.
+   *
+   * У оффера есть общий лимит партнёрки, а тимлиды делят его между собой: у
+   * каждого своя цифра, и в своей строке тимлид должен видеть именно её.
+   * Баеру капа не адресована вовсе — у него колонки нет. */
+  function isLeadSomewhere() {
+    var me = offersState.user && String(offersState.user.id);
+    if (!me) return false;
+    return offersState.offers.some(function (offer) {
+      return (offer.leads || []).some(function (person) {
+        return String(person.id) === me;
+      });
+    });
+  }
+
+  function showsCapColumn() {
+    return offersState.canManage || isLeadSomewhere();
+  }
+
+  function offerCapFor(offer) {
+    var me = offersState.user && String(offersState.user.id);
+    var mine = null;
+    (offer.leads || []).forEach(function (person) {
+      if (String(person.id) === me && person.cap) mine = person.cap;
+    });
+    // Своей капы у тимлида может и не быть — тогда действует общий лимит оффера.
+    return mine || offer.cap || "";
+  }
+
+  function offerCapCell(offer) {
+    if (!showsCapColumn()) return "";
+    var value = offerCapFor(offer);
+    return '<td style="padding:15px 14px;font-weight:700' +
+      (value ? "" : ";color:#9B9292") + '">' + escapeHtml(value || "—") + "</td>";
+  }
+
   function capCell(offer) {
     var count = Number(offer.caps_count || 0);
     var badge = count
@@ -404,11 +441,14 @@
     var body = byId("offersTableBody");
     if (!body) return;
     var visible = sortOffers(offersState.offers.filter(offerMatchesFilters));
+    var capHead = byId("offersCapHead");
+    if (capHead) capHead.style.display = showsCapColumn() ? "" : "none";
     if (!visible.length) {
       var message = offersState.offers.length
         ? "Офферы не найдены — измените фильтры"
         : "Офферов пока нет — заведите первый кнопкой «Новый оффер»";
-      body.innerHTML = '<tr><td colspan="11" style="padding:44px 24px;text-align:center;color:#9B9292;font-size:13px">' +
+      body.innerHTML = '<tr><td colspan="' + (showsCapColumn() ? 12 : 11) +
+        '" style="padding:44px 24px;text-align:center;color:#9B9292;font-size:13px">' +
         escapeHtml(message) + "</td></tr>";
     } else {
       body.innerHTML = visible.map(function (offer, index) {
@@ -425,12 +465,15 @@
           '<svg class="offer-open__arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" ' +
           'aria-hidden="true"><path d="m7 10 5 5 5-5" stroke="#9B9292" stroke-width="2" ' +
           'stroke-linecap="round" stroke-linejoin="round"/></svg></button></td>' +
-          '<td style="padding:15px 14px">' + escapeHtml(offer.partner || "—") + "</td>" +
+          '<td style="padding:15px 14px;font-weight:700">' +
+          escapeHtml(offer.partner || "—") + "</td>" +
+          '<td style="padding:15px 14px"><span class="offer-id' +
+          (offer.external_id ? "" : " offer-id--empty") + '">' +
+          escapeHtml(offer.external_id || "—") + "</span></td>" +
           '<td style="padding:15px 14px;font-weight:700">' + escapeHtml(offer.geo || "—") + "</td>" +
           '<td style="padding:15px 14px;font-weight:700;white-space:nowrap">' +
           escapeHtml(cpaLabel(offer)) + "</td>" +
-          '<td style="padding:15px 14px;font-weight:700' +
-          (offer.cap ? "" : ";color:#9B9292") + '">' + escapeHtml(offer.cap || "—") + "</td>" +
+          offerCapCell(offer) +
           capCell(offer) +
           peopleCell(offer, "leads", index) +
           peopleCell(offer, "buyers", index + 2) +
@@ -463,7 +506,8 @@
       { label: "KPI", value: offer.kpi },
       { label: "Комментарий", value: offer.comment }
     ].filter(function (block) { return String(block.value || "").trim(); });
-    return '<tr class="offer-details"><td colspan="11" style="padding:0 24px 16px">' +
+    return '<tr class="offer-details"><td colspan="' + (showsCapColumn() ? 12 : 11) +
+      '" style="padding:0 24px 16px">' +
       '<div class="offer-details__card">' +
       (blocks.length
         ? blocks.map(function (block) {
@@ -631,8 +675,8 @@
       '<div style="display:flex;justify-content:flex-end;gap:10px;padding:15px 24px 18px;border-top:1px solid #EBE6E6">' +
       '<button data-modal-cancel style="border:1px solid #EBE6E6;background:#fff;border-radius:10px;padding:10px 18px;' +
       'font:700 13px Inter,sans-serif;color:#6A6161;cursor:pointer">Отмена</button>' +
-      '<button data-modal-save style="border:none;background:#B91414;color:#fff;border-radius:10px;padding:10px 22px;' +
-      'font:700 13px Inter,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.28)">' +
+      '<button data-modal-save style="border:none;background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;border-radius:10px;padding:10px 22px;' +
+      'font:600 15px Alumni Sans,Inter,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.28)">' +
       escapeHtml(saveLabel || "Сохранить") + "</button></div></div>";
     document.body.appendChild(overlay);
     overlay.addEventListener("click", function (event) {
@@ -666,7 +710,7 @@
     });
   }
 
-  function peopleChecklist(name, selectedIds) {
+  function peopleChecklist(name, selectedIds, caps) {
     var selected = {};
     (selectedIds || []).forEach(function (id) { selected[String(id)] = true; });
     if (!offersState.people.length) {
@@ -674,17 +718,39 @@
     }
     return offersState.people.map(function (person, index) {
       var id = String(person.id);
+      var on = !!selected[id];
+      // Поле капы гаснет вместе со снятой галочкой: цифра без назначения
+      // никуда не сохранится, и вводить её было бы обманом.
+      var cap = caps
+        ? '<input class="offer-pick__cap" type="text" maxlength="160" data-cap-for="' +
+          escapeHtml(id) + '" value="' + escapeHtml((caps[id] == null ? "" : caps[id])) +
+          '" placeholder="капа" aria-label="Капа тимлида ' + escapeHtml(person.name) + '"' +
+          (on ? "" : " disabled") + ">"
+        : "";
       return '<label class="offer-pick">' +
         '<input type="checkbox" data-' + name + '="' + escapeHtml(id) + '"' +
-        (selected[id] ? " checked" : "") +
+        (on ? " checked" : "") +
         ' style="width:17px;height:17px;accent-color:#B91414;cursor:pointer">' +
         '<span style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;' +
         'border-radius:50%;color:#fff;font-size:11px;font-weight:700;font-family:Inter;background:' +
         avatarColor(index) + '">' + escapeHtml(initials(person.name)) + "</span>" +
-        '<span><span style="display:block;font-weight:700;font-size:13px">' + escapeHtml(person.name) +
+        '<span style="flex:1;min-width:0"><span style="display:block;font-weight:700;font-size:13px">' +
+        escapeHtml(person.name) +
         '</span><span style="display:block;font-size:11px;color:#9B9292">@' + escapeHtml(person.login) +
-        "</span></span></label>";
+        "</span></span>" + cap + "</label>";
     }).join("");
+  }
+
+  /* Капы только назначенных: снятого тимлида в наборе быть не должно, иначе
+     сервер сохранил бы цифру для того, кого на оффере уже нет. */
+  function capValues(overlay, ids) {
+    var caps = {};
+    ids.forEach(function (id) {
+      var field = overlay.querySelector('[data-cap-for="' + id + '"]');
+      var value = field ? field.value.trim() : "";
+      if (value) caps[id] = value;
+    });
+    return caps;
   }
 
   function checkedValues(overlay, name) {
@@ -699,16 +765,32 @@
     if (!offer) return;
     var leads = kind === "leads";
     var current = (leads ? offer.leads : offer.buyers) || [];
+    var caps = null;
+    if (leads) {
+      caps = {};
+      current.forEach(function (person) { caps[String(person.id)] = person.cap || ""; });
+    }
     var overlay = openModal(
       "assignPeopleModal",
       leads ? "Назначить тимлидов" : "Назначить баеров",
       offer.name + (leads ? " · оффер станет «Активен»" : " · оффер уйдёт «В работу»"),
-      peopleChecklist("person", current.map(function (person) { return person.id; }))
+      peopleChecklist("person", current.map(function (person) { return person.id; }), caps)
     );
+    if (leads) {
+      overlay.addEventListener("change", function (event) {
+        var box = event.target.closest ? event.target.closest("[data-person]") : null;
+        if (!box) return;
+        var field = overlay.querySelector('[data-cap-for="' +
+          box.getAttribute("data-person") + '"]');
+        if (!field) return;
+        field.disabled = !box.checked;
+        if (!box.checked) field.value = "";
+      });
+    }
     onSave(overlay, function () {
       var ids = checkedValues(overlay, "person");
       var path = "/offers/" + offer.id + (leads ? "/leads" : "/buyers");
-      var payload = leads ? { lead_ids: ids } : { buyer_ids: ids };
+      var payload = leads ? { lead_ids: ids, caps: capValues(overlay, ids) } : { buyer_ids: ids };
       return api.put(path, payload).then(function () {
         toast(leads ? "Тимлиды обновлены" : "Баеры обновлены");
         return loadOffers();
@@ -757,11 +839,14 @@
       '<input id="offerFormName" class="offer-field" maxlength="240" value="' +
       escapeHtml(editing ? offer.name : "") + '" placeholder="Например, Nervio Forte">' +
       '<div class="offer-grid">' +
-      '<div><label class="offer-label" for="offerFormCpa">CPA</label>' +
+      // Валюта — своя колонка со своей подписью: переключатель без неё читался
+      // как часть поля CPA, хотя это отдельное значение.
       '<div class="offer-money">' +
+      '<div style="min-width:0"><label class="offer-label" for="offerFormCpa">CPA</label>' +
       '<input id="offerFormCpa" class="offer-field" inputmode="decimal" ' +
       'autocomplete="off" value="' +
-      escapeHtml(editing ? moneyInput(offer.cpa) : "") + '" placeholder="0">' +
+      escapeHtml(editing ? moneyInput(offer.cpa) : "") + '" placeholder="0"></div>' +
+      '<div><span class="offer-label">Валюта</span>' +
       '<span class="offer-cur" id="offerFormCpaCurrency" role="group" ' +
       'aria-label="Валюта ставки">' +
       currencyToggle(editing ? offer.cpa_currency : "USD") + "</span></div></div>" +
@@ -769,6 +854,8 @@
       '<input id="offerFormCap" class="offer-field" maxlength="160" value="' +
       escapeHtml(editing ? (offer.cap || "") : "") + '" placeholder="300 FTD / день"></div>' +
       '</div>' +
+      // ID стоит рядом с партнёркой: это её номер оффера, и по отдельности
+      // одно без другого не заполняют.
       '<div class="offer-grid">' +
       '<div><label class="offer-label" for="offerFormGeo">GEO</label>' +
       '<select id="offerFormGeo" class="offer-field">' +
@@ -779,6 +866,21 @@
       selectOptions(offersState.partners.map(function (p) {
         return { value: p.id, label: p.name };
       }), editing ? offer.partner_id : "", "Не выбрана") + "</select></div></div>" +
+      // Номер оффера и программа, которой он принадлежит, — своей строкой:
+      // вчетвером с GEO и партнёркой поля сжимались до нечитаемых.
+      '<div class="offer-grid">' +
+      '<div><label class="offer-label" for="offerFormExternal">ID</label>' +
+      '<input id="offerFormExternal" class="offer-field" maxlength="100" value="' +
+      escapeHtml(editing ? (offer.external_id || "") : "") +
+      '" placeholder="например, 2687"></div>' +
+      // Номер оффера принадлежит одной партнёрской программе — здесь видно,
+      // какой именно, и через неё же приезжают депозиты.
+      '<div><label class="offer-label" for="offerFormIntegration">ID ПП</label>' +
+      '<select id="offerFormIntegration" class="offer-field">' +
+      selectOptions(offersState.integrations.map(function (row) {
+        return { value: row.id, label: row.name };
+      }), editing ? offer.partner_integration_id : "", "Не выбрана") +
+      "</select></div></div>" +
       '<div style="margin-top:14px"><label class="offer-label" for="offerFormKpi">KPI</label>' +
       '<textarea id="offerFormKpi" class="offer-field offer-area" maxlength="4000" ' +
       'placeholder="Например: FTD от 25$, апрув от 40%">' +
@@ -796,7 +898,7 @@
     var overlay = openModal(
       "offerFormModal",
       editing ? "Оффер" : "Новый оффер",
-      editing ? offer.name : "Статус проставится сам: ТЛ — «Активен», баеры — «В работе»",
+      editing ? offer.name : "",
       body,
       editing ? "Сохранить" : "Создать"
     );
@@ -820,6 +922,7 @@
       }
       var payload = {
         name: name,
+        external_id: byId("offerFormExternal").value.trim() || null,
         cap: byId("offerFormCap").value.trim() || null,
         cpa: Number(String(byId("offerFormCpa").value).replace(",", ".")) || 0,
         cpa_currency: activeCurrency(),
@@ -827,6 +930,7 @@
         comment: byId("offerFormComment").value.trim() || null,
         geo: byId("offerFormGeo").value || null,
         partner_id: byId("offerFormPartner").value || null,
+        partner_integration_id: byId("offerFormIntegration").value || null,
         lead_ids: checkedValues(overlay, "lead"),
         buyer_ids: checkedValues(overlay, "buyer")
       };
@@ -868,6 +972,7 @@
     offersState.people = results[1] || [];
     offersState.geos = (results[2] || {}).geos || [];
     offersState.partners = (results[2] || {}).partners || [];
+    offersState.integrations = (results[2] || {}).partner_integrations || [];
     populateOfferFilters();
     renderOfferStats();
     renderOfferRows();

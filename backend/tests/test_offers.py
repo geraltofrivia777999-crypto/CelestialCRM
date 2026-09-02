@@ -31,6 +31,7 @@ IN_GROUP = "offers-module-in-group"
 IN_GROUP_LOWER = "offers-module-in-group-lowercase"
 OUT_OF_GROUP = "offers-module-out-of-group"
 SCOPED_BUYER = "offers-module-scoped-buyer"
+SPEND_SCOPED_BUYER = "spend-module-scoped-buyer"
 
 
 @pytest.fixture
@@ -356,78 +357,6 @@ async def test_a_synced_offer_cannot_be_edited_or_deleted(offer_rows) -> None:
         assert offer.name == "AAA Offers Module In Group"
 
 
-async def test_the_dashboard_widget_shows_each_role_its_own_offers(offer_rows) -> None:
-    """Админу — «Не занят», тимлиду — «Активен» у него, баеру — «В работе» у него."""
-    ids, admin_id = offer_rows
-    free_offer, lead_offer, buyer_offer = (
-        ids[IN_GROUP], ids[IN_GROUP_LOWER], ids[OUT_OF_GROUP]
-    )
-    async with SessionLocal() as db:
-        admin = await db.scalar(select(User).where(User.login == "admin"))
-        roles = {
-            name: await db.scalar(
-                select(Role).where(
-                    Role.workspace_id == admin.workspace_id, Role.name == name
-                )
-            )
-            for name in ("Team Lead", "Buyer")
-        }
-        people = {
-            key: User(
-                workspace_id=admin.workspace_id,
-                role_id=roles[role].id,
-                name=f"Widget {key}",
-                login=f"{SCOPED_BUYER}-{key}",
-                password_hash=hash_password("test-password"),
-            )
-            for key, role in (("lead", "Team Lead"), ("buyer", "Buyer"))
-        }
-        db.add_all(list(people.values()))
-        await db.flush()
-        db.add_all(
-            [
-                OfferLead(offer_id=uuid.UUID(lead_offer), user_id=people["lead"].id),
-                OfferBuyer(offer_id=uuid.UUID(buyer_offer), user_id=people["buyer"].id),
-            ]
-        )
-        await db.commit()
-
-    def _widget(login: str) -> set[str]:
-        client = TestClient(app)
-        assert client.post(
-            "/api/v1/auth/login", json={"login": login, "password": "test-password"}
-        ).status_code == 200
-        with client:
-            data = client.get("/api/v1/dashboard").json()
-        return {row["id"] for row in data["working_offers"]}
-
-    try:
-        with _admin_client() as client:
-            client.patch(f"/api/v1/offers/{lead_offer}/status", json={"status": "active"})
-            client.patch(
-                f"/api/v1/offers/{buyer_offer}/status", json={"status": "working"}
-            )
-
-        assert free_offer in _widget("admin")
-        assert lead_offer not in _widget("admin")
-
-        lead_view = _widget(f"{SCOPED_BUYER}-lead")
-        assert lead_view == {lead_offer}
-
-        buyer_view = _widget(f"{SCOPED_BUYER}-buyer")
-        assert buyer_view == {buyer_offer}
-    finally:
-        async with SessionLocal() as db:
-            logins = [f"{SCOPED_BUYER}-lead", f"{SCOPED_BUYER}-buyer"]
-            people_ids = list(
-                (await db.scalars(select(User.id).where(User.login.in_(logins)))).all()
-            )
-            await db.execute(delete(OfferLead).where(OfferLead.user_id.in_(people_ids)))
-            await db.execute(delete(OfferBuyer).where(OfferBuyer.user_id.in_(people_ids)))
-            await db.execute(delete(User).where(User.login.in_(logins)))
-            await db.commit()
-
-
 async def test_the_offer_reference_lists_keitaro_geos_and_partners(offer_rows) -> None:
     """GEO и партнёрки для формы берутся из того, что пришло из Keitaro."""
     with _admin_client() as client:
@@ -481,8 +410,13 @@ async def test_mediaboard_offers_drop_the_offers_group(offer_rows) -> None:
     assert "CCC Offers Module Out Of Group" in names
 
 
-async def test_offers_narrow_to_the_buyers_own_keitaro_group(offer_rows) -> None:
-    """«Оффера этого баера» — его группа Keitaro плюс назначенное лично ему."""
+async def test_offers_narrow_to_what_the_buyer_was_given(offer_rows) -> None:
+    """«Оффера этого баера» — только назначенные ему.
+
+    Группа Keitaro видимость больше не расширяет: по ней баеру показывались
+    офферы всей группы, а не выданные лично, и «свои офферы» означало не то,
+    что человек ожидает увидеть.
+    """
     ids, _ = offer_rows
     async with SessionLocal() as db:
         admin = await db.scalar(select(User).where(User.login == "admin"))
@@ -507,10 +441,9 @@ async def test_offers_narrow_to_the_buyers_own_keitaro_group(offer_rows) -> None
                 f"/api/v1/offers?for_buyer_id={buyer_id}&exclude_offers_group=true&limit=500"
             )
             assert scoped.status_code == 200
-            # Группа у баера записана строчными — сверка регистронезависимая.
-            assert _names(scoped.json()) == {"CCC Offers Module Out Of Group"}
+            # Ничего не назначено — и группа Keitaro тут не помогает.
+            assert _names(scoped.json()) == set()
 
-            # Оффер чужой группы, назначенный лично, тоже его.
             client.put(
                 f"/api/v1/offers/{ids[IN_GROUP]}/buyers",
                 json={"buyer_ids": [buyer_id]},
@@ -518,7 +451,7 @@ async def test_offers_narrow_to_the_buyers_own_keitaro_group(offer_rows) -> None
             with_assignment = client.get(
                 f"/api/v1/offers?for_buyer_id={buyer_id}&limit=500"
             )
-            assert "AAA Offers Module In Group" in _names(with_assignment.json())
+            assert _names(with_assignment.json()) == {"AAA Offers Module In Group"}
 
             # Полный доступ не сужаем: администратору нужен весь справочник.
             everything = client.get("/api/v1/offers?scope_offers=true&limit=500")
@@ -532,7 +465,7 @@ async def test_offers_narrow_to_the_buyers_own_keitaro_group(offer_rows) -> None
             await db.commit()
 
 
-async def test_a_buyer_only_sees_offers_of_their_own_group(offer_rows) -> None:
+async def test_a_buyer_only_sees_offers_assigned_to_them(offer_rows) -> None:
     """Тот же список, но глазами самого баера — без явного `for_buyer_id`."""
     async with SessionLocal() as db:
         admin = await db.scalar(select(User).where(User.login == "admin"))
@@ -561,10 +494,55 @@ async def test_a_buyer_only_sees_offers_of_their_own_group(offer_rows) -> None:
         with client:
             response = client.get("/api/v1/offers?scope_offers=true&limit=500")
             assert response.status_code == 200
-            assert _names(response.json()) == {"CCC Offers Module Out Of Group"}
+            # Группа совпадает, но ни один оффер ему не выдан — список пуст.
+            assert _names(response.json()) == set()
     finally:
         async with SessionLocal() as db:
             await db.execute(delete(User).where(User.login == SCOPED_BUYER))
+            await db.commit()
+
+
+async def test_spend_scope_hides_the_offers_group_for_everyone(offer_rows) -> None:
+    """В фиксировании расхода группы OFFERS нет — даже у её владельцев.
+
+    Баер, чья группа Keitaro совпадает со служебной, без запрета видел бы весь
+    справочник OFFERS; полный доступ администратора тоже не пробивает запрет.
+    """
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        role = await db.scalar(
+            select(Role).where(Role.workspace_id == admin.workspace_id, Role.name == "Buyer")
+        )
+        buyer = User(
+            workspace_id=admin.workspace_id,
+            role_id=role.id,
+            name="Spend Scoped Buyer",
+            login=SPEND_SCOPED_BUYER,
+            password_hash=hash_password("test-password"),
+            keitaro_offer_group="offers",
+        )
+        db.add(buyer)
+        await db.commit()
+        buyer_id = str(buyer.id)
+
+    try:
+        with _admin_client() as client:
+            spend_view = client.get("/api/v1/offers?for_spend=true&limit=500")
+            assert spend_view.status_code == 200
+            names = _names(spend_view.json())
+            assert "CCC Offers Module Out Of Group" in names
+            assert "AAA Offers Module In Group" not in names
+            assert "BBB Offers Module In Group Lowercase" not in names
+
+            scoped = client.get(
+                f"/api/v1/offers?for_buyer_id={buyer_id}&for_spend=true&limit=500"
+            )
+            assert scoped.status_code == 200
+            # Вся его группа служебная и скрыта, личных назначений нет.
+            assert _names(scoped.json()) == set()
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(User).where(User.login == SPEND_SCOPED_BUYER))
             await db.commit()
 
 
@@ -613,3 +591,226 @@ def test_geo_resolves_new_countries_and_old_truncations() -> None:
     assert normalize_geo("Jamaica") == "JM"
     # Неоднозначный префикс не угадывается — значение остаётся как есть.
     assert normalize_geo("UNITED") == "UNITED"
+
+
+async def test_a_team_lead_gets_his_own_cap_on_the_offer(database) -> None:
+    """Общий лимит партнёрки тимлиды делят между собой.
+
+    Поэтому капа живёт на связке «оффер + тимлид», а не на самом оффере: в
+    списке каждый тимлид должен видеть свою цифру, а не чужую.
+    """
+    async with SessionLocal() as db:
+        admin_id = str(
+            (await db.scalar(select(User).where(User.login == "admin"))).id
+        )
+
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/offers",
+            json={"name": "Cap per lead", "cap": "300 FTD / день"},
+        )
+        assert created.status_code == 201
+        offer_id = created.json()["id"]
+
+        assigned = client.put(
+            f"/api/v1/offers/{offer_id}/leads",
+            json={"lead_ids": [admin_id], "caps": {admin_id: "120 FTD"}},
+        )
+        assert assigned.status_code == 200
+
+        listed = client.get("/api/v1/offers?manual=true").json()["items"]
+        row = next(item for item in listed if item["id"] == offer_id)
+        assert row["leads"][0]["cap"] == "120 FTD"
+        # Капа тимлида не подменяет общий лимит оффера — они живут рядом.
+        assert row["cap"] == "300 FTD / день"
+
+        # Сохранение карточки переписывает назначения целиком: капа при этом
+        # не должна теряться, её ставят другой ручкой.
+        client.put(
+            f"/api/v1/offers/{offer_id}",
+            json={"name": "Cap per lead", "cap": "300 FTD / день",
+                  "lead_ids": [admin_id], "buyer_ids": []},
+        )
+        again = client.get("/api/v1/offers?manual=true").json()["items"]
+        kept = next(item for item in again if item["id"] == offer_id)
+        assert kept["leads"][0]["cap"] == "120 FTD"
+
+        # Снятый тимлид уносит свою капу с собой.
+        client.put(f"/api/v1/offers/{offer_id}/leads", json={"lead_ids": []})
+        cleared = client.get("/api/v1/offers?manual=true").json()["items"]
+        assert next(item for item in cleared if item["id"] == offer_id)["leads"] == []
+        client.delete(f"/api/v1/offers/{offer_id}")
+
+
+async def test_an_offer_belongs_to_one_partner_integration(database) -> None:
+    """Номер оффера принадлежит одной программе.
+
+    Пока интеграция одна, оффер без выбора достаётся ей — иначе обновление
+    сломало бы уже работающие связки. Со второй такой оффер не уходит никому:
+    тот же номер у другой ПП значит другой оффер, и депозиты приехали бы не туда.
+    """
+    from app.models import PartnerIntegration
+    from app.services.partner_sync import mapped_offers, unassigned_offers
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        first = PartnerIntegration(
+            workspace_id=admin.workspace_id, name=f"PP one {uuid.uuid4().hex[:6]}",
+            partner_name="Affise", base_url="http://pp.test",
+            api_key_encrypted=encrypt_secret("key"),
+        )
+        db.add(first)
+        await db.flush()
+        first_id = first.id
+        await db.commit()
+
+    with _admin_client() as client:
+        reference = client.get("/api/v1/offers/reference").json()
+        assert any(row["id"] == str(first_id) for row in reference["partner_integrations"])
+
+        created = client.post(
+            "/api/v1/offers",
+            json={"name": "Scoped offer", "external_id": "77177",
+                  "partner_integration_id": str(first_id)},
+        )
+        assert created.status_code == 201
+        offer_id = created.json()["id"]
+
+        listed = client.get("/api/v1/offers?manual=true").json()["items"]
+        row = next(item for item in listed if item["id"] == offer_id)
+        assert row["partner_integration_id"] == str(first_id)
+        assert row["partner_integration"] == "Affise"
+
+        # Чужая интеграция не принимается.
+        alien = client.put(
+            f"/api/v1/offers/{offer_id}",
+            json={"name": "Scoped offer", "external_id": "77177",
+                  "partner_integration_id": str(uuid.uuid4())},
+        )
+        assert alien.status_code == 422
+
+    async with SessionLocal() as db:
+        first = await db.get(PartnerIntegration, first_id)
+        second = PartnerIntegration(
+            workspace_id=first.workspace_id, name=f"PP two {uuid.uuid4().hex[:6]}",
+            partner_name="Fame LATAM", base_url="http://pp2.test",
+            api_key_encrypted=encrypt_secret("key"),
+        )
+        db.add(second)
+        await db.flush()
+        second_id = second.id
+        mine = [row.external_id for row in await mapped_offers(db, first)]
+        theirs = [row.external_id for row in await mapped_offers(db, second)]
+        orphans = await unassigned_offers(db, first.workspace_id)
+
+    assert "77177" in mine
+    assert "77177" not in theirs
+    assert orphans >= 0
+
+    async with SessionLocal() as db:
+        await db.execute(delete(Offer).where(Offer.id == uuid.UUID(offer_id)))
+        await db.execute(
+            delete(PartnerIntegration).where(PartnerIntegration.id.in_([first_id, second_id]))
+        )
+        await db.commit()
+
+
+async def test_the_dashboard_widget_shows_the_offers_section(database) -> None:
+    """Виджет «Ваши оффера» берёт справочник раздела, а не трекер.
+
+    Раньше он показывал офферы, синхронизированные из Keitaro, и на дашборде
+    человек видел один список, а в разделе — другой. Плюс видимость: админ и
+    носитель `offers.view_all` видят весь справочник, тимлид и баер — только
+    назначенное им.
+
+    У каждого запроса свой период: ответ дашборда кешируется на пять минут, и
+    без разных периодов второй вызов вернул бы первый же ответ.
+    """
+    suffix = uuid.uuid4().hex[:6]
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        connection = await db.scalar(
+            select(IntegrationConnection).where(
+                IntegrationConnection.workspace_id == admin.workspace_id
+            )
+        )
+        manual = Offer(workspace_id=admin.workspace_id, name=f"Manual {suffix}", geo="AR")
+        db.add(manual)
+        if connection:
+            db.add(
+                Offer(
+                    workspace_id=admin.workspace_id, name=f"Tracked {suffix}", geo="AR",
+                    connection_id=connection.id, external_id=f"kt-{suffix}",
+                )
+            )
+        await db.flush()
+        manual_id = manual.id
+        roles = {
+            name: await db.scalar(
+                select(Role).where(
+                    Role.workspace_id == admin.workspace_id, Role.name == name
+                )
+            )
+            for name in ("Team Lead", "Buyer")
+        }
+        people = {
+            "lead": User(
+                workspace_id=admin.workspace_id, role_id=roles["Team Lead"].id,
+                name="Widget Lead", login=f"widget-lead-{suffix}",
+                password_hash=hash_password("test-password"),
+            ),
+            "buyer": User(
+                workspace_id=admin.workspace_id, role_id=roles["Buyer"].id,
+                name="Widget Buyer", login=f"widget-buyer-{suffix}",
+                password_hash=hash_password("test-password"),
+            ),
+        }
+        db.add_all(list(people.values()))
+        await db.flush()
+        person_ids = {key: row.id for key, row in people.items()}
+        await db.commit()
+
+    def _widget(login: str, day: str) -> set[str]:
+        client = TestClient(app)
+        assert client.post(
+            "/api/v1/auth/login", json={"login": login, "password": "test-password"}
+        ).status_code == 200
+        with client:
+            data = client.get(
+                f"/api/v1/dashboard?date_from=2019-{day}-01&date_to=2019-{day}-02"
+            ).json()
+        return {row["name"] for row in data["working_offers"]}
+
+    try:
+        with _admin_client() as client:
+            names = {
+                row["name"]
+                for row in client.get(
+                    "/api/v1/dashboard?date_from=2019-01-01&date_to=2019-01-02"
+                ).json()["working_offers"]
+            }
+        assert f"Manual {suffix}" in names
+        # Строки трекера в раздел не входят — не должно их быть и в виджете.
+        assert f"Tracked {suffix}" not in names
+
+        # Ничего не назначено — пусто у обоих.
+        assert _widget(f"widget-lead-{suffix}", "02") == set()
+        assert _widget(f"widget-buyer-{suffix}", "03") == set()
+
+        async with SessionLocal() as db:
+            db.add(OfferLead(offer_id=manual_id, user_id=person_ids["lead"]))
+            db.add(OfferBuyer(offer_id=manual_id, user_id=person_ids["buyer"]))
+            await db.commit()
+
+        assert _widget(f"widget-lead-{suffix}", "04") == {f"Manual {suffix}"}
+        assert _widget(f"widget-buyer-{suffix}", "05") == {f"Manual {suffix}"}
+    finally:
+        async with SessionLocal() as db:
+            ids = list(person_ids.values())
+            await db.execute(delete(OfferLead).where(OfferLead.user_id.in_(ids)))
+            await db.execute(delete(OfferBuyer).where(OfferBuyer.user_id.in_(ids)))
+            await db.execute(delete(User).where(User.id.in_(ids)))
+            await db.execute(
+                delete(Offer).where(Offer.name.in_([f"Manual {suffix}", f"Tracked {suffix}"]))
+            )
+            await db.commit()

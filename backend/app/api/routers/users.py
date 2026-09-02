@@ -158,6 +158,11 @@ async def create_user(
     parent_ids = set(payload.parent_ids)
     await _validate_parents(db, current, user.id, parent_ids)
     db.add_all([UserParent(user_id=user.id, parent_id=parent_id) for parent_id in parent_ids])
+    await db.flush()
+    child_ids = set(payload.child_ids)
+    if child_ids:
+        await _validate_children(db, current, user.id, child_ids)
+        await _apply_children(db, user.id, child_ids)
     await audit(
         db,
         current,
@@ -211,6 +216,11 @@ async def update_user(
         db.add_all(
             [UserParent(user_id=user.id, parent_id=parent_id) for parent_id in parent_ids]
         )
+        await db.flush()
+    if "child_ids" in changes:
+        child_ids = set(changes["child_ids"] or [])
+        await _validate_children(db, current, user.id, child_ids)
+        await _apply_children(db, user.id, child_ids)
     await audit(
         db,
         current,
@@ -717,6 +727,76 @@ async def _permissions(db: AsyncSession, codes: list[str]) -> list[Permission]:
     if len(rows) != len(unique_codes):
         raise HTTPException(status_code=422, detail="Unknown permission code")
     return rows
+
+
+async def _validate_children(
+    db: AsyncSession,
+    current: User,
+    user_id: uuid.UUID,
+    child_ids: set[uuid.UUID],
+) -> None:
+    """Подчинённые — та же связь наоборот, и кольцо она замыкает так же.
+
+    Назначить X родителем C нельзя, если C уже стоит выше самого X: тогда
+    ветка закольцуется. Поэтому поднимаемся от пользователя вверх по его
+    родителям и смотрим, не встретился ли кто-то из будущих подчинённых.
+    """
+    if user_id in child_ids:
+        raise HTTPException(status_code=422, detail="User cannot be their own child")
+    visible = await accessible_user_ids(db, current)
+    if not child_ids.issubset(visible):
+        raise HTTPException(status_code=422, detail="Child user is outside your hierarchy")
+    workspace_user_ids = set(
+        await db.scalars(select(User.id).where(User.workspace_id == current.workspace_id))
+    )
+    if not child_ids.issubset(workspace_user_ids):
+        raise HTTPException(status_code=422, detail="Child user is invalid")
+    edges: dict[uuid.UUID, set[uuid.UUID]] = {}
+    rows = (
+        await db.execute(
+            select(UserParent.user_id, UserParent.parent_id).where(
+                UserParent.user_id.in_(workspace_user_ids)
+            )
+        )
+    ).all()
+    for child_id, parent_id in rows:
+        edges.setdefault(child_id, set()).add(parent_id)
+    stack = list(edges.get(user_id, set()))
+    visited: set[uuid.UUID] = set()
+    while stack:
+        node = stack.pop()
+        if node in child_ids:
+            raise HTTPException(
+                status_code=422, detail="Parent hierarchy cannot contain a cycle"
+            )
+        if node in visited:
+            continue
+        visited.add(node)
+        stack.extend(edges.get(node, set()))
+
+
+async def _apply_children(
+    db: AsyncSession, user_id: uuid.UUID, child_ids: set[uuid.UUID]
+) -> None:
+    """Переписать список подчинённых, не трогая их остальных родителей."""
+    existing = set(
+        await db.scalars(
+            select(UserParent.user_id).where(UserParent.parent_id == user_id)
+        )
+    )
+    dropped = existing - child_ids
+    if dropped:
+        await db.execute(
+            delete(UserParent).where(
+                UserParent.parent_id == user_id, UserParent.user_id.in_(dropped)
+            )
+        )
+    db.add_all(
+        [
+            UserParent(user_id=child_id, parent_id=user_id)
+            for child_id in child_ids - existing
+        ]
+    )
 
 
 async def _validate_parents(

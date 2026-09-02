@@ -11,6 +11,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -225,6 +226,13 @@ class IntegrationConnection(UUIDMixin, TimestampMixin, Base):
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    # Владелец нужен прежде всего Meta Ads: у каждого баера свои токены и
+    # кабинеты, тимлид видит подключения своей команды, администратор — все.
+    # Поле nullable только для старых подключений, созданных до появления
+    # персональной области видимости; такие строки доступны администратору.
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     kind: Mapped[str] = mapped_column(String(40), default="keitaro")
@@ -550,6 +558,10 @@ class MetaEntity(UUIDMixin, TimestampMixin, Base):
     # Только у объявления: фан-пейдж, от лица которого оно откручивается.
     # Уровень ФП в обзоре собирается именно по этой колонке.
     page_external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    # Пост, который крутится объявлением, — «<page_id>_<post_id>». Именно под
+    # ним живут комментарии, и одному посту может соответствовать несколько
+    # объявлений, поэтому чистка идёт по постам, а не по объявлениям.
+    post_external_id: Mapped[str | None] = mapped_column(String(120), index=True)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     effective_status: Mapped[str | None] = mapped_column(String(40))
     objective: Mapped[str | None] = mapped_column(String(60))
@@ -801,6 +813,47 @@ class MetaLaunch(UUIDMixin, TimestampMixin, Base):
     # Параметры к ссылке (`url_tags`) и то, что видно в объявлении вместо неё.
     url_tags: Mapped[str | None] = mapped_column(Text)
     display_link: Mapped[str | None] = mapped_column(String(240))
+    # Кастомный нейминг этого кабинета: шаблон имени кампании поверх шаблона
+    # связки. Пусто — имя задаёт связка.
+    campaign_name: Mapped[str | None] = mapped_column(String(240))
+    # Бенефициар/плательщик DSA-прозрачности; уходит в оба поля адсета.
+    beneficiary: Mapped[str | None] = mapped_column(String(255))
+    # --- Расширенный режим мастера («как в Dolphin») ---
+    # Цель кампании поверх связки; пусто — цель из связки.
+    objective: Mapped[str | None] = mapped_column(String(40))
+    # Сколько кампаний завести одним заливом (каждая со своими адсетами).
+    campaign_count: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    # Блок «Бюджет и ставка»: уровень (campaign|adset), тип (daily|lifetime),
+    # разброс ±10%, лимит адсета и стратегия ставок — поверх связки.
+    budget_level: Mapped[str | None] = mapped_column(String(10))
+    budget_kind: Mapped[str | None] = mapped_column(String(10))
+    budget_randomize: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    adset_budget_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    bid_strategy: Mapped[str | None] = mapped_column(String(40))
+    # Автоправила, привязанные к этому заливу: их launch_id проставляется,
+    # и движок правил считает их только по объектам залива.
+    rule_ids: Mapped[list | None] = mapped_column(JSON)
+    # Теги (adlabels Meta) для созданных объектов:
+    # {"level": "campaign|adset|ad", "names": [...], "mode": "add|remove"}.
+    tags: Mapped[dict | None] = mapped_column(JSON)
+    # --- Расширенный режим v2 ---
+    # Цель кампании, событие пикселя, окно конверсии, вовлечённые просмотры —
+    # поверх связки (пусто — из связки).
+    custom_event_type: Mapped[str | None] = mapped_column(String(60))
+    attribution: Mapped[str | None] = mapped_column(String(20))
+    engaged_view: Mapped[str | None] = mapped_column(String(5))
+    # Лимит адсета: минимум/максимум бюджета (в USD).
+    budget_limit_min: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    budget_limit_max: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    # Запланированное увеличение бюджета:
+    # [{"start_at","end_at","kind":"sum|pct","amount","applied"}].
+    budget_increases: Mapped[list | None] = mapped_column(JSON)
+    # Имя группы автоправил (логика групп появится позже — пока сохраняем).
+    rule_group: Mapped[str | None] = mapped_column(String(160))
     # Когда создавать объекты в кабинете. Пусто — сразу; будущее время означает
     # «залив запланирован», и его подхватит планировщик.
     publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
@@ -866,6 +919,9 @@ class MetaOperation(UUIDMixin, Base):
     rule_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("meta_rules.id", ondelete="SET NULL")
     )
+    comment_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_comment_jobs.id", ondelete="SET NULL")
+    )
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
     target_external_id: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
@@ -903,15 +959,37 @@ class MetaRule(UUIDMixin, TimestampMixin, Base):
     launch_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("meta_launches.id", ondelete="CASCADE")
     )
+    # Группа правил (Правила FB / Группы правил).
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meta_rule_groups.id", ondelete="SET NULL"), index=True
+    )
     # С чем работать: campaign | adset | ad. Действие применяется к объекту
     # этого уровня, и метрики считаются по нему же.
     level: Mapped[str] = mapped_column(String(10), default="campaign", server_default="campaign")
+    # Scope: весь кабинет или только конкретная кампания (и её вложенные
+    # объекты). Для scope=campaign заполняется campaign_external_id.
+    scope_kind: Mapped[str] = mapped_column(
+        String(10), default="cabinet", server_default="cabinet"
+    )
+    campaign_external_id: Mapped[str | None] = mapped_column(String(100))
     # Какие статусы брать: active | paused | any.
     entity_status: Mapped[str] = mapped_column(
         String(10), default="active", server_default="active"
     )
-    # Период статы: today | yesterday | last_3d | last_7d | last_30d.
+    # Период статы: today | yesterday | last_2d | last_3d | last_7d | last_14d |
+    # last_28d | last_30d | month.
     window: Mapped[str] = mapped_column(String(12), default="today", server_default="today")
+    # Расписание: always | daily_midnight | custom. Для custom — JSON
+    # {"days": [1..7], "intervals": [{"begin":"HH:MM","end":"HH:MM"}]}.
+    schedule_kind: Mapped[str] = mapped_column(
+        String(12), default="always", server_default="always"
+    )
+    schedule: Mapped[dict | None] = mapped_column(JSON)
+    # Конвертация денежных метрик к валюте правила (курсы фиксированы в коде).
+    convert_currency: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    currency: Mapped[str | None] = mapped_column(String(8))
     # Список условий, соединённых И: [{"metric","operator","value"}].
     # Пустой список — правило без условий: срабатывает на всём, что попало в
     # область. Это осмысленный режим («остановить все активные объявления»),
@@ -920,6 +998,19 @@ class MetaRule(UUIDMixin, TimestampMixin, Base):
     min_spend: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
     action: Mapped[str] = mapped_column(String(30), default="notify")
     action_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    # Уточнение действия с бюджетом/ставкой: знак (plus|minus — «+/-»),
+    # режим (pct|sum — «%»/«сумма»), максимум (потолок бюджета/ставки) и вид
+    # бюджета (daily|lifetime) для «Изменить бюджет».
+    action_sign: Mapped[str] = mapped_column(
+        String(6), default="plus", server_default="plus"
+    )
+    action_mode: Mapped[str] = mapped_column(
+        String(8), default="pct", server_default="pct"
+    )
+    action_max: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    budget_kind: Mapped[str] = mapped_column(
+        String(10), default="daily", server_default="daily"
+    )
     is_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true", nullable=False
     )
@@ -931,6 +1022,20 @@ class MetaRule(UUIDMixin, TimestampMixin, Base):
     # «поднять бюджет на 20%» удваивает его за час.
     cooldown_minutes: Mapped[int] = mapped_column(default=180)
     last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class MetaRuleGroup(UUIDMixin, TimestampMixin, Base):
+    """Группа правил: удобно применять и выключать наборы правок разом."""
+
+    __tablename__ = "meta_rule_groups"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -1008,7 +1113,24 @@ class Offer(UUIDMixin, TimestampMixin, Base):
         ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
     )
     partner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("partners.id"))
-    external_id: Mapped[str | None] = mapped_column(String(100))
+    # У синхронизированного оффера — его id в Keitaro. У заведённого руками —
+    # id этого же оффера в партнёрской программе: по нему депозиты из ПП
+    # находят оффер и раскладываются в книгу баера. Отдельной таблицы привязок
+    # нет намеренно: оффер и так заводят руками, и его номер у партнёрки —
+    # такое же его свойство, как гео или ставка.
+    external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    # Числовой суррогат оффера для Partner Integration Service: он принимает
+    # `crm_offer_id` только целым числом и на UUID отвечает 422. Номер выдаётся
+    # один раз при первой отправке привязки и дальше не меняется — им же
+    # сервис помечает факты, которые возвращает в `/stats`.
+    partner_ref: Mapped[int | None] = mapped_column(Integer, index=True)
+    # Через какую интеграцию с ПП приходят депозиты по этому офферу. Номер
+    # `external_id` принадлежит одной партнёрке, и без этой ссылки он уходил бы
+    # всем сразу: у второй ПП тот же номер значит другой оффер, и депозиты
+    # приехали бы не туда.
+    partner_integration_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partner_integrations.id", ondelete="SET NULL"), index=True
+    )
     name: Mapped[str] = mapped_column(String(240), nullable=False)
     geo: Mapped[str | None] = mapped_column(String(12), index=True)
     # Капа — свободный текст: «300/день», «по договорённости», «—».
@@ -1050,6 +1172,10 @@ class OfferLead(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
+    # Капа именно этого тимлида по этому офферу. Партнёрка даёт общий лимит на
+    # оффер, а тимлиды делят его между собой — поэтому цифра живёт на связке,
+    # а не на самом оффере.
+    cap: Mapped[str | None] = mapped_column(String(160))
 
 
 class OfferBuyer(Base):
@@ -1458,6 +1584,9 @@ class Task(UUIDMixin, TimestampMixin, Base):
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    # Дата начала и срок — разные вещи: по первой видно, когда задачу берут в
+    # работу, по второй — когда её ждут сделанной.
+    start_date: Mapped[date | None] = mapped_column(Date)
     due_date: Mapped[date | None] = mapped_column(Date, index=True)
     priority: Mapped[TaskPriority] = mapped_column(
         Enum(TaskPriority), default=TaskPriority.medium, index=True
@@ -1949,6 +2078,165 @@ class AuditEvent(UUIDMixin, Base):
     )
 
 
+class MetaComment(UUIDMixin, Base):
+    """Снимок комментария под постом объявления.
+
+    Комментарии кешируются, а не читаются из Meta на каждый показ, по трём
+    причинам. Фильтры и поиск по тексту должны работать по всему набору, а не по
+    той странице, что Graph отдал последней. Массовая чистка обязана знать, что
+    именно уже удалено, — второй заход по тому же id получил бы ошибку. И
+    главное: удалённый комментарий Meta не возвращает никогда, поэтому текст
+    сохраняется здесь до удаления — иначе в CRM не осталось бы следа, за что
+    именно человека вычистили.
+    """
+
+    __tablename__ = "meta_comments"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "external_id", name="uq_meta_comment_external"),
+        Index("ix_meta_comments_post", "account_id", "post_external_id"),
+        Index("ix_meta_comments_status", "workspace_id", "status"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), index=True
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="CASCADE"), index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    post_external_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    page_external_id: Mapped[str | None] = mapped_column(String(100))
+    # Ответ на другой комментарий: ветки чистят целиком, и в списке их надо
+    # отличать от корневых.
+    parent_external_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    author_external_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    author_name: Mapped[str | None] = mapped_column(String(300))
+    message: Mapped[str] = mapped_column(Text, default="")
+    like_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    reply_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Признаки считаются один раз при загрузке: по ним фильтруют, и гонять
+    # регулярку по всей таблице на каждый запрос списка незачем.
+    has_link: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    has_phone: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # visible | hidden | deleted — наш взгляд на комментарий после наших действий.
+    status: Mapped[str] = mapped_column(
+        String(10), default="visible", server_default="visible", nullable=False
+    )
+    created_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    acted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acted_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class MetaCommentJob(UUIDMixin, Base):
+    """Задание на загрузку или чистку комментариев.
+
+    Отдельная сущность, а не просто набор операций: и чтение, и удаление идут с
+    паузой между вызовами — пачка запросов в несколько потоков к комментариям
+    самый быстрый способ получить чекпоинт на аккаунте. Заданию нужен прогресс,
+    отмена на середине и запрет на второй параллельный запуск по тому же
+    кабинету.
+    """
+
+    __tablename__ = "meta_comment_jobs"
+    __table_args__ = (
+        Index("ix_meta_comment_jobs_account", "account_id", "created_at"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meta_ad_accounts.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE")
+    )
+    # fetch — забрать комментарии; delete / hide / unhide — применить действие.
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    # queued | running | done | failed | cancelled
+    status: Mapped[str] = mapped_column(
+        String(10), default="queued", server_default="queued", nullable=False, index=True
+    )
+    # Что обрабатываем: {"posts": [...]} для fetch, {"comments": [...]} для действий.
+    scope: Mapped[dict] = mapped_column(JSON, default=dict)
+    total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    succeeded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Ставится из интерфейса; движок смотрит на него между вызовами, поэтому
+    # отмена срабатывает на следующем комментарии, а не рвёт текущий запрос.
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RecruitmentCandidate(UUIDMixin, TimestampMixin, Base):
+    """Кандидат в найме — этапы, которые ведёт CRM.
+
+    Recruitment Service владеет находками и их триажем (`pending` → `added` /
+    `skipped`) и намеренно не хранит воронку найма: скрининг, интервью, оффер,
+    отказ — это наша сторона. Здесь и живёт этап.
+
+    Поля профиля продублированы снимком на момент добавления. Не ради скорости:
+    сервис может быть недоступен, а доска найма должна открываться и работать —
+    человек на интервью не перестаёт существовать оттого, что упал контейнер
+    рекрутинга. Свежие данные подмешиваются к снимку, когда сервис отвечает.
+    """
+
+    __tablename__ = "recruitment_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "external_id", name="uq_recruitment_candidate_external"
+        ),
+        Index("ix_recruitment_candidates_stage", "workspace_id", "stage"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    # id находки в Recruitment Service — по нему подтягиваем свежий профиль.
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # screening | interview | offer | hired | rejected
+    stage: Mapped[str] = mapped_column(
+        String(12), default="screening", server_default="screening", nullable=False
+    )
+    position_title: Mapped[str | None] = mapped_column(String(300))
+    geo: Mapped[str | None] = mapped_column(String(160))
+    source: Mapped[str | None] = mapped_column(String(30))
+    tier: Mapped[str | None] = mapped_column(String(10))
+    score: Mapped[int | None] = mapped_column(Integer)
+    salary_expectation: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    experience_months: Mapped[int | None] = mapped_column(Integer)
+    external_url: Mapped[str | None] = mapped_column(String(500))
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    note: Mapped[str | None] = mapped_column(Text)
+    stage_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    added_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
 class IdempotencyRecord(UUIDMixin, Base):
     __tablename__ = "idempotency_records"
     __table_args__ = (
@@ -1964,3 +2252,109 @@ class IdempotencyRecord(UUIDMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class PartnerIntegration(UUIDMixin, TimestampMixin, Base):
+    """Интеграция с Partner Integration Service — депозиты по тегам баеров.
+
+    Сервис хранит факты «дата — оффер — тег — депозиты», собранные из
+    партнёрских программ. CRM привязывает свои офферы к офферам ПП и
+    раскладывает депозит в книгу баера: по тегу из ПП — строка тега в книге,
+    и значения попадают в те же ячейки, что раньше заполнялись руками.
+    """
+
+    __tablename__ = "partner_integrations"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name", name="uq_partner_integration_name"
+        ),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    partner_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(300), nullable=False)
+    api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_sync_status: Mapped[str | None] = mapped_column(String(12))
+    last_sync_error: Mapped[str | None] = mapped_column(Text)
+    # id этой же интеграции в Partner Integration Service. Конфиг коннектора к
+    # ПП (connector_config, credentials) заводится на стороне сервиса — там он
+    # и живёт; CRM только ссылается на готовую интеграцию, чтобы заводить в ней
+    # привязки офферов и просить синк. Пусто — работаем только на чтение
+    # /stats, и привязки придётся заводить на сервисе руками.
+    external_id: Mapped[str | None] = mapped_column(String(64))
+
+
+class PartnerPendingTag(UUIDMixin, Base):
+    """Тег, которому не нашлось строки в финансах, — деньги ждут человека.
+
+    Молча выбрасывать такие факты нельзя: это реальные депозиты, и «синк прошёл,
+    записей 0» вместо них — худший из возможных ответов. Разбирается такая
+    строка не настройкой, а тем, что тег заводят в книге баера под нужным
+    оффером: следующий синк за тот же период разложит всё задним числом.
+    """
+
+    __tablename__ = "partner_pending_tags"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "tag_key", name="uq_partner_pending_tag"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    tag_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    tag: Mapped[str] = mapped_column(String(120), nullable=False)
+    # Почему не разложили: no_buyer (тег никому не принадлежит) или
+    # ambiguous (тег встречается в книгах у нескольких баеров).
+    reason: Mapped[str] = mapped_column(
+        String(12), default="no_buyer", server_default="no_buyer", nullable=False
+    )
+    facts_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    deposits_total: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), default=0, server_default="0"
+    )
+    sample_offer_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("offers.id", ondelete="SET NULL")
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class PartnerSyncRun(UUIDMixin, Base):
+    """История синков интеграции — статусы и ошибки видно прямо в CRM."""
+
+    __tablename__ = "partner_sync_runs"
+
+    integration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("partner_integrations.id", ondelete="CASCADE"), index=True
+    )
+    date_from: Mapped[date] = mapped_column(Date, nullable=False)
+    date_to: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(12), default="running", server_default="running", nullable=False
+    )
+    records_upserted: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Факты, которые пришли, но в книги не легли: тег без баера, оффер не
+    # найден, битая дата. Без этого «успех, записей 0» выглядит нормой.
+    records_pending: Mapped[int] = mapped_column(default=0, server_default="0")
+    records_skipped: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Первые причины пропусков — чтобы отладка не требовала лезть в логи.
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    trigger: Mapped[str] = mapped_column(
+        String(10), default="manual", server_default="manual"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

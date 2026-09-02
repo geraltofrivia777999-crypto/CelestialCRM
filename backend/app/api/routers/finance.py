@@ -1,5 +1,6 @@
 import calendar
 import uuid
+from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,6 +16,8 @@ from app.models import (
     FinanceOfferTag,
     FinanceTagDay,
     Partner,
+    PartnerIntegration,
+    PartnerSyncRun,
     Status,
     User,
     UserParent,
@@ -34,6 +37,8 @@ from app.services.finance_books import (
 from app.services.finance_pull import push_book_changes_to_offers
 from app.services.formulas import q
 from app.services.geo import countries, normalize_geo
+from app.services.partner_integrations import PartnerServiceClient
+from app.services.partner_sync import fail_run, finish_run, perform_sync
 from app.services.salary import payroll, plan_for_book
 
 router = APIRouter(tags=["finance"])
@@ -671,6 +676,125 @@ async def get_book(
     return {
         **_serialize(book_payload, buyer, year, month, plan, tiers),
         "tier": tier,
+    }
+
+
+@router.post("/finance/book/sync-partners")
+async def sync_partners_for_book(
+    request: Request,
+    buyer_id: uuid.UUID,
+    year: int,
+    month: int,
+    tier: str = "T1",
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("finance.manage")),
+) -> dict:
+    """Подтянуть депозиты из партнёрок в открытую таблицу.
+
+    Сервис партнёрок ничего не собирает сам по себе — он идёт в ПП только когда
+    его об этом просят. Поэтому кнопка стоит там, где на результат смотрят: в
+    финансах, рядом с той самой книгой.
+
+    Период берётся по книге (месяц, но не дальше сегодняшнего дня — будущее
+    партнёрка всё равно не отдаст), офферы — те, что стоят в этой таблице, а
+    теги — те, что в ней уже заведены. Ничего дополнительно указывать не нужно:
+    и то, и другое уже есть на экране.
+    """
+    if not 1 <= month <= 12 or not 2000 <= year <= 2100:
+        raise HTTPException(status_code=422, detail="Некорректный месяц")
+    if tier not in BOOK_TIERS:
+        raise HTTPException(status_code=422, detail="Неизвестный тир")
+    await _visible_buyer(db, current, buyer_id)
+
+    date_from = date(year, month, 1)
+    last_day = calendar.monthrange(year, month)[1]
+    date_to = date(year, month, last_day)
+    today = date.today()
+    if date_to > today:
+        date_to = today
+    if date_from > today:
+        raise HTTPException(
+            status_code=422, detail="Месяц ещё не начался — тянуть нечего"
+        )
+
+    integrations = list(
+        (
+            await db.execute(
+                select(PartnerIntegration).where(
+                    PartnerIntegration.workspace_id == current.workspace_id,
+                    PartnerIntegration.is_enabled.is_(True),
+                )
+            )
+        ).scalars()
+    )
+    if not integrations:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Нет включённых интеграций с ПП. Заведите подключение в "
+                "«Настройках» — там нужны только адрес сервиса и API-ключ."
+            ),
+        )
+
+    upserted = 0
+    pending = 0
+    skipped = 0
+    reasons: list[str] = []
+    errors: list[str] = []
+    # id запоминаем до работы: откат сессии обесценивает объекты, и обратиться
+    # к ним после него значило бы уйти в ленивую загрузку.
+    integration_ids = [row.id for row in integrations]
+    for integration_id in integration_ids:
+        integration = await db.get(PartnerIntegration, integration_id)
+        if not integration:
+            continue
+        run = PartnerSyncRun(
+            integration_id=integration.id,
+            date_from=date_from,
+            date_to=date_to,
+            status="running",
+            trigger="manual",
+        )
+        db.add(run)
+        integration.last_sync_status = "running"
+        await db.commit()
+        await db.refresh(run)
+        run_id = run.id
+        try:
+            client = PartnerServiceClient(integration)
+            result = await perform_sync(db, integration, client, date_from, date_to)
+            finish_run(run, integration, result)
+            upserted += result["upserted"]
+            pending += result.get("pending", 0)
+            skipped += result.get("skipped", 0)
+            reasons.extend(result.get("reasons", []))
+        except Exception as exc:  # noqa: BLE001 — одна интеграция не роняет остальные
+            await db.rollback()
+            run = await db.get(PartnerSyncRun, run_id)
+            stored = await db.get(PartnerIntegration, integration_id)
+            if run and stored:
+                errors.append(f"«{stored.partner_name}»: {fail_run(run, stored, exc)}")
+        await db.commit()
+
+    # Откат внутри цикла обесценивает и объект текущего пользователя — аудит
+    # ушёл бы в ленивую загрузку и упал. Перечитываем его перед записью.
+    await db.refresh(current)
+    await audit(
+        db, current, "finance.partner_sync",
+        f"Синк ПП в книгу за {month:02d}.{year}: записано {upserted}, "
+        f"без строки {pending}",
+        request=request,
+    )
+    await db.commit()
+    return {
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "integrations": len(integrations),
+        "upserted": upserted,
+        "pending": pending,
+        "skipped": skipped,
+        "reasons": reasons[:20],
+        "errors": errors,
     }
 
 

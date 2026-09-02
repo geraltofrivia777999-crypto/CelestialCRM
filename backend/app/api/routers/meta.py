@@ -1,9 +1,9 @@
 """Meta Ads — весь модуль ТЗ 3.2–3.8.
 
-Чтение (кабинеты, статистика) живёт на праве `meta.view`, настройка подключений —
-на `meta.manage`, а всё, что тратит деньги в кабинете, — на `meta.launch`.
-Разделение не бюрократия: доступ к токену и право запускать заливы в команде
-обычно у разных людей.
+Чтение (кабинеты, статистика) живёт на праве `meta.view`. Каждый пользователь
+Meta Ads создаёт и настраивает свои подключения; тимлид видит подключения
+своей команды, администратор — весь воркспейс. Всё, что тратит деньги в
+кабинете, по-прежнему требует `meta.launch`.
 
 Расход, показы и клики приходят из Meta; лиды, продажи и доход — из Keitaro, по
 ID кампании Meta, который баер кладёт в sub_id ссылки. Без этого sub_id расход
@@ -16,12 +16,12 @@ import json
 import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.analytics import invalidate_dashboard_cache
@@ -41,13 +41,18 @@ from app.models import (
     MediaRecord,
     MediaSpendValue,
     MetaAdAccount,
+    MetaBusiness,
+    MetaComment,
+    MetaCommentJob,
     MetaCreative,
     MetaEntity,
+    MetaFanPage,
     MetaLaunch,
     MetaLaunchCreative,
     MetaOperation,
     MetaRule,
     MetaRuleEvent,
+    MetaRuleGroup,
     MetaSpendCommit,
     MetaStatDaily,
     MetaTemplate,
@@ -62,6 +67,8 @@ from app.models import (
 from app.schemas import (
     MetaAccountUpdate,
     MetaBundleSettings,
+    MetaCommentAction,
+    MetaCommentFetch,
     MetaConnectionCreate,
     MetaConnectionOut,
     MetaConnectionPreview,
@@ -71,6 +78,8 @@ from app.schemas import (
     MetaLaunchUpdate,
     MetaProxyCheck,
     MetaRuleCreate,
+    MetaRuleGroupCreate,
+    MetaRuleGroupUpdate,
     MetaRuleUpdate,
     MetaSessionAttach,
     MetaSessionStart,
@@ -79,7 +88,7 @@ from app.schemas import (
     MetaTemplateUpdate,
     Page,
 )
-from app.services import meta_bundle, meta_hourly, meta_levels, meta_spend
+from app.services import meta_bundle, meta_comments, meta_hourly, meta_levels, meta_spend
 from app.services.audit import audit
 from app.services.formulas import amount_with_commission, q
 from app.services.meta import (
@@ -98,12 +107,14 @@ from app.services.meta import (
     MetaClient,
     MetaError,
     account_status_label,
+    client_with_token,
     graph_base_url,
     money_from_minor,
     uniquify,
 )
 from app.services.meta_launch import (
     LaunchValidationError,
+    attach_rules_to_launch,
     load_launch_context,
     validate_launch,
 )
@@ -125,8 +136,18 @@ from app.services.meta_rules import (
 )
 from app.services.meta_rules import LEVELS as LEVEL_LABELS
 from app.services.meta_rules import WINDOWS as RULE_WINDOWS
-from app.services.meta_session import MetaSessionError, check_proxy_url, get_session_manager
-from app.workers.tasks import publish_meta_launch, sync_meta_connection
+from app.services.meta_session import (
+    MetaSessionError,
+    check_proxy_url,
+    get_session_manager,
+    normalize_proxy_url,
+    open_session_access,
+)
+from app.workers.tasks import (
+    publish_meta_launch,
+    run_meta_comment_job,
+    sync_meta_connection,
+)
 
 router = APIRouter(prefix="/meta", tags=["meta"])
 
@@ -144,34 +165,111 @@ async def list_connections(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> Page:
-    rows = await _connections(db, current.workspace_id)
-    items = [
-        {
-            **MetaConnectionOut.model_validate(row).model_dump(mode="json"),
-            "last_run": _run_payload(latest),
-        }
-        for row, latest in await _with_latest_runs(db, rows)
-    ]
+    rows = await _connections(db, current)
+    owners = await _user_names(db, {row.owner_id for row in rows})
+    items = []
+    for row, latest in await _with_latest_runs(db, rows):
+        can_edit = await _can_edit_connection(db, current, row)
+        payload = MetaConnectionOut.model_validate(row).model_dump(mode="json")
+        # В URL прокси бывают логин и пароль. Тимлиду достаточно видеть само
+        # подключение подчинённого; секрет настройки доступен владельцу и админу.
+        if not can_edit:
+            payload["proxy_url"] = None
+            payload["user_agent"] = None
+        items.append(
+            {
+                **payload,
+                "owner_name": owners.get(row.owner_id),
+                "can_edit": can_edit,
+                "last_run": _run_payload(latest),
+            }
+        )
     return Page(items=items, total=len(items), limit=len(items), offset=0)
 
 
 @router.post("/connections/preview")
 async def preview_connection(
     payload: MetaConnectionPreview,
-    current: User = Depends(require_permission("meta.manage")),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     """Показать кабинеты, которые видны через токен, ничего не сохраняя.
 
     Третий шаг мастера подключения. Без него список кабинетов появлялся бы только
     после сохранения и первой синхронизации — то есть выбирать было бы уже поздно.
     """
-    accounts = await _verify_token(
+    accounts, client = await _verify_token(
         payload.access_token,
         payload.business_id,
         proxy=payload.proxy_url,
         user_agent=payload.user_agent,
+        session_id=payload.session_id,
+        keep_client=True,
     )
-    return {"accounts": [_preview_row(row) for row in accounts]}
+    return {
+        "accounts": [_preview_row(row) for row in accounts],
+        "summary": await _preview_summary(client, accounts, payload.business_id),
+    }
+
+
+# Кампании считаются по одному запросу на кабинет. У токена с полусотней
+# кабинетов это превращает шаг «Проверка» в минуту ожидания, поэтому дальше
+# этого числа не идём и честно помечаем, что счёт неполный.
+PREVIEW_CAMPAIGN_ACCOUNTS = 25
+PREVIEW_CONCURRENCY = 5
+
+
+async def _preview_summary(
+    client: MetaClient, accounts: list[dict], business_id: str | None
+) -> dict:
+    """Что видно через токен: кабинеты, БМы, страницы, кампании.
+
+    Права у токенов разные: без `business_management` БМы и страницы просто не
+    отдаются. Это не ошибка подключения — статистика в таких местах остаётся
+    пустой, а не рушит весь шаг.
+    """
+
+    async def counted(coro):
+        try:
+            return len(await coro)
+        except (MetaError, HTTPException):
+            return None
+
+    businesses, pages = await asyncio.gather(
+        counted(client.businesses()),
+        counted(client.pages(business_id)),
+    )
+
+    scanned = [row for row in accounts if row.get("id")][:PREVIEW_CAMPAIGN_ACCOUNTS]
+    gate = asyncio.Semaphore(PREVIEW_CONCURRENCY)
+
+    async def campaigns_of(account: dict) -> list[dict]:
+        async with gate:
+            try:
+                return await client.entities(str(account["id"]), "campaign")
+            except (MetaError, HTTPException):
+                return []
+
+    per_account = await asyncio.gather(*(campaigns_of(row) for row in scanned))
+    campaigns = [row for rows in per_account for row in rows]
+    active_campaigns = sum(
+        1 for row in campaigns
+        if str(row.get("effective_status") or row.get("status") or "").upper() == "ACTIVE"
+    )
+    return {
+        "ad_accounts": len(accounts),
+        "active_ad_accounts": sum(
+            1 for row in accounts
+            if account_status_label(row.get("account_status")) == "ACTIVE"
+        ),
+        "currencies": sorted({str(row.get("currency") or "USD") for row in accounts}),
+        "businesses": businesses,
+        "pages": pages,
+        "campaigns": len(campaigns),
+        "active_campaigns": active_campaigns,
+        # Кампании посчитаны не по всем кабинетам — число снизу, а не точное.
+        "campaigns_partial": len(scanned) < len(accounts),
+        "campaigns_scanned": len(scanned),
+    }
 
 
 @router.post("/connections", response_model=MetaConnectionOut, status_code=201)
@@ -179,14 +277,25 @@ async def create_connection(
     payload: MetaConnectionCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.manage")),
-) -> IntegrationConnection:
+    current: User = Depends(require_permission("meta.view")),
+) -> dict:
     _require_proxy_for_session(payload.auth_method, payload.proxy_url)
+    # Нормализуем формат продавцов прокси (host:port:user:pass) в канонический
+    # user:pass@host:port — иначе httpx и браузер не смогут им пользоваться.
+    try:
+        proxy_url = (
+            normalize_proxy_url(payload.proxy_url)
+            if (payload.proxy_url or "").strip()
+            else None
+        )
+    except MetaSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     accounts = await _verify_token(
         payload.access_token,
         payload.business_id,
-        proxy=payload.proxy_url,
+        proxy=proxy_url,
         user_agent=payload.user_agent,
+        session_id=payload.session_id,
     )
     duplicate = await db.scalar(
         select(IntegrationConnection).where(
@@ -198,6 +307,7 @@ async def create_connection(
         raise HTTPException(status_code=422, detail="Подключение с таким названием уже есть")
     connection = IntegrationConnection(
         workspace_id=current.workspace_id,
+        owner_id=current.id,
         name=payload.name,
         kind="meta",
         # base_url у Meta один на всех и живёт в настройках приложения, но колонка
@@ -209,7 +319,7 @@ async def create_connection(
         external_account_id=payload.business_id,
         attribution_sub_id=payload.attribution_sub_id,
         auth_method=payload.auth_method,
-        proxy_url=payload.proxy_url,
+        proxy_url=proxy_url,
         user_agent=payload.user_agent,
     )
     db.add(connection)
@@ -225,7 +335,11 @@ async def create_connection(
     )
     await db.commit()
     await db.refresh(connection)
-    return connection
+    return {
+        **MetaConnectionOut.model_validate(connection).model_dump(mode="json"),
+        "owner_name": current.name,
+        "can_edit": True,
+    }
 
 
 @router.patch("/connections/{connection_id}", response_model=MetaConnectionOut)
@@ -234,15 +348,22 @@ async def update_connection(
     payload: MetaConnectionUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.manage")),
-) -> IntegrationConnection:
-    connection = await _connection(db, current, connection_id)
+    current: User = Depends(require_permission("meta.view")),
+) -> dict:
+    connection = await _connection(db, current, connection_id, edit=True)
     changes = payload.model_dump(exclude_unset=True)
     access_token = changes.pop("access_token", None)
+    session_id = changes.pop("session_id", None)
     if "business_id" in changes:
         connection.external_account_id = changes.pop("business_id")
     for field, value in changes.items():
         setattr(connection, field, value)
+    # Формат продавцов прокси (host:port:user:pass) приводим к каноническому.
+    if (connection.proxy_url or "").strip():
+        try:
+            connection.proxy_url = normalize_proxy_url(connection.proxy_url)
+        except MetaSessionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Токен сессии (EAAB) живёт только за своим прокси: без него Meta видит
     # «смену IP» и отзывает сессию, а при повторах банит аккаунт.
     _require_proxy_for_session(connection.auth_method, connection.proxy_url)
@@ -252,6 +373,7 @@ async def update_connection(
             connection.external_account_id,
             proxy=connection.proxy_url,
             user_agent=connection.user_agent,
+            session_id=session_id,
         )
         connection.api_key_encrypted = encrypt_secret(access_token)
     await audit(
@@ -264,7 +386,12 @@ async def update_connection(
     )
     await db.commit()
     await db.refresh(connection)
-    return connection
+    owner = await db.get(User, connection.owner_id) if connection.owner_id else None
+    return {
+        **MetaConnectionOut.model_validate(connection).model_dump(mode="json"),
+        "owner_name": owner.name if owner else None,
+        "can_edit": True,
+    }
 
 
 @router.delete("/connections/{connection_id}", status_code=200)
@@ -272,9 +399,9 @@ async def delete_connection(
     connection_id: uuid.UUID,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.manage")),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
-    connection = await _connection(db, current, connection_id)
+    connection = await _connection(db, current, connection_id, edit=True)
     name = connection.name
     # Кабинеты, объекты и статистика уходят каскадом. Ручных данных на них нет —
     # всё это копия того, что в любой момент можно вычитать из Meta заново.
@@ -295,7 +422,7 @@ async def delete_connection(
 async def check_connection(
     connection_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.manage")),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     """Что этим токеном реально доступно.
 
@@ -306,13 +433,17 @@ async def check_connection(
     """
     connection = await _connection(db, current, connection_id)
     token = decrypt_secret(connection.api_key_encrypted)
-    accounts = await _verify_token(
-        token,
-        connection.external_account_id,
-        proxy=connection.proxy_url,
-        user_agent=connection.user_agent,
-    )
-    client = client_for(connection)
+    try:
+        accounts = await _verify_token(
+            token,
+            connection.external_account_id,
+            proxy=connection.proxy_url,
+            user_agent=connection.user_agent,
+            session_id=str(connection.id) if connection.auth_method == "session" else None,
+        )
+        client = await client_for(connection, db)
+    except MetaSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     async def probe(action) -> dict:
         try:
@@ -349,7 +480,8 @@ async def check_connection(
 @router.post("/session/start")
 async def session_start(
     payload: MetaSessionStart,
-    current: User = Depends(require_permission("meta.manage")),
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     """Запускает браузер Facebook с cookies и прокси аккаунта.
 
@@ -360,6 +492,12 @@ async def session_start(
     """
     if not settings.meta_session_enabled:
         raise HTTPException(status_code=503, detail="Браузерные сессии отключены")
+    if payload.connection_id:
+        try:
+            connection_id = uuid.UUID(payload.connection_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Неверный ID подключения") from exc
+        await _connection(db, current, connection_id, edit=True)
     manager = get_session_manager()
     try:
         state = await asyncio.wait_for(
@@ -394,7 +532,7 @@ async def session_start(
 @router.get("/session/{session_id}/status")
 async def session_status(
     session_id: str,
-    current: User = Depends(require_permission("meta.manage")),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     state = get_session_manager().get(session_id)
     if not state:
@@ -405,7 +543,7 @@ async def session_status(
 @router.post("/session/{session_id}/token")
 async def session_token(
     session_id: str,
-    current: User = Depends(require_permission("meta.manage")),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     """Извлекает EAAB-токен из живой браузерной сессии."""
     manager = get_session_manager()
@@ -413,6 +551,8 @@ async def session_token(
         result = await manager.extract_token(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MetaSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("meta session token extraction failed")
         raise HTTPException(status_code=500, detail=f"Token extraction failed: {exc}") from exc
@@ -439,13 +579,19 @@ async def session_token(
 async def session_attach(
     session_id: str,
     payload: MetaSessionAttach,
-    current: User = Depends(require_permission("meta.manage")),
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     """Привязывает сохранённую сессию мастера к подключению Meta.
 
     После этого синхронизация сможет при смерти токена восстановить браузерную
     сессию, извлечь новый EAAB и продолжить работу без участия человека.
     """
+    try:
+        connection_id = uuid.UUID(payload.connection_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Неверный ID подключения") from exc
+    await _connection(db, current, connection_id, edit=True)
     manager = get_session_manager()
     try:
         return await manager.attach(session_id, payload.connection_id)
@@ -456,7 +602,7 @@ async def session_attach(
 @router.post("/session/{session_id}/close")
 async def session_close(
     session_id: str,
-    current: User = Depends(require_permission("meta.manage")),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     await get_session_manager().close(session_id)
     return {"session_id": session_id, "status": "closed"}
@@ -499,7 +645,7 @@ async def start_sync(
     request: Request,
     mode: str = "incremental",
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.manage")),
+    current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     if mode not in {"incremental", "backfill"}:
         raise HTTPException(status_code=422, detail="Mode must be incremental or backfill")
@@ -608,7 +754,7 @@ async def overview(
     current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     start, end = _period(date_from, date_to)
-    connections = await _connections(db, current.workspace_id)
+    connections = await _connections(db, current)
     accounts = await _visible_accounts(db, current, account_id, owner_id)
     account_ids = [account.id for account in accounts]
 
@@ -662,6 +808,11 @@ async def overview_level(
     date_to: date | None = None,
     account_id: uuid.UUID | None = None,
     owner_id: uuid.UUID | None = None,
+    connection_owner_id: list[uuid.UUID] | None = Query(default=None),
+    social_id: list[uuid.UUID] | None = Query(default=None),
+    business_id: list[uuid.UUID] | None = Query(default=None),
+    page_id: list[str] | None = Query(default=None),
+    ad_account_id: list[uuid.UUID] | None = Query(default=None),
     search: str | None = None,
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
@@ -670,12 +821,34 @@ async def overview_level(
 
     Данные одни и те же — меняется только ключ группировки. Разносить это по
     восьми ручкам смысла нет: они читали бы одну и ту же выборку.
+
+    Отметки строк приходят сюда фильтрами и работают только вниз по иерархии:
+    на своём уровне список остаётся полным, иначе отметку нельзя было бы снять.
     """
     if level not in meta_levels.LEVELS:
         raise HTTPException(status_code=404, detail="Unknown overview level")
     start, end = _period(date_from, date_to)
-    connections = await _connections(db, current.workspace_id)
+
+    def picked(source: str, values: list | None) -> set | None:
+        return set(values) if values and meta_levels.below(level, source) else None
+
+    connections = await _connections(db, current)
+    selected_owners = picked("users", connection_owner_id)
+    if selected_owners is not None:
+        connections = [row for row in connections if row.owner_id in selected_owners]
     accounts = await _visible_accounts(db, current, account_id, owner_id)
+    connection_ids = {row.id for row in connections}
+    accounts = [row for row in accounts if row.connection_id in connection_ids]
+    selected_socials = picked("socials", social_id)
+    if selected_socials is not None:
+        accounts = [row for row in accounts if row.social_account_id in selected_socials]
+    selected_businesses = picked("businesses", business_id)
+    if selected_businesses is not None:
+        accounts = [row for row in accounts if row.business_id in selected_businesses]
+    selected_ad_accounts = picked("accounts", ad_account_id)
+    if selected_ad_accounts is not None:
+        accounts = [row for row in accounts if row.id in selected_ad_accounts]
+    selected_pages = picked("fanpages", page_id)
     account_ids = [account.id for account in accounts]
 
     stats: list[MetaStatDaily] = []
@@ -700,10 +873,41 @@ async def overview_level(
         None,
     )
     keitaro = await keitaro_by_campaign(db, current.workspace_id, start, end, sub_id)
-    graph = await meta_levels.load_graph(db, current.workspace_id, account_ids)
+    graph = await meta_levels.load_graph(
+        db,
+        current.workspace_id,
+        account_ids,
+        connections,
+        social_ids=selected_socials,
+        business_ids=selected_businesses,
+        page_ids=selected_pages,
+    )
+    if selected_pages is not None:
+        # Кабинет к странице привязан только через объявления: «кабинеты этой
+        # страницы» — это те, где крутилась реклама от её лица, и ничего больше.
+        page_ads = {
+            external_id
+            for (entity_level, external_id), entity in graph.entities.items()
+            if entity_level == "ad" and entity.page_external_id in selected_pages
+        }
+        page_accounts = {
+            entity.account_id
+            for (entity_level, external_id), entity in graph.entities.items()
+            if entity_level == "ad" and external_id in page_ads
+        }
+        accounts = [row for row in accounts if row.id in page_accounts]
+        account_ids = [row.id for row in accounts]
+        graph.accounts = {
+            key: row for key, row in graph.accounts.items() if key in page_accounts
+        }
+        stats = [row for row in stats if (row.ad_external_id or "") in page_ads]
     rows = meta_levels.rows_for(level, stats, graph, keitaro, search=search)
     rows = meta_levels.merge(
-        rows, meta_levels.empty_rows(level, graph), search=search
+        rows,
+        meta_levels.empty_rows(level, graph),
+        search=search,
+        level=level,
+        graph=graph,
     )
     return {
         "level": level,
@@ -773,7 +977,7 @@ async def hourly_insights(
     connection = await db.get(IntegrationConnection, account.connection_id)
     if not connection:
         raise HTTPException(status_code=422, detail="У кабинета нет подключения Meta")
-    client = client_for(connection)
+    client = await client_for(connection)
     try:
         hours = await meta_hourly.load(client, external_id, start, end)
     except MetaError as exc:
@@ -854,39 +1058,52 @@ async def _campaign_hours(
 
 @router.get("/spend/window")
 async def spend_window(
-    day: date,
+    day: date | None = None,
     hour_from: int = 0,
     hour_to: int = 24,
     account_id: uuid.UUID | None = None,
+    date_from: date | None = Query(default=None, alias="from"),
+    date_to: date | None = Query(default=None, alias="to"),
     campaign_ids: list[str] | None = Query(default=None),
     refresh: bool = False,
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> dict:
-    """Кампании, которые крутились в этот отрезок дня, и их расход за него.
+    """Кампании, которые крутились в этом отрезке времени, и их расход за него.
 
     Дневная статистика такого не умеет — она знает только сумму за сутки.
-    Поэтому по каждой кампании, у которой в этот день вообще был расход, берётся
+    Поэтому по каждой кампании, у которой в эти дни вообще был расход, берётся
     почасовая разбивка. Кампании без расхода за день не спрашиваем: это лишний
     поход в Meta ради заведомого нуля.
+
+    Окно задаётся от часа одного дня до часа другого и может переходить через
+    полночь; `day` — короткая запись однодневного окна.
 
     `campaign_ids` — те кампании, которые отметили в таблице. Их и только их
     спрашиваем по часам: без списка каждое открытие формы дёргало Meta по всем
     кампаниям дня, хотя относят на оффер две-три. Отмеченная кампания попадает
     в ответ даже с нулём за день — иначе выбранная строка молча пропала бы.
     """
-    if not 0 <= hour_from < hour_to <= 24:
+    start_day = date_from or day
+    end_day = date_to or start_day
+    if not start_day:
         raise HTTPException(
-            status_code=422,
-            detail="Окно задаётся часами от 0 до 24, конец позже начала",
+            status_code=422, detail="Укажите день или границы периода"
         )
+    try:
+        meta_spend.validate_window(start_day, hour_from, end_day, hour_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     accounts = {
         account.id: account
         for account in await _visible_accounts(db, current, account_id, None)
     }
     if not accounts:
         return {
-            "day": day.isoformat(),
+            "day": start_day.isoformat(),
+            "date_from": start_day.isoformat(),
+            "date_to": end_day.isoformat(),
             "window": {"from": hour_from, "to": hour_to},
             "rows": [],
             "total": 0.0,
@@ -896,23 +1113,26 @@ async def spend_window(
     daily_stmt = (
         select(
             MetaStatDaily.campaign_external_id,
-            MetaStatDaily.account_id,
+            MetaStatDaily.record_date,
             func.sum(MetaStatDaily.spend),
         )
         .where(
             MetaStatDaily.account_id.in_(list(accounts)),
-            MetaStatDaily.record_date == day,
+            MetaStatDaily.record_date >= start_day,
+            MetaStatDaily.record_date <= end_day,
             MetaStatDaily.campaign_external_id.is_not(None),
         )
-        .group_by(MetaStatDaily.campaign_external_id, MetaStatDaily.account_id)
+        .group_by(MetaStatDaily.campaign_external_id, MetaStatDaily.record_date)
     )
     if campaign_ids:
         daily_stmt = daily_stmt.where(MetaStatDaily.campaign_external_id.in_(campaign_ids))
     daily = list((await db.execute(daily_stmt)).all())
-    wanted = campaign_ids if campaign_ids else [item[0] for item in daily]
+    wanted = campaign_ids if campaign_ids else sorted({item[0] for item in daily})
     if not wanted:
         return {
-            "day": day.isoformat(),
+            "day": start_day.isoformat(),
+            "date_from": start_day.isoformat(),
+            "date_to": end_day.isoformat(),
             "window": {"from": hour_from, "to": hour_to},
             "rows": [],
             "total": 0.0,
@@ -931,8 +1151,22 @@ async def spend_window(
             )
         ).scalars()
     }
-    commits = await meta_spend.commits_for_day(db, current.workspace_id, day)
-    day_spend_by_campaign = {item[0]: item[2] for item in daily}
+    commits = await meta_spend.commits_for_range(db, current.workspace_id, start_day, end_day)
+    day_spend_map = {(item[0], item[1]): item[2] for item in daily}
+    period_spend_by_campaign: dict[str, Decimal] = {}
+    for campaign_id, _record_date, spend in daily:
+        period_spend_by_campaign[campaign_id] = (
+            period_spend_by_campaign.get(campaign_id, Decimal("0"))
+            + Decimal(str(spend or 0))
+        )
+    # Части окна по дням считаются один раз: часы каждой части спрашиваются у
+    # своей даты, а сумма частей и есть расход целого окна.
+    parts = {
+        part_day: (part_from, part_to)
+        for part_day, part_from, part_to in meta_spend.split_into_days(
+            start_day, hour_from, end_day, hour_to
+        )
+    }
 
     rows = []
     total = Decimal("0")
@@ -940,15 +1174,17 @@ async def spend_window(
         entity = entities.get(campaign_id)
         if not entity or entity.account_id not in accounts:
             continue
-        day_spend = day_spend_by_campaign.get(campaign_id)
-        # За день ноль — часы спрашивать не у чего: в окне тоже будет ноль.
-        hours = (
-            await _campaign_hours(db, current, accounts, entity, day, refresh)
-            if day_spend
-            else []
-        )
-        amount = meta_spend.window_spend(hours, hour_from, hour_to)
-        total += amount
+        amount_total = Decimal("0")
+        for part_day, (part_from, part_to) in parts.items():
+            day_spend = day_spend_map.get((campaign_id, part_day))
+            # За день ноль — часы спрашивать не у чего: в окне тоже будет ноль.
+            hours = (
+                await _campaign_hours(db, current, accounts, entity, part_day, refresh)
+                if day_spend
+                else []
+            )
+            amount_total += meta_spend.window_spend(hours, part_from, part_to)
+        total += amount_total
         account = accounts[entity.account_id]
         rows.append(
             {
@@ -958,16 +1194,23 @@ async def spend_window(
                 "currency": account.currency,
                 "timezone": account.timezone_name,
                 "status": entity.effective_status,
-                "day_spend": float(Decimal(str(day_spend or 0)).quantize(Decimal("0.01"))),
-                "spend": float(amount),
+                "day_spend": float(period_spend_by_campaign.get(campaign_id, Decimal("0")).quantize(Decimal("0.01"))),
+                "spend": float(amount_total),
                 # Часы, уже отнесённые на какой-то оффер: без них про занятое
                 # окно узнаёшь только из отказа при сохранении.
-                "taken_hours": meta_spend.taken_hours(commits, campaign_id),
+                "taken_hours": (
+                    meta_spend.taken_hours(commits, campaign_id)
+                    if start_day == end_day
+                    else None
+                ),
+                "taken_windows": meta_spend.taken_windows(commits, campaign_id),
             }
         )
     rows.sort(key=lambda row: (-row["spend"], row["name"]))
     return {
-        "day": day.isoformat(),
+        "day": start_day.isoformat(),
+        "date_from": start_day.isoformat(),
+        "date_to": end_day.isoformat(),
         "window": {"from": hour_from, "to": hour_to},
         "rows": rows,
         "total": float(total),
@@ -977,12 +1220,18 @@ async def spend_window(
 
 @router.get("/spend/commits")
 async def spend_commits(
-    day: date,
+    day: date | None = None,
+    date_from: date | None = Query(default=None, alias="from"),
+    date_to: date | None = Query(default=None, alias="to"),
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> dict:
-    """Что уже зафиксировано за этот день."""
-    commits = await meta_spend.commits_for_day(db, current.workspace_id, day)
+    """Что уже зафиксировано в этом дне или диапазоне дней."""
+    start_day = date_from or day
+    end_day = date_to or start_day
+    if not start_day:
+        raise HTTPException(status_code=422, detail="Укажите день или границы периода")
+    commits = await meta_spend.commits_for_range(db, current.workspace_id, start_day, end_day)
     if not commits:
         return {"items": []}
     offers = dict(
@@ -1003,15 +1252,26 @@ async def spend_commits(
             )
         ).all()
     )
+
+    def window_label(commit: MetaSpendCommit) -> str:
+        # В списке за один день дата избыточна — она и так в заголовке формы.
+        if start_day == end_day:
+            return meta_spend.describe_window(commit.hour_from, commit.hour_to)
+        return (
+            f"{commit.record_date.isoformat()} · "
+            + meta_spend.describe_window(commit.hour_from, commit.hour_to)
+        )
+
     return {
         "items": [
             {
                 "id": str(commit.id),
                 "campaign_id": commit.campaign_external_id,
                 "campaign_name": commit.campaign_name,
+                "date": commit.record_date.isoformat(),
                 "hour_from": commit.hour_from,
                 "hour_to": commit.hour_to,
-                "window": meta_spend.describe_window(commit.hour_from, commit.hour_to),
+                "window": window_label(commit),
                 "offer": offers.get(commit.offer_id),
                 "buyer": people.get(commit.buyer_id),
                 "base_amount": commit.base_amount,
@@ -1029,11 +1289,13 @@ async def commit_spend(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_any_permission("meta.launch", "media.manage")),
 ) -> dict:
-    """Отнести расход выбранных кампаний за отрезок дня на оффер.
+    """Отнести расход выбранных кампаний за отрезок времени на оффер.
 
-    Пишется одна запись Медиаборда на связку «день + баер + оффер», а расход
-    ложится на выбранного агента — процент агента считает та же формула, что и
-    при ручном вводе, иначе два способа завести расход давали бы разные числа.
+    Окно задаётся от часа одного дня до часа другого. Пишется одна запись
+    Медиаборда на каждую связку «день + баер + оффер», которую окно задело, а
+    расход ложится на выбранного агента — процент агента считает та же формула,
+    что и при ручном вводе, иначе два способа завести расход давали бы разные
+    числа.
 
     Право — `media.manage` или `meta.launch`. Фиксацию делает баер со своего
     аккаунта, а `meta.launch` (заливы, автоправила, деньги в кабинете) у него не
@@ -1046,7 +1308,9 @@ async def commit_spend(
     """
     if payload.buyer_id != current.id and not has_permission(current, "meta.manage"):
         raise HTTPException(status_code=403, detail="Расход фиксируется на себя")
-    window = (payload.hour_from, payload.hour_to)
+    parts = meta_spend.split_into_days(
+        payload.date_from, payload.hour_from, payload.date_to, payload.hour_to
+    )
     accounts = {
         account.id: account
         for account in await _visible_accounts(db, current, None, None)
@@ -1081,78 +1345,119 @@ async def commit_spend(
     if not provider or provider.workspace_id != current.workspace_id:
         raise HTTPException(status_code=422, detail="Такого агента в воркспейсе нет")
 
-    commits = await meta_spend.commits_for_day(db, current.workspace_id, payload.record_date)
+    commits = await meta_spend.commits_for_range(
+        db, current.workspace_id, payload.date_from, payload.date_to
+    )
     for campaign_id in payload.campaign_ids:
-        clash = meta_spend.conflict(commits, campaign_id, window)
+        clash = meta_spend.conflict_span(
+            commits,
+            campaign_id,
+            payload.date_from,
+            payload.hour_from,
+            payload.date_to,
+            payload.hour_to,
+        )
         if clash:
             raise HTTPException(
                 status_code=409,
                 detail=(
                     f"«{entities[campaign_id].name or campaign_id}» уже отнесена на "
+                    f"{clash.record_date.isoformat()} · "
                     f"{meta_spend.describe_window(clash.hour_from, clash.hour_to)} — "
                     "снимите прежнюю привязку или выберите другое окно"
                 ),
             )
 
-    record = await db.scalar(
-        select(MediaRecord).where(
-            MediaRecord.workspace_id == current.workspace_id,
-            MediaRecord.record_date == payload.record_date,
-            MediaRecord.buyer_id == payload.buyer_id,
-            MediaRecord.offer_id == payload.offer_id,
+    # Дневные суммы нужны дважды: запись Медиаборда заводится на каждый день
+    # окна, а часы у Meta спрашиваются только там, где за сутки вообще было
+    # что считать — за нулевой день в окне тоже будет ноль.
+    daily_stmt = (
+        select(MetaStatDaily.campaign_external_id, MetaStatDaily.record_date)
+        .where(
+            MetaStatDaily.account_id.in_(list(accounts)),
+            MetaStatDaily.record_date >= payload.date_from,
+            MetaStatDaily.record_date <= payload.date_to,
+            MetaStatDaily.campaign_external_id.in_(payload.campaign_ids),
+            MetaStatDaily.spend > 0,
         )
+        .group_by(MetaStatDaily.campaign_external_id, MetaStatDaily.record_date)
     )
-    if not record:
-        record = MediaRecord(
-            workspace_id=current.workspace_id,
-            record_date=payload.record_date,
-            buyer_id=payload.buyer_id,
-            offer_id=payload.offer_id,
-            source="meta",
-        )
-        db.add(record)
-        await db.flush()
+    days_with_spend = {
+        (campaign_id, record_date)
+        for campaign_id, record_date in (await db.execute(daily_stmt)).all()
+    }
 
-    added = Decimal("0")
-    for campaign_id in payload.campaign_ids:
-        entity = entities[campaign_id]
-        hours = await _campaign_hours(
-            db, current, accounts, entity, payload.record_date, False
-        )
-        amount = meta_spend.window_spend(hours, payload.hour_from, payload.hour_to)
-        added += amount
-        db.add(
-            MetaSpendCommit(
-                workspace_id=current.workspace_id,
-                record_date=payload.record_date,
-                hour_from=payload.hour_from,
-                hour_to=payload.hour_to,
-                campaign_external_id=campaign_id,
-                campaign_name=entity.name,
-                account_id=entity.account_id,
-                media_record_id=record.id,
-                provider_id=provider.id,
-                buyer_id=payload.buyer_id,
-                offer_id=payload.offer_id,
-                base_amount=amount,
-                created_by_id=current.id,
+    records: dict[date, MediaRecord] = {}
+    added_by_day: dict[date, Decimal] = {}
+    for part_day, part_from, part_to in parts:
+        for campaign_id in payload.campaign_ids:
+            entity = entities[campaign_id]
+            hours = (
+                await _campaign_hours(db, current, accounts, entity, part_day, False)
+                if (campaign_id, part_day) in days_with_spend
+                else []
             )
-        )
+            amount = meta_spend.window_spend(hours, part_from, part_to)
+            record = records.get(part_day)
+            if not record:
+                record = await db.scalar(
+                    select(MediaRecord).where(
+                        MediaRecord.workspace_id == current.workspace_id,
+                        MediaRecord.record_date == part_day,
+                        MediaRecord.buyer_id == payload.buyer_id,
+                        MediaRecord.offer_id == payload.offer_id,
+                    )
+                )
+                if not record:
+                    record = MediaRecord(
+                        workspace_id=current.workspace_id,
+                        record_date=part_day,
+                        buyer_id=payload.buyer_id,
+                        offer_id=payload.offer_id,
+                        source="meta",
+                    )
+                    db.add(record)
+                    await db.flush()
+                records[part_day] = record
+            added_by_day[part_day] = added_by_day.get(part_day, Decimal("0")) + amount
+            db.add(
+                MetaSpendCommit(
+                    workspace_id=current.workspace_id,
+                    record_date=part_day,
+                    hour_from=part_from,
+                    hour_to=part_to,
+                    campaign_external_id=campaign_id,
+                    campaign_name=entity.name,
+                    account_id=entity.account_id,
+                    media_record_id=record.id,
+                    provider_id=provider.id,
+                    buyer_id=payload.buyer_id,
+                    offer_id=payload.offer_id,
+                    base_amount=amount,
+                    created_by_id=current.id,
+                )
+            )
 
-    total = await _apply_provider_spend(db, record, provider, added)
+    total = Decimal("0")
+    for part_day in sorted(records):
+        total += await _apply_provider_spend(
+            db, records[part_day], provider, added_by_day[part_day]
+        )
+    added = sum(added_by_day.values(), Decimal("0"))
     await audit(
         db,
         current,
         "meta.spend_committed",
-        f"Расход {meta_spend.describe_window(*window)} отнесён на «{offer.name}»",
+        f"Расход {meta_spend.describe_span(payload.date_from, payload.hour_from, payload.date_to, payload.hour_to)} "
+        f"отнесён на «{offer.name}»",
         request=request,
         entity_type="media_record",
-        entity_id=str(record.id),
+        entity_id=str(records[payload.date_from].id),
     )
     await db.commit()
     await invalidate_dashboard_cache(current.workspace_id)
     return {
-        "media_record_id": str(record.id),
+        "media_record_ids": [str(records[part_day].id) for part_day in sorted(records)],
         "base_amount": float(added),
         "spend": float(total),
         "commission_pct": float(provider.commission_pct),
@@ -1181,7 +1486,8 @@ async def delete_commit(
     await db.delete(commit)
     await audit(
         db, current, "meta.spend_commit_removed",
-        f"Снята привязка расхода {meta_spend.describe_window(commit.hour_from, commit.hour_to)}",
+        f"Снята привязка расхода {commit.record_date.isoformat()} · "
+        f"{meta_spend.describe_window(commit.hour_from, commit.hour_to)}",
         request=request, entity_id=str(commit_id),
     )
     await db.commit()
@@ -1285,6 +1591,20 @@ async def reference(
         "rule_windows": RULE_WINDOWS,
         "rule_operators": OPERATORS,
         "rule_frequencies": {str(key): value for key, value in FREQUENCIES.items()},
+        "comment_statuses": meta_comments.COMMENT_STATUSES,
+        "comment_actions": {
+            key: value
+            for key, value in meta_comments.ACTION_LABELS.items()
+            if key != "fetch"
+        },
+        # Пороги чистки показываем в интерфейсе: человек должен видеть, почему
+        # «выделить всё» упирается в потолок, а не гадать.
+        "comment_limits": {
+            "max_per_job": settings.meta_comments_max_per_job,
+            "max_posts": settings.meta_comments_max_posts,
+            "delay_ms": settings.meta_comments_delay_ms,
+            "pages_per_post": settings.meta_comments_pages_per_post,
+        },
         # Справочники связки — цели, окна атрибуции, макросы. Отдельной ручкой их
         # заводить незачем: формы всё равно грузят этот справочник целиком.
         "bundle": meta_bundle.reference(),
@@ -1338,7 +1658,7 @@ async def targeting(
             status_code=422,
             detail="Нет активного подключения Meta — справочники берутся её токеном",
         )
-    client = client_for(connection)
+    client = await client_for(connection, db)
     try:
         rows = await client.targeting_search(kind, query)
     except MetaError as exc:
@@ -1376,7 +1696,7 @@ async def account_assets(
     account = await _account(db, current, account_id)
     client, _ = await _account_client(db, account)
     try:
-        pages = await client.account_pages(account.external_id)
+        pages = await _account_pages(db, account, client)
         pixels = await client.pixels(account.external_id)
     except MetaError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -1392,6 +1712,78 @@ async def account_assets(
             if row.get("id")
         ],
     }
+
+
+@router.get("/accounts/{account_id}/dsa-recommendations")
+async def account_dsa_recommendations(
+    account_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    """Варианты бенефициара/платильщика, которые подсказывает сам кабинет.
+
+    Meta собирает их из прошлой активности кабинета (DSA-прозрачность для ЕС).
+    Список нужен на шаге «Кабинеты» мастера залива — селект «Бенефициар /
+    Плательщик». Пустой список валиден: у свежего кабинета рекомендаций нет.
+    """
+    account = await _account(db, current, account_id)
+    client, _ = await _account_client(db, account)
+    try:
+        recommendations = await client.dsa_recommendations(account.external_id)
+    except MetaError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"recommendations": recommendations}
+
+
+async def _account_pages(
+    db: AsyncSession, account: MetaAdAccount, client: MetaClient
+) -> list[dict]:
+    """Return pages usable by an ad account, tolerating incomplete Meta edges.
+
+    ``promote_pages`` is the most precise source, but Meta can return an empty
+    list there for tokens that can still see pages through ``/me/accounts`` (or
+    the owning Business Manager).  The upload wizard must not hide the page
+    selector in that case, so fall back to those sources and finally to the
+    pages saved by the latest social-graph sync.
+    """
+    try:
+        pages = await client.account_pages(account.external_id)
+    except MetaError:
+        pages = []
+    if pages:
+        return pages
+
+    scopes: list[str | None] = []
+    if account.business_id:
+        business = await db.get(MetaBusiness, account.business_id)
+        if business:
+            scopes.append(business.external_id)
+    scopes.append(None)
+    for scope in scopes:
+        try:
+            pages = await client.pages(scope)
+        except MetaError:
+            continue
+        if pages:
+            return pages
+
+    query = select(MetaFanPage).where(
+        MetaFanPage.workspace_id == account.workspace_id,
+        MetaFanPage.connection_id == account.connection_id,
+    )
+    stored = list((await db.execute(query)).scalars())
+    if account.business_id:
+        matching = [row for row in stored if row.business_id == account.business_id]
+        if matching:
+            stored = matching
+    elif account.social_account_id:
+        matching = [row for row in stored if row.social_account_id == account.social_account_id]
+        if matching:
+            stored = matching
+    return [
+        {"id": row.external_id, "name": row.name, "category": row.category}
+        for row in stored
+    ]
 
 
 # --- Шаблоны (ТЗ 3.5) ---------------------------------------------------------
@@ -1556,6 +1948,24 @@ async def upload_creative(
                 content=content,
                 mime_type=file.content_type or "video/mp4",
             )
+            # /advideos возвращает только id: превью (thumbnail_url) нужно для
+            # video_data объявления — без него Meta отбивает креатив, а наша
+            # валидация отбраковывает залив. Дозапрашиваем сразу.
+            video_id = str(response.get("id") or "")
+            if video_id and not response.get("picture") and not response.get("url"):
+                try:
+                    info = await client.get_object(
+                        video_id, {"fields": "picture,thumbnail_url"}
+                    )
+                    response = {
+                        **response,
+                        "picture": str(
+                            info.get("picture") or info.get("thumbnail_url") or ""
+                        )
+                        or None,
+                    }
+                except MetaError as exc:
+                    logger.warning("video thumbnail fetch failed for %s: %s", video_id, exc)
         else:
             response = await client.upload_image(
                 account.external_id,
@@ -1683,6 +2093,7 @@ async def create_launch(
     db.add(launch)
     await db.flush()
     await _sync_launch_creatives(db, launch, payload.creative_ids)
+    await attach_rules_to_launch(db, launch, payload.rule_ids)
     await audit(
         db, current, "meta.launch_created", f"Создан залив «{launch.name}» в {account.name}",
         request=request, entity_id=str(launch.id),
@@ -1698,7 +2109,17 @@ async def create_launch(
 
 
 # Поля залива, которые задаются на конкретный кабинет прямо в мастере.
-_LAUNCH_OVERRIDES = {"page_id", "pixel_id", "link_url", "daily_budget", "name"}
+_LAUNCH_OVERRIDES = {
+    "page_id",
+    "pixel_id",
+    "link_url",
+    "daily_budget",
+    "name",
+    "campaign_name",
+    "url_tags",
+    "display_link",
+    "beneficiary",
+}
 
 
 @router.post("/launches/batch", status_code=201)
@@ -1750,6 +2171,15 @@ async def create_launch_batch(
             for field, value in (payload.overrides.get(account_id) or {}).items()
             if field in _LAUNCH_OVERRIDES and value not in (None, "")
         }
+        if "daily_budget" in own:
+            # overrides — сырой dict, и фронт шлёт бюджет строкой: приводим к
+            # Decimal здесь, иначе validate_launch упадёт на «"10" <= 0».
+            try:
+                own["daily_budget"] = Decimal(str(own["daily_budget"]))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise LaunchValidationError(
+                    "Бюджет кабинета указан неверно — введите число больше нуля"
+                ) from exc
         launch = MetaLaunch(
             workspace_id=current.workspace_id,
             owner_id=owner_id,
@@ -1766,6 +2196,7 @@ async def create_launch_batch(
         await _sync_launch_creatives(
             db, launch, payload.creatives_by_account.get(account_id, [])
         )
+        await attach_rules_to_launch(db, launch, payload.rule_ids)
         created.append(launch)
 
     results: list[dict] = []
@@ -2168,10 +2599,23 @@ async def update_rule(
         changes["conditions"] = _rule_conditions(changes["conditions"])
     for field, value in changes.items():
         setattr(rule, field, value)
-    if rule.action in {"increase_budget", "decrease_budget"} and rule.level == "ad":
+    if (
+        rule.action in {"increase_budget", "decrease_budget", "change_budget"}
+        and rule.level == "ad"
+    ):
         raise HTTPException(
             status_code=422,
             detail="У объявления нет собственного бюджета — выберите кампанию или адсет",
+        )
+    if rule.action == "change_bid" and rule.level != "adset":
+        raise HTTPException(
+            status_code=422,
+            detail="Ставка задаётся на адсете — выберите уровень «Адсет»",
+        )
+    if rule.scope_kind == "campaign" and not rule.campaign_external_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Выберите кампанию, с которой работает правило",
         )
     await audit(
         db, current, "meta.rule_updated", f"Изменено автоправило «{rule.name}»",
@@ -2200,6 +2644,205 @@ async def delete_rule(
     )
     await db.commit()
     return {"deleted": str(rule_id)}
+
+
+# --- Группы правил -----------------------------------------------------------
+
+
+@router.get("/entities/campaigns")
+async def list_rule_campaigns(
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> list[dict]:
+    """Кампании для scope «Для кампании…» правила автоправил."""
+    accounts = {
+        account.id: account.name
+        for account in await _visible_accounts(db, current, None, None)
+    }
+    if not accounts:
+        return []
+    rows = list(
+        (
+            await db.execute(
+                select(MetaEntity)
+                .where(
+                    MetaEntity.workspace_id == current.workspace_id,
+                    MetaEntity.level == "campaign",
+                    MetaEntity.account_id.in_(list(accounts)),
+                )
+                .order_by(MetaEntity.name)
+                .limit(500)
+            )
+        ).scalars()
+    )
+    return [
+        {
+            "external_id": row.external_id,
+            "name": row.name,
+            "account_id": str(row.account_id),
+            "account_name": accounts.get(row.account_id),
+        }
+        for row in rows
+    ]
+
+
+def _group_row(group: MetaRuleGroup, rules: list[MetaRule]) -> dict:
+    return {
+        "id": str(group.id),
+        "name": group.name,
+        "created_at": group.created_at,
+        "rules": [
+            {"id": str(rule.id), "name": rule.name, "action": rule.action}
+            for rule in rules
+        ],
+    }
+
+
+@router.get("/rule-groups", response_model=Page)
+async def list_rule_groups(
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> Page:
+    groups = list(
+        (
+            await db.execute(
+                select(MetaRuleGroup)
+                .where(MetaRuleGroup.workspace_id == current.workspace_id)
+                .order_by(MetaRuleGroup.name)
+            )
+        ).scalars()
+    )
+    members = list(
+        (
+            await db.execute(
+                select(MetaRule).where(
+                    MetaRule.workspace_id == current.workspace_id,
+                    MetaRule.group_id.is_not(None),
+                )
+            )
+        ).scalars()
+    )
+    by_group: dict[uuid.UUID, list[MetaRule]] = {}
+    for rule in members:
+        by_group.setdefault(rule.group_id, []).append(rule)
+    items = [_group_row(group, by_group.get(group.id, [])) for group in groups]
+    return Page(items=items, total=len(items), limit=len(items), offset=0)
+
+
+@router.post("/rule-groups", status_code=201)
+async def create_rule_group(
+    payload: MetaRuleGroupCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    duplicate = await db.scalar(
+        select(MetaRuleGroup).where(
+            MetaRuleGroup.workspace_id == current.workspace_id,
+            MetaRuleGroup.name == payload.name,
+        )
+    )
+    if duplicate:
+        raise HTTPException(status_code=422, detail="Группа с таким названием уже есть")
+    group = MetaRuleGroup(
+        workspace_id=current.workspace_id, name=payload.name, created_by_id=current.id
+    )
+    db.add(group)
+    await db.flush()
+    if payload.rule_ids:
+        rules = list(
+            (
+                await db.execute(
+                    select(MetaRule).where(
+                        MetaRule.id.in_(payload.rule_ids),
+                        MetaRule.workspace_id == current.workspace_id,
+                    )
+                )
+            ).scalars()
+        )
+        for rule in rules:
+            rule.group_id = group.id
+    await audit(
+        db, current, "meta.rule_group_created",
+        f"Создана группа автоправил «{group.name}»: правил {len(payload.rule_ids)}",
+        request=request, entity_id=str(group.id),
+    )
+    await db.commit()
+    await db.refresh(group)
+    return _group_row(group, rules) if payload.rule_ids else _group_row(group, [])
+
+
+@router.patch("/rule-groups/{group_id}")
+async def update_rule_group(
+    group_id: uuid.UUID,
+    payload: MetaRuleGroupUpdate,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    group = await db.get(MetaRuleGroup, group_id)
+    if not group or group.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    changes = payload.model_dump(exclude_unset=True)
+    if "name" in changes and changes["name"]:
+        group.name = changes["name"]
+    if "rule_ids" in changes and changes["rule_ids"] is not None:
+        # Сначала снять текущие правила группы, потом назначить новые.
+        current_rules = list(
+            (
+                await db.execute(
+                    select(MetaRule).where(
+                        MetaRule.workspace_id == current.workspace_id,
+                        MetaRule.group_id == group.id,
+                    )
+                )
+            ).scalars()
+        )
+        for rule in current_rules:
+            rule.group_id = None
+        wanted = list(
+            (
+                await db.execute(
+                    select(MetaRule).where(
+                        MetaRule.id.in_(changes["rule_ids"]),
+                        MetaRule.workspace_id == current.workspace_id,
+                    )
+                )
+            ).scalars()
+        )
+        for rule in wanted:
+            rule.group_id = group.id
+    await db.commit()
+    await db.refresh(group)
+    members = list(
+        (
+            await db.execute(
+                select(MetaRule).where(MetaRule.group_id == group.id)
+            )
+        ).scalars()
+    )
+    return _group_row(group, members)
+
+
+@router.delete("/rule-groups/{group_id}")
+async def delete_rule_group(
+    group_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    group = await db.get(MetaRuleGroup, group_id)
+    if not group or group.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    name = group.name
+    # Правила из группы не удаляются — только отвязываются (SET NULL).
+    await db.delete(group)
+    await audit(
+        db, current, "meta.rule_group_deleted",
+        f"Удалена группа автоправил «{name}»",
+        request=request, entity_id=str(group_id),
+    )
+    await db.commit()
+    return {"deleted": str(group_id)}
 
 
 @router.post("/rules/{rule_id}/preview")
@@ -2312,6 +2955,637 @@ async def acknowledge_rule_events(
     return {"acknowledged": len(rows)}
 
 
+# --- модерация комментариев (ручная чистка) --------------------------------
+#
+# Чтение списка живёт на `meta.view`: смотреть, что пишут под рекламой, полезно
+# всем, кто её ведёт. Любое действие над комментарием — на `meta.comments`:
+# удаление необратимо и видно снаружи, поэтому право отдельное и по умолчанию
+# есть только у администратора.
+
+
+@router.get("/comments/posts")
+async def comment_posts(
+    account_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> dict:
+    """Посты кабинета, под которыми могут висеть комментарии."""
+    account = await _account(db, current, account_id)
+    posts = await meta_comments.account_posts(db, account)
+    hint: str | None = None
+    # Объявления без своего поста — это динамика: у креатива нет
+    # object_story_id, Meta собирает карточку под товар на лету. Пост у
+    # страницы при этом есть — просим рекламные посты страниц, если они
+    # наши (токен страницы видит их, чужие — нет).
+    connection = await db.get(IntegrationConnection, account.connection_id)
+    pages = await meta_comments.pages_without_post(db, account)
+    if pages:
+        if not posts:
+            hint = (
+                "Объявления динамические: у них нет отдельного поста. Посты "
+                "страницы подтянутся, если у пользователя подключения есть "
+                "доступ к ней — иначе Meta их не показывает."
+            )
+        if connection:
+            try:
+                client = await client_for(connection, db)
+                managed = await meta_comments.managed_page_tokens(client)
+            except Exception:  # noqa: BLE001 — без страниц просто пустой список
+                managed = {}
+            for page_id in pages:
+                token = managed.get(page_id)
+                if not token:
+                    continue
+                try:
+                    rows = await client_with_token(client, token).page_ads_posts(
+                        page_id
+                    )
+                except Exception:  # noqa: BLE001 — страница могла исчезнуть
+                    continue
+                for row in rows:
+                    post_id = str(row.get("id") or "")
+                    if not post_id or any(
+                        item["post_external_id"] == post_id for item in posts
+                    ):
+                        continue
+                    posts.append(
+                        {
+                            "post_external_id": post_id,
+                            "page_external_id": page_id,
+                            "title": "Рекламный пост страницы",
+                            "ads": [],
+                            "active_ads": 0,
+                            "comments": 0,
+                            "fetched_at": None,
+                            "source": "page_ad",
+                        }
+                    )
+    page_names = dict(
+        (
+            await db.execute(
+                select(MetaFanPage.external_id, MetaFanPage.name).where(
+                    MetaFanPage.workspace_id == current.workspace_id
+                )
+            )
+        ).all()
+    )
+    return {
+        "items": [
+            {
+                "post_external_id": item["post_external_id"],
+                "page_external_id": item["page_external_id"],
+                # Имя страницы: у кабинета их бывает несколько, и по одному
+                # названию объявления не понять, чей это пост.
+                "page_name": page_names.get(item["page_external_id"], ""),
+                "title": (
+                    item["title"]
+                    if item.get("source") == "page_ad"
+                    else _post_title(item)
+                ),
+                "ads": item["ads"],
+                "active_ads": item["active_ads"],
+                "comments": item["comments"],
+                "fetched_at": item["fetched_at"],
+                "source": item.get("source"),
+                "permalink": f"https://www.facebook.com/{item['post_external_id']}",
+            }
+            for item in posts
+        ],
+        "total": len(posts),
+        "hint": hint,
+    }
+
+
+def _post_title(item: dict) -> str:
+    """Имя поста в списке — по объявлениям, которые его крутят.
+
+    Своего названия у поста нет, а «120200123456789_987654321» человеку ничего
+    не говорит: показываем объявление и сколько ещё их на том же посте.
+    """
+    ads = item["ads"]
+    if not ads:
+        return item["post_external_id"]
+    first = ads[0]["name"]
+    return first if len(ads) == 1 else f"{first} +{len(ads) - 1}"
+
+
+@router.get("/comments/access")
+async def comment_access(
+    account_id: uuid.UUID,
+    post_external_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> dict:
+    """Доступ к комментариям — по каждой странице кабинета отдельно.
+
+    Кабинет нередко ведёт несколько страниц, и на одном воркспейсе бывает
+    несколько подключений Meta. Комментарии тёмного (рекламного) поста Graph
+    отдаёт только токеном страницы, а токен страницы есть лишь у того
+    подключения, чей пользователь состоит в её ролях.
+
+    Раньше проверка брала один случайный пост и по нему судила обо всём
+    кабинете: достаточно было одной чужой страницы, чтобы экран объявил
+    комментарии недоступными, хотя та страница, с которой реально льют,
+    читается нормально. Теперь проверяется каждая страница, и экран блокируется
+    только если недоступны все.
+    """
+    account = await _account(db, current, account_id)
+    connection = await db.get(IntegrationConnection, account.connection_id)
+    if not connection:
+        return {
+            "ok": False,
+            "auth_method": None,
+            "reason": "У кабинета нет подключения Meta",
+        }
+    pages = await meta_comments.account_pages(db, account)
+    if not pages:
+        return {
+            "ok": False,
+            "auth_method": connection.auth_method,
+            "auth_method_label": AUTH_METHODS.get(
+                connection.auth_method, connection.auth_method
+            ),
+            "reason": (
+                "В кабинете нет объявлений со страницей — чистить нечего. "
+                "Если объявления есть, запустите синхронизацию."
+            ),
+        }
+    owners = await meta_comments.page_owners(db, current.workspace_id)
+    # Токены страниц спрашиваем один раз у подключения, а не у каждой страницы:
+    # /me/accounts отдаёт их списком.
+    connections = {connection.id: connection}
+    for page in pages:
+        for owner_id in owners.get(page["page_external_id"], []):
+            if owner_id not in connections:
+                owner = await db.get(IntegrationConnection, owner_id)
+                if owner and owner.workspace_id == current.workspace_id:
+                    connections[owner_id] = owner
+    tokens: dict[uuid.UUID, set[str]] = {}
+    failures: dict[uuid.UUID, str] = {}
+    for row_id, row in connections.items():
+        try:
+            client = await client_for(row, db)
+            tokens[row_id] = set(await client.page_tokens())
+        except Exception as exc:  # noqa: BLE001 — одно подключение не роняет проверку
+            tokens[row_id] = set()
+            failures[row_id] = meta_comments.describe_access_error(exc)
+
+    checked = []
+    for page in pages:
+        page_id = page["page_external_id"]
+        holder = next(
+            (row_id for row_id, managed in tokens.items() if page_id in managed), None
+        )
+        checked.append(
+            {
+                "page_external_id": page_id,
+                "name": page["name"],
+                "ads": page["ads"],
+                "posts": page["posts"],
+                "ok": holder is not None,
+                "connection_id": str(holder) if holder else None,
+                "connection_name": connections[holder].name if holder else None,
+            }
+        )
+    readable = [row for row in checked if row["ok"]]
+    blocked = [row for row in checked if not row["ok"]]
+
+    def label(row: dict) -> str:
+        return f"«{row['name']}»" if row["name"] else str(row["page_external_id"])
+
+    reason = ""
+    if blocked:
+        names = ", ".join(label(row) for row in blocked[:5])
+        reason = (
+            f"Нет доступа к комментариям страниц: {names}. Meta отдаёт "
+            "комментарии рекламных (тёмных) постов только токеном страницы — "
+            "добавьте пользователя подключения в роли этой страницы "
+            "(Business Manager → Страницы → Люди и доступ)."
+        )
+        if failures:
+            reason += " " + " ".join(failures.values())
+    return {
+        # Экран работает, если читается хотя бы одна страница: остальные просто
+        # перечислены предупреждением, а не блокируют чистку целиком.
+        "ok": bool(readable),
+        "auth_method": connection.auth_method,
+        "auth_method_label": AUTH_METHODS.get(
+            connection.auth_method, connection.auth_method
+        ),
+        "reason": reason,
+        "pages": checked,
+        "can_moderate": has_permission(current, "meta.comments"),
+    }
+
+
+@router.get("/comments/resolve")
+async def resolve_comment_post(
+    account_id: uuid.UUID,
+    ref: str,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> dict:
+    """Разобрать ссылку на пост или объявление и сказать, читаются ли под ним
+    комментарии.
+
+    Нужно, когда пост не попал в список: объявление создано только что и ещё не
+    синхронизировано, у креатива нет своего поста, или объявление лежит в другом
+    кабинете. Человек вставляет ссылку — и сразу видит, в чём дело, вместо
+    пустого списка без объяснений.
+    """
+    account = await _account(db, current, account_id)
+    connection = await db.get(IntegrationConnection, account.connection_id)
+    if not connection:
+        return {"ok": False, "reason": "У кабинета нет подключения Meta"}
+    parsed = meta_comments.parse_post_reference(ref)
+    if parsed["kind"] == "empty":
+        return {"ok": False, "reason": "Вставьте ссылку на пост или его ID"}
+    if parsed["kind"] == "unknown":
+        return {
+            "ok": False,
+            "reason": (
+                "Не похоже ни на ссылку вида <страница>_<пост>, ни на ID. "
+                "Вставьте адрес поста из Facebook или ID объявления."
+            ),
+        }
+    try:
+        client = await client_for(connection, db)
+    except Exception as exc:  # noqa: BLE001 — текст Meta уходит человеку
+        return {"ok": False, "reason": meta_comments.describe_access_error(exc)}
+    if parsed["kind"] == "share":
+        if connection.auth_method != "session":
+            return {
+                "ok": False,
+                "reason": (
+                    "Короткую ссылку facebook.com/share/… может раскрыть только "
+                    "подключение через браузерную сессию. Переключите кабинет "
+                    "на сессионное подключение или вставьте ID объявления."
+                ),
+            }
+        found = await meta_comments.resolve_share_post(str(connection.id), ref)
+    else:
+        found = await meta_comments.resolve_reference(client, parsed)
+    if not found.get("ok"):
+        return {
+            "ok": False,
+            "reason": found.get("error")
+            or "Meta не знает такой объект — проверьте ID или права подключения.",
+        }
+    post_id = found["post_id"]
+    page_id = post_id.split("_", 1)[0] if "_" in post_id else None
+    # Пробуем прочитать комментарии тем же способом, что и загрузка: сначала
+    # токеном страницы, если она наша, иначе базовым токеном.
+    reader = client
+    if page_id:
+        tokens = await meta_comments.managed_page_tokens(client)
+        token = tokens.get(page_id)
+        if token:
+            reader = client_with_token(client, token)
+    try:
+        rows = await reader.post_comments(post_id, pages=1)
+    except Exception as exc:  # noqa: BLE001 — причина уходит человеку
+        return {
+            "ok": False,
+            "post_external_id": post_id,
+            "page_external_id": page_id,
+            "via": found.get("via"),
+            "reason": meta_comments.describe_access_error(exc),
+        }
+    known = await db.scalar(
+        select(MetaEntity).where(
+            MetaEntity.account_id == account.id,
+            MetaEntity.post_external_id == post_id,
+        )
+    )
+    return {
+        "ok": True,
+        "post_external_id": post_id,
+        "page_external_id": page_id,
+        "via": found.get("via"),
+        "comments": len(rows),
+        # Знает ли о посте синхронизация. Нет — значит объявление свежее или
+        # лежит в другом кабинете; загрузить по ссылке всё равно можно.
+        "known": known is not None,
+    }
+
+
+@router.get("/comments", response_model=Page)
+async def list_comments(
+    account_id: uuid.UUID,
+    post_external_id: str | None = None,
+    query: str | None = None,
+    author: str | None = None,
+    status: Literal["visible", "hidden", "deleted", "any"] = "visible",
+    only_links: bool = False,
+    only_phones: bool = False,
+    only_replies: bool = False,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> Page:
+    """Загруженные комментарии кабинета с фильтрами.
+
+    Фильтры считаются по базе, а не по последней странице Graph: поиск по слову
+    обязан находить комментарий, даже если он трёхсотый по счёту.
+    """
+    account = await _account(db, current, account_id)
+    filters = [MetaComment.account_id == account.id]
+    if post_external_id:
+        filters.append(MetaComment.post_external_id == post_external_id)
+    if status != "any":
+        filters.append(MetaComment.status == status)
+    if query:
+        filters.append(MetaComment.message.ilike(f"%{query.strip()}%"))
+    if author:
+        filters.append(MetaComment.author_name.ilike(f"%{author.strip()}%"))
+    if only_links:
+        filters.append(MetaComment.has_link.is_(True))
+    if only_phones:
+        filters.append(MetaComment.has_phone.is_(True))
+    if only_replies:
+        filters.append(MetaComment.parent_external_id.is_not(None))
+    total = await db.scalar(select(func.count(MetaComment.id)).where(*filters)) or 0
+    rows = list(
+        (
+            await db.execute(
+                select(MetaComment)
+                .where(*filters)
+                .order_by(MetaComment.created_time.desc().nullslast(), MetaComment.id)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).scalars()
+    )
+    return Page(
+        items=[_comment_row(row) for row in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _comment_row(row: MetaComment) -> dict:
+    return {
+        "id": str(row.id),
+        "external_id": row.external_id,
+        "post_external_id": row.post_external_id,
+        "parent_external_id": row.parent_external_id,
+        "author_name": row.author_name,
+        "author_external_id": row.author_external_id,
+        "message": row.message or "",
+        "like_count": row.like_count,
+        "reply_count": row.reply_count,
+        "has_link": row.has_link,
+        "has_phone": row.has_phone,
+        "status": row.status,
+        "status_label": meta_comments.COMMENT_STATUSES.get(row.status, row.status),
+        "created_time": row.created_time,
+        "fetched_at": row.fetched_at,
+        "acted_at": row.acted_at,
+        "permalink": (
+            f"https://www.facebook.com/{row.post_external_id}"
+            f"?comment_id={row.external_id.split('_')[-1]}"
+        ),
+    }
+
+
+@router.post("/comments/fetch", status_code=202)
+async def fetch_comments(
+    payload: MetaCommentFetch,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> dict:
+    """Поставить в очередь загрузку комментариев по выбранным постам."""
+    account = await _account(db, current, payload.account_id)
+    posts = [item.strip() for item in payload.posts if item.strip()]
+    if not posts:
+        known = await meta_comments.account_posts(db, account)
+        posts = [
+            item["post_external_id"]
+            for item in known
+            if item["active_ads"] or not payload.active_only
+        ]
+    if not posts:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Нет постов для загрузки. Синхронизируйте кабинет или снимите "
+                "фильтр «только активные объявления»."
+            ),
+        )
+    posts = posts[: settings.meta_comments_max_posts]
+    job = await _create_comment_job(
+        db, current, account, kind="fetch", scope={"posts": posts}, total=len(posts)
+    )
+    await audit(
+        db, current, "meta.comments_fetch",
+        f"Загрузка комментариев: кабинет «{account.name}», постов {len(posts)}",
+        request=request, entity_id=str(job.id),
+    )
+    await db.commit()
+    run_meta_comment_job.delay(str(job.id))
+    return _job_row(job)
+
+
+@router.post("/comments/action", status_code=202)
+async def moderate_comments(
+    payload: MetaCommentAction,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.comments")),
+) -> dict:
+    """Скрыть, вернуть или удалить отмеченные комментарии.
+
+    Удаление необратимо, поэтому текст комментария остаётся в CRM: строка не
+    исчезает, а переходит в статус «удалён» — по ней потом видно, что именно
+    было вычищено и кем.
+    """
+    account = await _account(db, current, payload.account_id)
+    ids = list(dict.fromkeys(item.strip() for item in payload.comments if item.strip()))
+    if not ids:
+        raise HTTPException(status_code=422, detail="Не выбрано ни одного комментария")
+    if len(ids) > settings.meta_comments_max_per_job:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"За один раз можно обработать не больше "
+                f"{settings.meta_comments_max_per_job} комментариев — "
+                "разбейте на несколько заходов."
+            ),
+        )
+    # Работаем только с тем, что уже видели в этом кабинете: произвольный id
+    # комментария из чужого кабинета через этот метод пройти не должен.
+    known = set(
+        (
+            await db.execute(
+                select(MetaComment.external_id).where(
+                    MetaComment.account_id == account.id,
+                    MetaComment.external_id.in_(ids),
+                )
+            )
+        ).scalars()
+    )
+    unknown = [item for item in ids if item not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{len(unknown)} комментариев нет в загруженных по этому кабинету — "
+                "обновите список и повторите."
+            ),
+        )
+    job = await _create_comment_job(
+        db, current, account,
+        kind=payload.action, scope={"comments": ids}, total=len(ids),
+    )
+    await audit(
+        db, current, f"meta.comments_{payload.action}",
+        f"{meta_comments.ACTION_LABELS[payload.action]}: кабинет «{account.name}», "
+        f"комментариев {len(ids)}",
+        request=request, entity_id=str(job.id),
+    )
+    await db.commit()
+    run_meta_comment_job.delay(str(job.id))
+    return _job_row(job)
+
+
+async def _create_comment_job(
+    db: AsyncSession,
+    current: User,
+    account: MetaAdAccount,
+    *,
+    kind: str,
+    scope: dict,
+    total: int,
+) -> MetaCommentJob:
+    """Создать задание, если по кабинету ещё не бежит другое.
+
+    Два параллельных задания по одному кабинету — это удвоенный темп запросов к
+    Meta ровно там, где темп и есть главный риск.
+    """
+    running = await db.scalar(
+        select(MetaCommentJob.id).where(
+            MetaCommentJob.account_id == account.id,
+            MetaCommentJob.status.in_(meta_comments.ACTIVE_JOB_STATUSES),
+        )
+    )
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "По этому кабинету уже выполняется задание по комментариям. "
+                "Дождитесь его завершения или отмените."
+            ),
+        )
+    if not account.connection_id:
+        raise HTTPException(status_code=422, detail="У кабинета нет подключения Meta")
+    job = MetaCommentJob(
+        workspace_id=current.workspace_id,
+        account_id=account.id,
+        connection_id=account.connection_id,
+        kind=kind,
+        status="queued",
+        scope=scope,
+        total=total,
+        created_by_id=current.id,
+    )
+    db.add(job)
+    await db.flush()
+    return job
+
+
+@router.get("/comments/jobs", response_model=Page)
+async def list_comment_jobs(
+    account_id: uuid.UUID | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> Page:
+    filters = [MetaCommentJob.workspace_id == current.workspace_id]
+    if account_id:
+        account = await _account(db, current, account_id)
+        filters.append(MetaCommentJob.account_id == account.id)
+    rows = list(
+        (
+            await db.execute(
+                select(MetaCommentJob)
+                .where(*filters)
+                .order_by(MetaCommentJob.created_at.desc())
+                .limit(limit)
+            )
+        ).scalars()
+    )
+    return Page(items=[_job_row(row) for row in rows], total=len(rows), limit=limit, offset=0)
+
+
+@router.get("/comments/jobs/{job_id}")
+async def read_comment_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> dict:
+    job = await db.get(MetaCommentJob, job_id)
+    if not job or job.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Задание не найдено")
+    await _account(db, current, job.account_id)
+    return _job_row(job)
+
+
+@router.post("/comments/jobs/{job_id}/cancel")
+async def cancel_comment_job(
+    job_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.comments")),
+) -> dict:
+    """Остановить задание.
+
+    Флаг, а не убийство задачи: движок смотрит на него перед каждым следующим
+    комментарием, поэтому текущий запрос доводится до конца и не остаётся
+    полусделанным.
+    """
+    job = await db.get(MetaCommentJob, job_id)
+    if not job or job.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Задание не найдено")
+    await _account(db, current, job.account_id)
+    if job.status not in meta_comments.ACTIVE_JOB_STATUSES:
+        return _job_row(job)
+    job.cancel_requested = True
+    if job.status == "queued":
+        # До воркера задание ещё не дошло — закрываем сразу, иначе оно
+        # осталось бы «в очереди» навсегда.
+        job.status = "cancelled"
+        job.finished_at = datetime.now(UTC)
+    await audit(
+        db, current, "meta.comments_cancel",
+        f"Отмена задания по комментариям ({meta_comments.ACTION_LABELS.get(job.kind, job.kind)})",
+        request=request, entity_id=str(job.id),
+    )
+    await db.commit()
+    return _job_row(job)
+
+
+def _job_row(job: MetaCommentJob) -> dict:
+    return {
+        "id": str(job.id),
+        "account_id": str(job.account_id),
+        "kind": job.kind,
+        "kind_label": meta_comments.ACTION_LABELS.get(job.kind, job.kind),
+        "status": job.status,
+        "total": job.total,
+        "processed": job.processed,
+        "succeeded": job.succeeded,
+        "failed": job.failed,
+        "cancel_requested": job.cancel_requested,
+        "error": job.error,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+    }
+
+
 async def _account(
     db: AsyncSession, current: User, account_id: uuid.UUID
 ) -> MetaAdAccount:
@@ -2342,7 +3616,7 @@ async def _account_client(
     connection = await db.get(IntegrationConnection, account.connection_id)
     if not connection:
         raise HTTPException(status_code=422, detail="У кабинета нет подключения Meta")
-    return client_for(connection), connection
+    return await client_for(connection, db), connection
 
 
 async def _apply_launch_action(
@@ -2614,13 +3888,24 @@ def _rule_row(rule: MetaRule, accounts: dict[uuid.UUID, str]) -> dict:
         "account_id": str(rule.account_id) if rule.account_id else None,
         "account_name": accounts.get(rule.account_id) if rule.account_id else None,
         "launch_id": str(rule.launch_id) if rule.launch_id else None,
+        "group_id": str(rule.group_id) if rule.group_id else None,
         "level": rule.level,
+        "scope_kind": rule.scope_kind,
+        "campaign_external_id": rule.campaign_external_id,
         "entity_status": rule.entity_status,
         "window": rule.window,
+        "schedule_kind": rule.schedule_kind,
+        "schedule": rule.schedule or {},
+        "convert_currency": rule.convert_currency,
+        "currency": rule.currency,
         "conditions": rule.conditions or [],
         "min_spend": float(rule.min_spend or 0),
         "action": rule.action,
         "action_value": float(rule.action_value) if rule.action_value is not None else None,
+        "action_sign": rule.action_sign,
+        "action_mode": rule.action_mode,
+        "action_max": float(rule.action_max) if rule.action_max is not None else None,
+        "budget_kind": rule.budget_kind,
         "is_enabled": rule.is_enabled,
         "frequency_minutes": rule.frequency_minutes,
         "cooldown_minutes": rule.cooldown_minutes,
@@ -2630,24 +3915,39 @@ def _rule_row(rule: MetaRule, accounts: dict[uuid.UUID, str]) -> dict:
 
 
 async def _connections(
-    db: AsyncSession, workspace_id: uuid.UUID
+    db: AsyncSession, current: User
 ) -> list[IntegrationConnection]:
+    filters = [
+        IntegrationConnection.workspace_id == current.workspace_id,
+        IntegrationConnection.kind == "meta",
+    ]
+    if not await has_full_access(db, current):
+        filters.append(
+            IntegrationConnection.owner_id.in_(await accessible_user_ids(db, current))
+        )
     return list(
         (
             await db.execute(
                 select(IntegrationConnection)
-                .where(
-                    IntegrationConnection.workspace_id == workspace_id,
-                    IntegrationConnection.kind == "meta",
-                )
-                .order_by(IntegrationConnection.name)
+                .where(*filters)
+                .order_by(IntegrationConnection.owner_id, IntegrationConnection.name)
             )
         ).scalars()
     )
 
 
+async def _can_edit_connection(
+    db: AsyncSession, current: User, connection: IntegrationConnection
+) -> bool:
+    return connection.owner_id == current.id or await has_full_access(db, current)
+
+
 async def _connection(
-    db: AsyncSession, current: User, connection_id: uuid.UUID
+    db: AsyncSession,
+    current: User,
+    connection_id: uuid.UUID,
+    *,
+    edit: bool = False,
 ) -> IntegrationConnection:
     connection = await db.get(IntegrationConnection, connection_id)
     if (
@@ -2656,6 +3956,15 @@ async def _connection(
         or connection.kind != "meta"
     ):
         raise HTTPException(status_code=404, detail="Подключение не найдено")
+    if not await has_full_access(db, current):
+        visible = await accessible_user_ids(db, current)
+        if connection.owner_id not in visible:
+            raise HTTPException(status_code=404, detail="Подключение не найдено")
+    if edit and not await _can_edit_connection(db, current, connection):
+        raise HTTPException(
+            status_code=403,
+            detail="Изменять подключение может только его владелец или администратор",
+        )
     return connection
 
 
@@ -2679,12 +3988,39 @@ async def _with_latest_runs(
     return [(connection, latest.get(connection.id)) for connection in connections]
 
 
-def client_for(connection: IntegrationConnection) -> MetaClient:
-    """Клиент этого подключения — с его токеном, прокси и user-agent."""
+async def client_for(
+    connection: IntegrationConnection, db: AsyncSession | None = None
+) -> MetaClient:
+    """Клиент этого подключения — с его токеном, прокси и user-agent.
+
+    Для токена сессии запросы идут через живую браузерную сессию подключения:
+    Meta принимает сессионный EAAB только из её контекста, обычный httpx получает
+    «Invalid request» (код 1). Сессия при необходимости восстанавливается с диска,
+    свежий токен сохраняется в подключение (db нужен для записи в БД).
+    """
+    token = decrypt_secret(connection.api_key_encrypted)
+    if connection.auth_method != "session":
+        return MetaClient(
+            token, proxy=connection.proxy_url, user_agent=connection.user_agent
+        )
+
+    async def store(fresh: str) -> None:
+        connection.api_key_encrypted = encrypt_secret(fresh)
+        if db is not None:
+            await db.commit()
+
+    access = await open_session_access(
+        None,
+        str(connection.id),
+        proxy_url=connection.proxy_url,
+        user_agent=connection.user_agent,
+        store_token=store if db is not None else None,
+    )
     return MetaClient(
-        decrypt_secret(connection.api_key_encrypted),
+        access["token"] or token,
         proxy=connection.proxy_url,
         user_agent=connection.user_agent,
+        transport=access["transport"],
     )
 
 
@@ -2694,14 +4030,48 @@ async def _verify_token(
     *,
     proxy: str | None = None,
     user_agent: str | None = None,
-) -> list[dict]:
+    session_id: str | None = None,
+    keep_client: bool = False,
+) -> list[dict] | tuple[list[dict], MetaClient]:
     """Токен принимается, только если через него реально видны кабинеты.
 
     Проверка «/me отвечает» ничего не доказывает: она проходит и с токеном без
     ads_read, а первая же синхронизация падает. Возвращаем сами кабинеты — их
     показывает мастер подключения на шаге выбора.
+
+    Для токена сессии запросы идут через живую браузерную сессию (session_id):
+    Meta принимает их только из её контекста — обычный httpx отдаёт «Invalid
+    request» (код 1).
     """
-    client = MetaClient(access_token, proxy=proxy, user_agent=user_agent)
+    transport = None
+    if session_id:
+        manager = get_session_manager()
+        transport = manager.live_transport(session_id)
+        if transport is None:
+            # Сессия могла умереть при перезапуске сервиса (браузеры в памяти
+            # не переживают рестарт). Если на диске есть сохранённая сессия —
+            # восстанавливаем её и проверяем токен из её контекста.
+            if (proxy or "").strip():
+                try:
+                    state = await manager.restore(
+                        session_id, proxy_url=proxy or "", user_agent=user_agent
+                    )
+                    if state and state.status in {"saved", "token"}:
+                        transport = manager.live_transport(session_id)
+                except Exception:
+                    transport = None
+        if transport is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Браузерная сессия закрыта (или не найдена на диске). "
+                    "Нажмите «Запустить браузер» ещё раз — Meta принимает токен "
+                    "сессии только из живой браузерной сессии."
+                ),
+            )
+    client = MetaClient(
+        access_token, proxy=proxy, user_agent=user_agent, transport=transport
+    )
     try:
         await client.check()
         accounts = await client.ad_accounts(business_id)
@@ -2716,7 +4086,9 @@ async def _verify_token(
                 "в Business Manager."
             ),
         )
-    return accounts
+    # Мастеру нужен тот же клиент дальше: он спрашивает у Meta сводку, и второй
+    # клиент означал бы второй вход в браузерную сессию.
+    return (accounts, client) if keep_client else accounts
 
 
 def _preview_row(row: dict) -> dict:
@@ -2760,6 +4132,7 @@ def _seed_accounts(
             MetaAdAccount(
                 workspace_id=connection.workspace_id,
                 connection_id=connection.id,
+                owner_id=connection.owner_id,
                 external_id=external_id,
                 name=str(row.get("name") or external_id)[:240],
                 account_status=account_status_label(row.get("account_status")),
@@ -2783,9 +4156,21 @@ async def _visible_accounts(
 ) -> list[MetaAdAccount]:
     filters = [MetaAdAccount.workspace_id == current.workspace_id]
     if not await has_full_access(db, current):
-        # Баер видит кабинеты, которые закреплены за ним или за его людьми.
-        # Кабинет без ответственного остаётся видимым только руководству.
-        filters.append(MetaAdAccount.owner_id.in_(await accessible_user_ids(db, current)))
+        # Основная область видимости теперь следует владельцу подключения. Ручное
+        # назначение ответственного сохраняем как второй разрешённый путь, чтобы
+        # существующие процессы передачи кабинетов продолжили работать.
+        visible_users = await accessible_user_ids(db, current)
+        visible_connections = select(IntegrationConnection.id).where(
+            IntegrationConnection.workspace_id == current.workspace_id,
+            IntegrationConnection.kind == "meta",
+            IntegrationConnection.owner_id.in_(visible_users),
+        )
+        filters.append(
+            or_(
+                MetaAdAccount.connection_id.in_(visible_connections),
+                MetaAdAccount.owner_id.in_(visible_users),
+            )
+        )
     if account_id:
         filters.append(MetaAdAccount.id == account_id)
     if owner_id:

@@ -952,6 +952,23 @@ html.celestial-data-loading body {
   white-space: nowrap;
 }
 
+/* Техническая подпись варианта (ID кабинета). Живёт второй строкой, чтобы не
+   растягивать подпись, но участвует в поиске наравне с названием. */
+.csel-option-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #9B9292;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.csel-option--on .csel-option-hint {
+  color: #C98080;
+}
+
 .csel-option[disabled] {
   color: #C4BBBB;
   cursor: default;
@@ -980,6 +997,282 @@ html.celestial-data-loading body {
   color: #9B9292;
   font-size: 12px;
   font-weight: 600;
+}
+
+/*
+ * Свой календарь для `<input type="date">`.
+ *
+ * Всплывающий календарь браузер рисует окном операционной системы — CSS его не
+ * берёт вовсе. Поэтому родной прячется, а на его место встаёт этот: те же
+ * цвета, шрифт и скругления, что у остальных выпадающих панелей CRM.
+ */
+/* Иконка родного календаря убрана: открывать по ней нечего, а место она
+   занимает. Свою рисуем фоном, чтобы поле не выглядело обычным текстовым. */
+input[type="date"]:not([data-native-date])::-webkit-calendar-picker-indicator {
+  display: none;
+}
+
+/* `!important` здесь по делу: поля дат в макетах несут инлайновый
+   `background: transparent`, а он бьёт любое правило из файла. Без метки
+   значок не появился бы ровно там, где он нужнее всего — в фильтрах. */
+input[type="date"][data-cdate-tamed] {
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none'%3E%3Crect x='3.5' y='5' width='17' height='16' rx='3' stroke='%239B9292' stroke-width='2'/%3E%3Cpath d='M3.5 10h17M8 3v4M16 3v4' stroke='%239B9292' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 10px center !important;
+  padding-right: 32px;
+}
+
+.cdate-panel {
+  position: fixed;
+  z-index: 2147482000;
+  width: 268px;
+  padding: 12px;
+  border: 1px solid #EBE6E6;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 44px rgba(30, 20, 20, .20);
+  font-family: 'Inter', -apple-system, 'Helvetica Neue', sans-serif;
+}
+
+.cdate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.cdate-title {
+  color: #2A2020;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cdate-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #EBE6E6;
+  border-radius: 9px;
+  background: #fff;
+  color: #6A6161;
+  cursor: pointer;
+}
+
+.cdate-nav:hover {
+  border-color: #D06060;
+  color: #B91414;
+}
+
+.cdate-week,
+.cdate-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.cdate-week {
+  margin-bottom: 4px;
+  color: #AFA6A6;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.cdate-day {
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #3A3030;
+  font: 600 12.5px 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.cdate-day:hover:not(:disabled) {
+  background: #F7F4F4;
+}
+
+/* Дни соседних месяцев показываем, чтобы неделя не рвалась, но приглушённо. */
+.cdate-day--outside {
+  color: #C9BFBF;
+}
+
+.cdate-day--today {
+  box-shadow: inset 0 0 0 1px #E0CFCF;
+}
+
+.cdate-day--on,
+.cdate-day--on:hover:not(:disabled) {
+  background: #B91414;
+  color: #fff;
+  font-weight: 700;
+}
+
+.cdate-day:disabled {
+  color: #DDD5D5;
+  cursor: default;
+}
+
+.cdate-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #F0EBEB;
+}
+
+.cdate-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #857D7D;
+  font: 700 11.5px 'Inter', sans-serif;
+  cursor: pointer;
+}
+
+.cdate-link:hover {
+  color: #3A3030;
+}
+
+.cdate-link--accent {
+  color: #B91414;
+}
+
+.cdate-link--accent:hover {
+  color: #8E0E0E;
+}
+
+/*
+ * Фильтр, который держит несколько значений (медиаборд).
+ *
+ * Один выбор на фильтр отвечал не на тот вопрос: «офферы вот этих трёх баеров»
+ * или «Аргентина и Австралия» приходилось смотреть тремя заходами. Выбранное
+ * лежит плашками прямо в поле, снять можно любую по крестику, а список —
+ * та же панель csel-*, что и у одиночных списков.
+ */
+.cmf {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  max-width: 460px;
+  padding: 5px 11px;
+  border: 1px solid #EBE6E6;
+  border-radius: 11px;
+  background: #fff;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.cmf:hover {
+  border-color: #DCD4D4;
+}
+
+.cmf[aria-expanded="true"] {
+  border-color: #D06060;
+}
+
+.cmf:focus-visible {
+  outline: 2px solid #E7B4B4;
+  outline-offset: 1px;
+}
+
+.cmf-label {
+  flex-shrink: 0;
+  color: #6A6161;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.cmf-empty {
+  color: #070505;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.cmf-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.cmf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 200px;
+  padding: 3px 4px 3px 8px;
+  border-radius: 8px;
+  background: #FBEDED;
+  color: #B91414;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.cmf-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmf-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #C77474;
+  cursor: pointer;
+}
+
+.cmf-x:hover {
+  background: #F2D6D6;
+  color: #8E0E0E;
+}
+
+.cmf-caret {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: #9B9292;
+}
+
+/* Квадрат отметки: у набора значений галочка справа читается хуже, чем
+   привычный флажок слева. */
+.cmf-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 17px;
+  height: 17px;
+  border: 1.5px solid #DCD4D4;
+  border-radius: 5px;
+  color: #fff;
+}
+
+.csel-option--on .cmf-box {
+  border-color: #B91414;
+  background: #B91414;
 }
 
 /* Стрелка у списков формы CapAlert — та же, что у остальных полей CRM. */
