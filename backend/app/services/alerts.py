@@ -13,15 +13,16 @@ Meta, а не из трекера напрямую: алерт должен го
 """
 
 import asyncio
+import logging
 import re
 import uuid
+from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from html import escape
 from zoneinfo import ZoneInfo
 
-from html import escape
-
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decrypt_secret
@@ -35,12 +36,12 @@ from app.models import (
     Offer,
     Status,
     TelegramBot,
-    User,
 )
 from app.services import alert_macros, telegram
 from app.services.alert_fields import format_value, media_values, window_range
 
 ZERO = Decimal("0")
+logger = logging.getLogger(__name__)
 # Сколько конверсий разбираем за один прогон. Ограничение спасает от хвоста:
 # после долгого простоя очередь может быть в тысячи строк, и вывалить их
 # все в Telegram разом — значит упереться в его лимиты.
@@ -51,6 +52,9 @@ SEND_PAUSE_SECONDS = 3.0
 # Всплеск депозитов не растягиваем на часы: сверх этого числа за один прогон
 # они уходят одним сообщением-списком.
 MAX_SINGLE_DEPOSITS = 5
+# За один прогон не забираем бесконечный хвост доставки. Остаток подхватит
+# следующий минутный тик; главное, что он уже надёжно лежит в alert_events.
+MAX_DELIVERIES_PER_RUN = 200
 # Потолок склеенного сообщения. У Telegram он 4096 символов, остаток берём на
 # заголовок и на то, что последняя строка не должна обрываться на полуслове.
 DIGEST_LIMIT = 3500
@@ -64,6 +68,7 @@ __all__ = [
     "cap_offer_ids",
     "cap_period_range",
     "cap_today",
+    "cap_metrics_many",
     "DEPOSIT_FIELDS",
     "DEPOSIT_OPERATORS",
     "deposit_matches",
@@ -238,6 +243,93 @@ async def cap_metrics(
         user_id=None if offer_ids else rule.user_id,
         offer_ids=offer_ids,
     )
+
+
+async def cap_metrics_many(
+    db: AsyncSession, rules: list[CapRule]
+) -> dict[uuid.UUID, dict[str, Decimal]]:
+    """Посчитать все CAP одним чтением Медиаборда вместо запроса на строку.
+
+    И список в интерфейсе, и минутный воркер раньше делали по одному SUM для
+    каждой капы. На общих лимитах каждый SUM перечитывал всю историю. Здесь
+    строки читаются один раз и раскладываются только по подходящим правилам.
+    """
+    if not rules:
+        return {}
+
+    bounds: dict[uuid.UUID, tuple[date, date]] = {}
+    offer_rules: dict[tuple[uuid.UUID, uuid.UUID], set[uuid.UUID]] = defaultdict(set)
+    user_rules: dict[tuple[uuid.UUID, uuid.UUID], set[uuid.UUID]] = defaultdict(set)
+    workspace_rules: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+    totals = {
+        rule.id: {
+            "sales": ZERO,
+            "leads": ZERO,
+            "installs": ZERO,
+            "spend": ZERO,
+        }
+        for rule in rules
+    }
+
+    for rule in rules:
+        first, last, _ = cap_period_range(rule.period, cap_today(rule.timezone))
+        bounds[rule.id] = (first, last)
+        offer_ids = cap_offer_ids(rule)
+        if offer_ids:
+            for offer_id in offer_ids:
+                offer_rules[(rule.workspace_id, offer_id)].add(rule.id)
+        elif rule.user_id:
+            user_rules[(rule.workspace_id, rule.user_id)].add(rule.id)
+        else:
+            workspace_rules[rule.workspace_id].add(rule.id)
+
+    first_date = min(first for first, _ in bounds.values())
+    last_date = max(last for _, last in bounds.values())
+    workspace_ids = {rule.workspace_id for rule in rules}
+    scope_filters = []
+    if offer_rules:
+        scope_filters.append(MediaRecord.offer_id.in_({key[1] for key in offer_rules}))
+    if user_rules:
+        scope_filters.append(MediaRecord.buyer_id.in_({key[1] for key in user_rules}))
+
+    query = select(
+        MediaRecord.workspace_id,
+        MediaRecord.record_date,
+        MediaRecord.buyer_id,
+        MediaRecord.offer_id,
+        MediaRecord.installs,
+        MediaRecord.registrations,
+        MediaRecord.ftd,
+        MediaRecord.spend_calculated,
+        MediaRecord.spend_override,
+    ).where(
+        MediaRecord.workspace_id.in_(workspace_ids),
+        MediaRecord.record_date >= first_date,
+        MediaRecord.record_date <= last_date,
+    )
+    # Если есть общая капа на воркспейс, ей нужны все строки. Иначе заранее
+    # отсекаем офферы и пользователей, которые не участвуют ни в одном правиле.
+    if not workspace_rules and scope_filters:
+        query = query.where(or_(*scope_filters))
+
+    for row in (await db.execute(query)).all():
+        candidates = set(workspace_rules.get(row.workspace_id, set()))
+        candidates.update(offer_rules.get((row.workspace_id, row.offer_id), set()))
+        candidates.update(user_rules.get((row.workspace_id, row.buyer_id), set()))
+        for rule_id in candidates:
+            first, last = bounds[rule_id]
+            if not first <= row.record_date <= last:
+                continue
+            values = totals[rule_id]
+            values["sales"] += Decimal(row.ftd or 0)
+            values["leads"] += Decimal(row.registrations or 0)
+            values["installs"] += Decimal(row.installs or 0)
+            values["spend"] += Decimal(
+                row.spend_override
+                if row.spend_override is not None
+                else row.spend_calculated or 0
+            )
+    return totals
 
 
 def schedule_label(code: str) -> str:
@@ -592,12 +684,19 @@ class AlertEngine:
         self._last_send[chat_id] = datetime.now(UTC)
 
     async def run(self) -> dict:
+        """Поставить новые события в outbox и доставить накопившиеся.
+
+        Проверка правил и HTTP-запросы разделены коммитом. Поэтому медленный
+        Telegram больше не держит транзакцию со всеми правилами, а падение
+        процесса после расчёта не теряет сообщение: оно останется pending.
+        """
         async with self._session_factory() as db:
             now = datetime.now(UTC)
             triggered = await self._run_alerts(db, now)
             caps = await self._run_caps(db, now)
             await db.commit()
-            return {"alerts": triggered, "caps": caps}
+        delivery = await self._dispatch_pending()
+        return {"alerts": triggered, "caps": caps, **delivery}
 
     async def _bot_token(self, db: AsyncSession, workspace_id: uuid.UUID) -> str | None:
         bot = await db.scalar(
@@ -610,60 +709,134 @@ class AlertEngine:
             return None
         return decrypt_secret(bot.token_encrypted)
 
-    async def _deliver(
+    async def _enqueue(
         self,
         db: AsyncSession,
         rule,
-        channel: AlertChannel | None,
         message: str,
         value: Decimal | None,
         kind: str,
-    ) -> None:
-        """Отправить и записать событие — даже если отправка не удалась."""
+        event_key: str,
+    ) -> bool:
+        """Один раз записать событие, которое отдельный шаг доставит в Telegram."""
+        exists = await db.scalar(
+            select(AlertEvent.id).where(AlertEvent.event_key == event_key)
+        )
+        if exists:
+            return False
         event = AlertEvent(
             workspace_id=rule.workspace_id,
             rule_name=rule.name,
             kind=kind,
             value=value,
             message=message,
+            event_key=event_key,
         )
         if isinstance(rule, CapRule):
             event.cap_rule_id = rule.id
         else:
             event.alert_rule_id = rule.id
         db.add(event)
+        return True
 
-        token = await self._bot_token(db, rule.workspace_id)
-        if not token:
-            event.error = "Бот Telegram не подключён"
-            return
-        if channel is None or channel.status != Status.active:
-            event.error = "Канал выключен или удалён"
-            return
+    @staticmethod
+    def _retry_at(event: AlertEvent, retry_after: int | None = None) -> datetime:
+        # 1, 2, 4, 8… минут, но не дольше часа. Для 429 точную паузу диктует
+        # Telegram; небольшой запас не даёт попасть в ту же секунду лимита.
+        seconds = retry_after + 2 if retry_after else min(60 * (2 ** max(event.attempts - 1, 0)), 3600)
+        return datetime.now(UTC) + timedelta(seconds=seconds)
+
+    async def _deliver_event(self, db: AsyncSession, event: AlertEvent) -> bool:
+        """Одна попытка outbox-события; любое исключение превращается в retry."""
+        event.attempts += 1
         try:
+            if event.cap_rule_id:
+                rule = await db.get(CapRule, event.cap_rule_id)
+            else:
+                rule = await db.get(AlertRule, event.alert_rule_id)
+            if not rule:
+                event.error = "Правило удалено до отправки"
+                event.next_attempt_at = self._retry_at(event)
+                return False
+
+            token = await self._bot_token(db, rule.workspace_id)
+            if not token:
+                event.error = "Бот Telegram не подключён"
+                event.next_attempt_at = self._retry_at(event)
+                return False
+            channel = await db.get(AlertChannel, rule.channel_id)
+            if channel is None or channel.status != Status.active:
+                event.error = "Канал выключен или удалён"
+                event.next_attempt_at = self._retry_at(event)
+                return False
             await self._pace(channel.chat_id)
             await telegram.send_message(
-                token, channel.chat_id, message,
+                token, channel.chat_id, event.message,
                 getattr(rule, "thread_id", None) or channel.thread_id,
             )
             event.delivered = True
+            event.delivered_at = datetime.now(UTC)
+            event.next_attempt_at = None
+            event.error = None
+            return True
         except telegram.TelegramError as exc:
             event.error = str(exc)
+            event.next_attempt_at = self._retry_at(event, exc.retry_after)
+            return False
+        except Exception as exc:  # noqa: BLE001 — outbox обязан пережить любой сбой
+            logger.exception("Alert delivery failed event=%s", event.id)
+            event.error = f"Внутренняя ошибка доставки: {type(exc).__name__}"
+            event.next_attempt_at = self._retry_at(event)
+            return False
+
+    async def _dispatch_pending(self) -> dict[str, int]:
+        """Разобрать due-события с блокировкой строк между воркерами."""
+        attempted = 0
+        delivered = 0
+        while attempted < MAX_DELIVERIES_PER_RUN:
+            async with self._session_factory() as db:
+                now = datetime.now(UTC)
+                event = await db.scalar(
+                    select(AlertEvent)
+                    .where(
+                        AlertEvent.event_key.is_not(None),
+                        AlertEvent.delivered.is_(False),
+                        or_(
+                            AlertEvent.next_attempt_at.is_(None),
+                            AlertEvent.next_attempt_at <= now,
+                        ),
+                    )
+                    .order_by(AlertEvent.created_at, AlertEvent.id)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+                if event is None:
+                    break
+                delivered += int(await self._deliver_event(db, event))
+                attempted += 1
+                await db.commit()
+        return {"delivery_attempts": attempted, "delivered": delivered}
 
     async def _run_alerts(self, db: AsyncSession, now: datetime) -> int:
         rules = list(
             (
                 await db.execute(
-                    select(AlertRule).where(AlertRule.status == Status.active)
+                    select(AlertRule)
+                    .where(AlertRule.status == Status.active)
+                    .with_for_update(skip_locked=True)
                 )
             ).scalars()
         )
         fired = 0
         for rule in rules:
-            if rule.kind == "report":
-                fired += await self._run_report(db, rule, now)
-            else:
-                fired += await self._run_deposit(db, rule, now)
+            try:
+                async with db.begin_nested():
+                    if rule.kind == "report":
+                        fired += await self._run_report(db, rule, now)
+                    else:
+                        fired += await self._run_deposit(db, rule, now)
+            except Exception:  # noqa: BLE001 — одно правило не блокирует остальные
+                logger.exception("Alert evaluation failed rule=%s", rule.id)
         return fired
 
     async def _run_deposit(self, db: AsyncSession, rule: AlertRule, now: datetime) -> int:
@@ -696,25 +869,25 @@ class AlertEngine:
         )
         if not rows:
             return 0
-        channel = await db.get(AlertChannel, rule.channel_id)
         matched = [row for row in rows if deposit_matches(rule, row)]
         fired = 0
         if len(matched) > MAX_SINGLE_DEPOSITS:
             # Всплеск: сотня отдельных сообщений упёрлась бы в лимит Telegram и
             # растянулась бы на пять минут, поэтому уходит один список.
-            await self._deliver(
-                db, rule, channel, digest_deposits(rule, matched),
+            queued = await self._enqueue(
+                db, rule, digest_deposits(rule, matched),
                 sum((row.revenue or Decimal(0) for row in matched), Decimal(0)),
                 "deposit",
+                f"deposit-digest:{rule.id}:{matched[0].id}:{matched[-1].id}",
             )
-            fired = len(matched)
+            fired = len(matched) if queued else 0
         else:
             for conversion in matched:
-                await self._deliver(
-                    db, rule, channel, render_deposit(rule, conversion),
-                    conversion.revenue, "deposit",
+                queued = await self._enqueue(
+                    db, rule, render_deposit(rule, conversion),
+                    conversion.revenue, "deposit", f"deposit:{rule.id}:{conversion.id}",
                 )
-                fired += 1
+                fired += int(queued)
         # Курсор двигаем по всем просмотренным, а не только по отправленным:
         # иначе конверсии, не прошедшие фильтр, перебирались бы вечно.
         rule.cursor_at = rows[-1].seen_at
@@ -727,13 +900,13 @@ class AlertEngine:
             return 0
         first, last = window_range(rule.window, rule_now(rule).date())
         metrics = await metrics_for(db, rule.workspace_id, first, last)
-        channel = await db.get(AlertChannel, rule.channel_id)
-        await self._deliver(
-            db, rule, channel, render_report(rule, metrics, first, last),
+        queued = await self._enqueue(
+            db, rule, render_report(rule, metrics, first, last),
             metrics.get("profit"), "report",
+            f"report:{rule.id}:{now.strftime('%Y%m%d%H%M')}",
         )
         rule.last_fired_at = now
-        return 1
+        return int(queued)
 
     async def _cap_offers(self, db: AsyncSession, rule: CapRule) -> list[str]:
         """Названия офферов капы — единственное, что уточняет сообщение."""
@@ -747,39 +920,47 @@ class AlertEngine:
     async def _run_caps(self, db: AsyncSession, now: datetime) -> int:
         rules = list(
             (
-                await db.execute(select(CapRule).where(CapRule.status == Status.active))
+                await db.execute(
+                    select(CapRule)
+                    .where(CapRule.status == Status.active)
+                    .with_for_update(skip_locked=True)
+                )
             ).scalars()
         )
+        metrics_by_rule = await cap_metrics_many(db, rules)
         fired = 0
         for rule in rules:
-            if rule.limit_value <= ZERO:
-                continue
-            first, last, period_key = cap_period_range(
-                rule.period, cap_today(rule.timezone)
-            )
-            # Новый период — счётчик порогов обнуляется, иначе после смены
-            # суток кап молчал бы до самого следующего рубежа.
-            if rule.notified_period != period_key:
-                rule.notified_period = period_key
-                rule.notified_percent = 0
-            values = await cap_metrics(db, rule, first, last)
-            value = values.get(rule.metric) or ZERO
-            percent = int(value / rule.limit_value * 100)
-            thresholds = normalize_thresholds(rule.notify_at)
-            reached = reached_threshold(thresholds, percent)
-            if reached <= rule.notified_percent:
-                continue
-            channel = await db.get(AlertChannel, rule.channel_id)
-            offers = await self._cap_offers(db, rule)
-            await self._deliver(
-                db,
-                rule,
-                channel,
-                render_cap_message(rule, value, percent, offers),
-                value,
-                "cap",
-            )
-            rule.notified_percent = reached
-            rule.last_fired_at = now
-            fired += 1
+            try:
+                async with db.begin_nested():
+                    if rule.limit_value <= ZERO:
+                        continue
+                    _first, _last, period_key = cap_period_range(
+                        rule.period, cap_today(rule.timezone)
+                    )
+                    # Новый период — счётчик порогов обнуляется, иначе после смены
+                    # суток кап молчал бы до самого следующего рубежа.
+                    if rule.notified_period != period_key:
+                        rule.notified_period = period_key
+                        rule.notified_percent = 0
+                    values = metrics_by_rule.get(rule.id) or {}
+                    value = values.get(rule.metric) or ZERO
+                    percent = int(value / rule.limit_value * 100)
+                    thresholds = normalize_thresholds(rule.notify_at)
+                    reached = reached_threshold(thresholds, percent)
+                    if reached <= rule.notified_percent:
+                        continue
+                    offers = await self._cap_offers(db, rule)
+                    queued = await self._enqueue(
+                        db,
+                        rule,
+                        render_cap_message(rule, value, percent, offers),
+                        value,
+                        "cap",
+                        f"cap:{rule.id}:{period_key}:{reached}",
+                    )
+                    rule.notified_percent = reached
+                    rule.last_fired_at = now
+                    fired += int(queued)
+            except Exception:  # noqa: BLE001 — одна капа не блокирует остальные
+                logger.exception("CAP evaluation failed rule=%s", rule.id)
         return fired

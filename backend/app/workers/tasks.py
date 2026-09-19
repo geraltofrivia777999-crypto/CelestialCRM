@@ -36,14 +36,14 @@ async def _run_sync(
     engine = KeitaroSyncEngine(WorkerSessionLocal)
     result = await engine.run(connection_id, run_id, mode, days)
     if result.get("status") == "success":
-        # Капы, депозитные уведомления и отчёты должны увидеть те же свежие
-        # цифры сразу после коммита Keitaro, а не ждать следующего минутного
-        # прохода общей очереди. Ошибка Telegram не должна превращать уже
-        # успешную синхронизацию в повторную загрузку статистики.
+        # После коммита Keitaro просим общую очередь проверить правила. Не
+        # отправляем Telegram из Keitaro-воркера: медленный чат не должен
+        # удерживать критичную синхронизацию статистики.
         try:
-            result["alerts"] = await AlertEngine(WorkerSessionLocal).run()
-        except Exception:  # noqa: BLE001 — синхронизация данных уже завершена
-            logger.exception("Immediate alerts after Keitaro sync failed")
+            run_alerts.delay()
+            result["alerts"] = {"queued": True}
+        except Exception:  # noqa: BLE001 — минутный тик остаётся подстраховкой
+            logger.exception("Failed to queue alerts after Keitaro sync")
     return result
 
 
@@ -222,8 +222,16 @@ def apply_due_budget_increases() -> dict:
     )
 
 
-@celery_app.task
-def run_alerts() -> dict:
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=5,
+    acks_late=True,
+)
+def run_alerts(self) -> dict:
     """Проверить правила «Утилит» и разослать уведомления — ТЗ 9."""
     if not settings.alerts_enabled:
         logger.info("Utilities alerts are disabled")
@@ -329,12 +337,12 @@ def poll_keitaro_conversions() -> int:
 async def _poll_keitaro_conversions_and_alert() -> int:
     count = await KeitaroSyncEngine(WorkerSessionLocal).poll_conversions()
     if count:
-        # Депозит уже записан — уведомление отправляем этим же критичным
-        # воркером, не оставляя его ждать периодической общей проверки.
+        # Депозит уже записан — сразу будим outbox, но сам Keitaro-воркер не
+        # блокируем Telegram-запросами.
         try:
-            await AlertEngine(WorkerSessionLocal).run()
+            run_alerts.delay()
         except Exception:  # noqa: BLE001 — следующий минутный тик подстрахует
-            logger.exception("Immediate alerts after conversion poll failed")
+            logger.exception("Failed to queue alerts after conversion poll")
     return count
 
 

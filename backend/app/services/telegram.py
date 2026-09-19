@@ -20,7 +20,11 @@ MAX_MESSAGE = 4000
 
 
 class TelegramError(RuntimeError):
-    pass
+    """Ошибка Bot API с подсказкой, когда безопасно повторить запрос."""
+
+    def __init__(self, message: str, *, retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def _url(token: str, method: str) -> str:
@@ -48,6 +52,15 @@ def _explain(response: httpx.Response) -> str:
     return description or f"Telegram ответил {response.status_code}"
 
 
+def _retry_after(response: httpx.Response) -> int | None:
+    """Telegram кладёт точную паузу для 429 в parameters.retry_after."""
+    try:
+        value = (response.json().get("parameters") or {}).get("retry_after")
+        return max(int(value), 1) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def check_token(token: str) -> dict:
     """Проверить токен и узнать имя бота."""
     try:
@@ -56,7 +69,10 @@ async def check_token(token: str) -> dict:
     except httpx.HTTPError as exc:
         raise TelegramError(f"Не удалось связаться с Telegram: {exc}") from exc
     if response.status_code != 200:
-        raise TelegramError(_explain(response))
+        raise TelegramError(
+            _explain(response),
+            retry_after=_retry_after(response) if response.status_code == 429 else None,
+        )
     result = response.json().get("result") or {}
     return {"username": result.get("username"), "id": result.get("id")}
 
@@ -137,7 +153,10 @@ async def send_message(
         payload.pop("parse_mode")
         response = await _post(token, payload)
     if response.status_code != 200:
-        raise TelegramError(_explain(response))
+        raise TelegramError(
+            _explain(response),
+            retry_after=_retry_after(response) if response.status_code == 429 else None,
+        )
 
 
 async def _post(token: str, payload: dict) -> httpx.Response:

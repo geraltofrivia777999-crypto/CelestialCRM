@@ -47,6 +47,7 @@ from app.services.alerts import (
     SCHEDULES,
     ZERO,
     cap_metrics,
+    cap_metrics_many,
     cap_offer_ids,
     cap_period_range,
     cap_today,
@@ -559,10 +560,13 @@ async def list_caps(
         ).scalars()
     )
     names = await _names(db, current.workspace_id)
+    metrics_by_rule = await cap_metrics_many(db, rows)
     items = []
     for row in rows:
         item = _cap_row(row, names)
-        item["progress"] = await _cap_progress(db, current.workspace_id, row)
+        item["progress"] = _cap_progress_values(
+            row, metrics_by_rule.get(row.id) or {}
+        )
         items.append(item)
     return {
         "items": items,
@@ -597,6 +601,11 @@ def _cap_values(payload: CapRuleIn) -> dict:
 async def _cap_progress(db: AsyncSession, workspace_id: uuid.UUID, rule: CapRule) -> dict:
     first, last, _ = cap_period_range(rule.period, cap_today(rule.timezone))
     values = await cap_metrics(db, rule, first, last)
+    return _cap_progress_values(rule, values)
+
+
+def _cap_progress_values(rule: CapRule, values: dict) -> dict:
+    first, last, _ = cap_period_range(rule.period, cap_today(rule.timezone))
     value = values.get(rule.metric) or ZERO
     percent = int(value / rule.limit_value * 100) if rule.limit_value else 0
     return {
@@ -729,6 +738,9 @@ async def list_events(
             "message": row.message,
             "delivered": row.delivered,
             "error": row.error,
+            "attempts": row.attempts,
+            "next_attempt_at": row.next_attempt_at,
+            "delivered_at": row.delivered_at,
             "created_at": row.created_at,
         }
         for row in rows

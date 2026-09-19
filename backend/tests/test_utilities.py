@@ -416,6 +416,55 @@ async def test_a_failed_delivery_is_written_down_with_its_reason(
     assert "исключён" in events[0]["error"]
 
 
+async def test_a_failed_delivery_is_retried_without_recreating_the_event(
+    utilities, monkeypatch
+) -> None:
+    calls = 0
+
+    async def flaky_send(token, chat_id, text, thread_id=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise telegram.TelegramError("Временная ошибка")
+
+    monkeypatch.setattr(telegram, "send_message", flaky_send)
+    with _admin_client() as client:
+        client.post(
+            "/api/v1/utilities/alerts",
+            json=_report(utilities, schedule="every_15"),
+        )
+
+    first = await AlertEngine(SessionLocal).run()
+    async with SessionLocal() as db:
+        event = await db.scalar(
+            select(AlertEvent).where(AlertEvent.workspace_id == utilities["workspace"])
+        )
+        assert event.delivered is False
+        assert event.attempts == 1
+        event.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+        await db.commit()
+
+    second = await AlertEngine(SessionLocal).run()
+    async with SessionLocal() as db:
+        events = list(
+            (
+                await db.execute(
+                    select(AlertEvent).where(
+                        AlertEvent.workspace_id == utilities["workspace"]
+                    )
+                )
+            ).scalars()
+        )
+
+    assert first["alerts"] == 1
+    assert second["alerts"] == 0
+    assert second["delivered"] == 1
+    assert calls == 2
+    assert len(events) == 1
+    assert events[0].delivered is True
+    assert events[0].attempts == 2
+
+
 async def test_the_journal_filters_by_delivery(utilities, monkeypatch) -> None:
     """Фильтр «отправлено / не ушло» отбирает записи на сервере.
 
@@ -505,15 +554,16 @@ async def test_a_new_period_lets_the_cap_warn_again(utilities, monkeypatch) -> N
     monkeypatch.setattr(telegram, "send_message", fake_send)
 
     with _admin_client() as client:
-        rule = client.post("/api/v1/utilities/caps", json=_cap(utilities)).json()
+        client.post("/api/v1/utilities/caps", json=_cap(utilities)).json()
     await AlertEngine(SessionLocal).run()
 
-    async with SessionLocal() as db:
-        stored = await db.get(CapRule, uuid.UUID(rule["id"]))
-        # Как будто предупреждение ушло вчера: счётчик порогов относится к
-        # прошлому периоду и должен обнулиться.
-        stored.notified_period = "2000-01-01/d"
-        await db.commit()
+    original_period_range = alerts.cap_period_range
+
+    def next_period(period, today):
+        first, last, _key = original_period_range(period, today)
+        return first, last, "next-period/d"
+
+    monkeypatch.setattr(alerts, "cap_period_range", next_period)
 
     await AlertEngine(SessionLocal).run()
     assert len(sent) == 2

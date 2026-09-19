@@ -2010,6 +2010,8 @@ class AlertEvent(UUIDMixin, Base):
     __tablename__ = "alert_events"
     __table_args__ = (
         Index("ix_alert_events_workspace_time", "workspace_id", "created_at"),
+        Index("ix_alert_events_pending", "delivered", "next_attempt_at"),
+        Index("uq_alert_events_event_key", "event_key", unique=True),
     )
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(
@@ -2025,10 +2027,17 @@ class AlertEvent(UUIDMixin, Base):
     kind: Mapped[str] = mapped_column(String(16), default="trigger")
     value: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     message: Mapped[str] = mapped_column(Text, default="")
+    # Идемпотентный ключ превращает журнал в надёжную очередь: один депозит,
+    # временной слот отчёта или порог CAP нельзя поставить в неё дважды, даже
+    # если планировщик и синхронизация Keitaro проснулись одновременно.
+    event_key: Mapped[str | None] = mapped_column(String(220))
     delivered: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
     error: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
