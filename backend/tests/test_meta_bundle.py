@@ -477,7 +477,7 @@ async def test_randomization_is_stable_for_the_same_launch(launch_setup) -> None
     # ±10 % от 50 долларов, в центах.
     assert 4500 <= int(sent[0]["daily_budget"]) <= 5500
     targeting = json.loads(sent[0]["targeting"])
-    assert 13 <= targeting["age_min"] <= targeting["age_max"] <= 65
+    assert 18 <= targeting["age_min"] <= targeting["age_max"] <= 65
     assert json.loads(sent[1]["targeting"])["age_min"] == targeting["age_min"]
 
 

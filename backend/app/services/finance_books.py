@@ -19,6 +19,7 @@ from app.models import (
     FinanceBookOffer,
     FinanceOfferTag,
     FinanceTagDay,
+    Offer,
 )
 from app.services.formulas import finance_day_metrics, plan_salary, q, salary_for_profit
 from app.services.formulas import salary_percent as ladder_percent
@@ -119,8 +120,23 @@ async def load_many(db: AsyncSession, books: list[FinanceBook]) -> dict[uuid.UUI
     for row in day_rows:
         by_book_days.setdefault(row.book_id, {})[row.day] = {
             "spend_buyer": row.spend_buyer,
+            "media_spend": row.media_spend or ZERO,
+            "manual_spend": row.manual_spend if row.media_spend is not None else (
+                row.manual_spend if row.manual_spend is not None else (row.spend_buyer or None)
+            ),
             "spend_agent": row.spend_agent,
             "costs": row.costs,
+        }
+    # ID оффера у партнёрки: в книге его не правят, но по нему сверяют строку с
+    # кабинетом ПП и понимают, почему депозиты приехали или не приехали.
+    source_ids = {row.source_offer_id for row in offer_rows if row.source_offer_id}
+    externals: dict[uuid.UUID, str | None] = {}
+    if source_ids:
+        externals = {
+            row.id: row.external_id
+            for row in (
+                await db.execute(select(Offer).where(Offer.id.in_(source_ids)))
+            ).scalars()
         }
     by_book_offers: dict[uuid.UUID, list[dict]] = {}
     for row in offer_rows:
@@ -131,8 +147,10 @@ async def load_many(db: AsyncSession, books: list[FinanceBook]) -> dict[uuid.UUI
                 "partner": row.partner,
                 "geo": row.geo,
                 "source_offer_id": str(row.source_offer_id) if row.source_offer_id else None,
+                "external_id": externals.get(row.source_offer_id),
                 "rate": row.rate,
                 "rate_currency": row.rate_currency or "USD",
+                "locked_fields": row.locked_fields or [],
                 "tags": by_offer.get(row.id, []),
             }
         )
@@ -247,6 +265,9 @@ async def profits(
     """
     if not buyer_ids:
         return {}
+    from app.services.finance_spend import refresh_period
+
+    await refresh_period(db, workspace_id, buyer_ids, year, month)
     books = list(
         (
             await db.execute(
@@ -286,6 +307,11 @@ async def workspace_profits(
     все команды сразу. Части те же, что и везде: по книге на тир, чтобы процент
     и ступень считались так же, как в самих Финансах.
     """
+    from app.models import User
+    from app.services.finance_spend import refresh_period
+
+    buyers = set(await db.scalars(select(User.id).where(User.workspace_id == workspace_id)))
+    await refresh_period(db, workspace_id, buyers, year, month)
     books = list(
         (
             await db.execute(
@@ -310,3 +336,49 @@ async def workspace_profits(
         }
         for book in books
     ]
+
+
+async def recalculate_carry_chain(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    buyer_id: uuid.UUID,
+    tier: str,
+) -> None:
+    """Пересчитать сохранённый входящий долг всех месяцев этой таблицы.
+
+    Цепочка своя у каждого тира: минус Tier2/3 не гасится прибылью Tier1,
+    потому что и зарплата по ним считается отдельно.
+
+    Строки блокируются до конца транзакции, чтобы параллельные правки двух
+    месяцев не записали разные версии одной цепочки. SQLite в тестах блокировку
+    игнорирует, PostgreSQL на VPS применяет её.
+    """
+    books = list(
+        (
+            await db.execute(
+                select(FinanceBook)
+                .where(
+                    FinanceBook.workspace_id == workspace_id,
+                    FinanceBook.buyer_id == buyer_id,
+                    FinanceBook.tier == tier,
+                )
+                .order_by(FinanceBook.year, FinanceBook.month)
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    if not books:
+        return
+
+    # Первый уже существовавший ручной минус остаётся начальным остатком:
+    # так обновление не потеряет данные, которые финансист ввёл до автоматики.
+    loaded_books = await load_many(db, books)
+    carry = max(q(books[0].prev_minus or ZERO), ZERO)
+    for book in books:
+        book.prev_minus = carry
+        book_payload = loaded_books[book.id]
+        book_payload["prev_minus"] = carry
+        month_totals = totals(
+            book_payload, calendar.monthrange(book.year, book.month)[1]
+        )
+        carry = month_totals["total"]["next_minus"]

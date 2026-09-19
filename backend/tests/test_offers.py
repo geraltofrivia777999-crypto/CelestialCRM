@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -19,6 +19,7 @@ from app.models import (
     OfferStatus,
     Partner,
     Role,
+    Status,
     User,
 )
 from app.services.geo import normalize_geo
@@ -366,6 +367,9 @@ async def test_the_offer_reference_lists_keitaro_geos_and_partners(offer_rows) -
     payload = reference.json()
     # "INDIA" лежит в базе как есть — в списке она уже кодом.
     assert "IN" in payload["geos"] and "DE" in payload["geos"]
+    # В форме — все страны, даже те, по которым ещё не было ни одного оффера.
+    countries = {row["code"]: row for row in payload["countries"]}
+    assert countries["VE"]["ru"] == "Венесуэла"
     assert "test" not in payload["statuses"]
     assert payload["statuses"][0] == "active"
     assert isinstance(payload["partners"], list)
@@ -408,6 +412,21 @@ async def test_mediaboard_offers_drop_the_offers_group(offer_rows) -> None:
     assert "AAA Offers Module In Group" not in names
     assert "BBB Offers Module In Group Lowercase" not in names
     assert "CCC Offers Module Out Of Group" in names
+
+
+async def test_mediaboard_offers_hide_removed_keitaro_rows(offer_rows) -> None:
+    """Удалённый в Keitaro оффер хранится для истории, но в фильтр не попадает."""
+    ids, _ = offer_rows
+    async with SessionLocal() as db:
+        offer = await db.get(Offer, uuid.UUID(ids[OUT_OF_GROUP]))
+        offer.keitaro_state = Status.inactive
+        await db.commit()
+
+    with _admin_client() as client:
+        response = client.get("/api/v1/offers?exclude_offers_group=true&limit=500")
+
+    assert response.status_code == 200
+    assert "CCC Offers Module Out Of Group" not in _names(response.json())
 
 
 async def test_offers_narrow_to_what_the_buyer_was_given(offer_rows) -> None:
@@ -783,12 +802,18 @@ async def test_the_dashboard_widget_shows_the_offers_section(database) -> None:
 
     try:
         with _admin_client() as client:
-            names = {
-                row["name"]
-                for row in client.get(
-                    "/api/v1/dashboard?date_from=2019-01-01&date_to=2019-01-02"
-                ).json()["working_offers"]
-            }
+            dashboard = client.get(
+                "/api/v1/dashboard?date_from=2019-01-01&date_to=2019-01-02"
+            ).json()
+            names = {row["name"] for row in dashboard["working_offers"]}
+        async with SessionLocal() as db:
+            expected_total = await db.scalar(
+                select(func.count()).select_from(Offer).where(
+                    Offer.workspace_id == admin.workspace_id,
+                    Offer.connection_id.is_(None),
+                )
+            )
+        assert dashboard["working_offers_total"] == expected_total
         assert f"Manual {suffix}" in names
         # Строки трекера в раздел не входят — не должно их быть и в виджете.
         assert f"Tracked {suffix}" not in names
@@ -814,3 +839,141 @@ async def test_the_dashboard_widget_shows_the_offers_section(database) -> None:
                 delete(Offer).where(Offer.name.in_([f"Manual {suffix}", f"Tracked {suffix}"]))
             )
             await db.commit()
+
+
+async def test_widget_shows_a_lead_the_offers_of_his_buyers(database) -> None:
+    """Раздел и виджет обязаны показывать одно и то же.
+
+    Оффер сначала отдают тимлиду, тот раздаёт его баерам. По одному своему id
+    тимлид не видел в виджете офферы, которые сам же раздал, — а в разделе они
+    есть, и список на дашборде выглядел неполным.
+    """
+    from app.api.routers.analytics import _offers_widget
+    from app.models import Offer, OfferBuyer, OfferStatus, Role, User, UserParent
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        buyer_role = await db.scalar(select(Role).where(Role.name == "Buyer"))
+        lead_role = await db.scalar(select(Role).where(Role.name == "Team Lead"))
+        lead = User(workspace_id=admin.workspace_id, role_id=lead_role.id,
+                    name="Виджет ТЛ", login="widget-lead",
+                    password_hash=hash_password("widget-password"))
+        db.add(lead)
+        await db.flush()
+        buyer = User(workspace_id=admin.workspace_id, role_id=buyer_role.id,
+                     name="Виджет баер", login="widget-buyer",
+                     password_hash=hash_password("widget-password"))
+        offer = Offer(workspace_id=admin.workspace_id, name="Оффер баера",
+                      status=OfferStatus.active)
+        db.add_all([buyer, offer])
+        await db.flush()
+        # Иерархия живёт отдельной таблицей: баер подчинён тимлиду.
+        db.add(UserParent(user_id=buyer.id, parent_id=lead.id))
+        db.add(OfferBuyer(offer_id=offer.id, user_id=buyer.id))
+        await db.commit()
+
+        seen = await _offers_widget(db, lead)
+
+        assert offer.id in seen, "тимлид должен видеть оффер своего баера"
+
+        await db.delete(offer)
+        await db.delete(buyer)
+        await db.delete(lead)
+        await db.commit()
+
+
+async def test_a_lead_assigns_buyers_but_does_not_create_offers(database) -> None:
+    """Тимлид раздаёт выданное ему, а справочник ведёт администратор.
+
+    Раньше это было одно право `offers.manage`: раздача баерам тянула за собой
+    и кнопку «Новый оффер», хотя заводить офферы тимлид не должен.
+    """
+    from app.models import Offer, OfferLead, OfferStatus, Permission, Role, User
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        codes = ["offers.view", "offers.assign", "team.view", "dashboard.view"]
+        rights = list(
+            (await db.execute(select(Permission).where(Permission.code.in_(codes)))).scalars()
+        )
+        assert {right.code for right in rights} == set(codes), "право offers.assign не заведено"
+        role = Role(workspace_id=admin.workspace_id, name="ТЛ без справочника",
+                    permissions=rights)
+        db.add(role)
+        await db.flush()
+        lead = User(workspace_id=admin.workspace_id, role_id=role.id,
+                    name="Раздающий ТЛ", login="assign-lead",
+                    password_hash=hash_password("assign-password"))
+        offer = Offer(workspace_id=admin.workspace_id, name="Оффер тимлида",
+                      status=OfferStatus.active)
+        db.add_all([lead, offer])
+        await db.flush()
+        db.add(OfferLead(offer_id=offer.id, user_id=lead.id))
+        await db.commit()
+        offer_id, lead_id, role_id = offer.id, lead.id, role.id
+
+    with TestClient(app) as client:
+        client.post("/api/v1/auth/login",
+                    json={"login": "assign-lead", "password": "assign-password"})
+        created = client.post("/api/v1/offers", json={"name": "Свой оффер"})
+        assert created.status_code == 403, "тимлид не должен заводить офферы"
+        assigned = client.put(
+            f"/api/v1/offers/{offer_id}/buyers", json={"buyer_ids": []}
+        )
+        assert assigned.status_code == 200, assigned.text
+        leads = client.put(f"/api/v1/offers/{offer_id}/leads", json={"lead_ids": []})
+        # Владельца оффера меняет тот, кто ведёт справочник.
+        assert leads.status_code == 403
+
+    async with SessionLocal() as db:
+        await db.delete(await db.get(Offer, offer_id))
+        await db.delete(await db.get(User, lead_id))
+        await db.delete(await db.get(Role, role_id))
+        await db.commit()
+
+
+async def test_the_board_offers_are_listed_for_a_buyer(database) -> None:
+    """Медиаборд показывает трекерные офферы своей команды, но не чужой."""
+    from app.models import IntegrationConnection, Offer, OfferStatus, Role, User
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        connection = IntegrationConnection(
+            workspace_id=admin.workspace_id, name="Трекер доски",
+            base_url="https://tracker.example",
+            api_key_encrypted=encrypt_secret("board-key"), timezone="UTC",
+        )
+        db.add(connection)
+        await db.flush()
+        offer = Offer(workspace_id=admin.workspace_id, connection_id=connection.id,
+                      name="Трекерный оффер", external_id="board-1",
+                      group_name="BOARD TEAM", status=OfferStatus.active)
+        foreign_offer = Offer(workspace_id=admin.workspace_id, connection_id=connection.id,
+                              name="Чужой трекерный оффер", external_id="board-2",
+                              group_name="FOREIGN TEAM", status=OfferStatus.active)
+        buyer_role = await db.scalar(select(Role).where(Role.name == "Buyer"))
+        buyer = User(workspace_id=admin.workspace_id, role_id=buyer_role.id,
+                     name="Баер доски", login="board-buyer",
+                     password_hash=hash_password("board-password"),
+                     keitaro_offer_group="board team")
+        db.add_all([offer, foreign_offer, buyer])
+        await db.commit()
+        offer_id, foreign_offer_id = offer.id, foreign_offer.id
+        buyer_id, connection_id = buyer.id, connection.id
+
+    with TestClient(app) as client:
+        client.post("/api/v1/auth/login",
+                    json={"login": "board-buyer", "password": "board-password"})
+        answer = client.get("/api/v1/offers?exclude_offers_group=true&scope_offers=true")
+
+    assert answer.status_code == 200, answer.text
+    names = [row["name"] for row in answer.json()["items"]]
+    assert "Трекерный оффер" in names
+    assert "Чужой трекерный оффер" not in names
+
+    async with SessionLocal() as db:
+        await db.delete(await db.get(Offer, offer_id))
+        await db.delete(await db.get(Offer, foreign_offer_id))
+        await db.delete(await db.get(User, buyer_id))
+        await db.delete(await db.get(IntegrationConnection, connection_id))
+        await db.commit()

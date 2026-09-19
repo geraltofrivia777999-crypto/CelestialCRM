@@ -31,7 +31,7 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -42,6 +42,7 @@ from app.models import (
     Offer,
     PartnerPendingTag,
 )
+from app.services import finance_spend
 from app.services.country_tiers import tier_for, tier_map
 
 # Причины, по которым факт не лёг в книгу.
@@ -99,50 +100,9 @@ async def _book_for(
     )
     if book:
         return book
-    book = FinanceBook(
-        workspace_id=offer.workspace_id,
-        buyer_id=buyer_id,
-        year=year,
-        month=month,
-        tier=tier,
+    return await finance_spend.create_book_from_previous(
+        db, offer.workspace_id, buyer_id, year, month, tier
     )
-    db.add(book)
-    await db.flush()
-    previous = date(year - 1, 12, 1) if month == 1 else date(year, month - 1, 1)
-    previous_rows = list(
-        (
-            await db.execute(
-                select(FinanceBookOffer)
-                .join(FinanceBook, FinanceBook.id == FinanceBookOffer.book_id)
-                .where(
-                    FinanceBook.workspace_id == offer.workspace_id,
-                    FinanceBook.buyer_id == buyer_id,
-                    FinanceBook.tier == tier,
-                    and_(FinanceBook.year == previous.year, FinanceBook.month == previous.month),
-                )
-            )
-        ).scalars()
-    )
-    for row in previous_rows:
-        copy = FinanceBookOffer(
-            book_id=book.id,
-            position=row.position,
-            name=row.name,
-            partner=row.partner,
-            geo=row.geo,
-            rate=row.rate,
-            rate_currency=row.rate_currency,
-            source_offer_id=row.source_offer_id,
-        )
-        db.add(copy)
-        await db.flush()
-        for tag in (
-            await db.execute(
-                select(FinanceOfferTag).where(FinanceOfferTag.offer_id == row.id)
-            )
-        ).scalars():
-            db.add(FinanceOfferTag(offer_id=copy.id, position=tag.position, name=tag.name))
-    return book
 
 
 async def _offer_row(db: AsyncSession, book: FinanceBook, offer: Offer) -> FinanceBookOffer:
@@ -255,35 +215,32 @@ async def resolve_cell(
     (книги и так переносятся с месяца на месяц).
     """
     key = normalize_tag(tag)
-    cache_key = (offer.id, key)
+    cache_key = (offer.id, key, day.year, day.month)
     if cache_key in cache:
-        buyer_id = cache[cache_key]
-        if buyer_id is None:
-            return None, PENDING_NO_BUYER
-    else:
-        rows = await tag_rows_for(db, workspace_id, offer, key)
-        if not rows:
-            cache[cache_key] = None
-            return None, PENDING_NO_BUYER
-        exact = [
-            pair for pair in rows
-            if pair[0].year == day.year and pair[0].month == day.month
-        ]
-        if exact:
-            owners = {pair[0].buyer_id for pair in exact}
-            if len(owners) > 1:
-                return None, PENDING_AMBIGUOUS
-            cache[cache_key] = exact[0][0].buyer_id
-            return exact[0][1], ""
-        owners = {pair[0].buyer_id for pair in rows}
-        if len(owners) > 1:
+        return cache[cache_key]
+    rows = await tag_rows_for(db, workspace_id, offer, key)
+    if not rows:
+        cache[cache_key] = (None, PENDING_NO_BUYER)
+        return cache[cache_key]
+    exact = [pair for pair in rows if pair[0].year == day.year and pair[0].month == day.month]
+    candidates = exact or rows
+    if len({book.buyer_id for book, _ in candidates}) > 1:
+        return None, PENDING_AMBIGUOUS
+    if exact:
+        # A legacy copy in another tier must not receive the first day while
+        # subsequent days go to the GEO tier. Cache the actual cell per month.
+        expected = tier_for(offer.geo, tiers)
+        preferred = [pair for pair in exact if pair[0].tier == expected]
+        targets = preferred or exact
+        if len(targets) != 1:
             return None, PENDING_AMBIGUOUS
-        buyer_id = rows[0][0].buyer_id
-        cache[cache_key] = buyer_id
-    # Строки за месяц факта нет — заводим её у того же баера.
-    book = await _book_for(db, offer, buyer_id, day, tiers)
-    offer_row = await _offer_row(db, book, offer)
-    return await _tag_row(db, offer_row, tag), ""
+        result = (targets[0][1], "")
+    else:
+        book = await _book_for(db, offer, candidates[0][0].buyer_id, day, tiers)
+        offer_row = await _offer_row(db, book, offer)
+        result = (await _tag_row(db, offer_row, tag), "")
+    cache[cache_key] = result
+    return result
 
 
 async def _remember_pending(
@@ -353,12 +310,14 @@ async def distribute_deposits(
     `external_id` (поле «ID» на карточке оффера): привязка строится сама, без
     ручного маппинга.
     """
+    await finance_spend.lock_workspace(db, workspace_id)
     upserted = 0
     pending = 0
     skipped = 0
     reasons: list[str] = []
     offers: dict[str, Offer | None] = {}
-    buyers: dict[str, tuple[uuid.UUID | None, str]] = {}
+    cells: dict = {}
+    changed_offers: set[uuid.UUID] = set()
     tiers = await tier_map(db, workspace_id)
     by_external: dict[str, Offer | None] = {}
 
@@ -366,6 +325,11 @@ async def distribute_deposits(
     # даёт по строке на каждый день. Копим со счётчиком, иначе человек читает
     # одно и то же предложение подряд и не видит за ним остальных причин.
     counted: dict[str, int] = {}
+    # Что уже записали в этот прогон: сервис присылает по строке на (дата,
+    # оффер, тег), и повтор той же тройки означает, что число в книге зависит
+    # от порядка фактов. Молча взять последнее — значит показать цифру, которой
+    # нет ни в одном отчёте партнёрки, поэтому такие случаи считаем и называем.
+    written: dict[tuple[date, uuid.UUID, str], Decimal] = {}
 
     def note(text: str) -> None:
         counted[text] = counted.get(text, 0) + 1
@@ -426,7 +390,7 @@ async def distribute_deposits(
             note(f"{day}: трафик без тега по офферу «{offer.name}»")
             continue
         tag_row, reason = await resolve_cell(
-            db, workspace_id, offer, tag_raw, day, tiers, buyers
+            db, workspace_id, offer, tag_raw, day, tiers, cells
         )
         if not tag_row:
             pending += 1
@@ -441,6 +405,14 @@ async def distribute_deposits(
                 )
             )
             continue
+        changed_offers.add(tag_row.offer_id)
+        seen_key = (day, offer.id, normalize_tag(tag_raw))
+        if seen_key in written and written[seen_key] != deposits:
+            note(
+                f"{day}: сервис прислал по тегу «{tag_raw}» несколько разных "
+                f"значений ({written[seen_key]} и {deposits}) — записано последнее"
+            )
+        written[seen_key] = deposits
         value = await db.scalar(
             select(FinanceTagDay).where(
                 FinanceTagDay.tag_id == tag_row.id, FinanceTagDay.day == day.day
@@ -454,6 +426,14 @@ async def distribute_deposits(
         # Тег разобран — из очереди неразобранных его убираем.
         await clear_pending(db, workspace_id, normalize_tag(tag_raw))
         upserted += 1
+    if changed_offers:
+        from app.services.finance_books import recalculate_carry_chain
+
+        affected = (await db.execute(select(FinanceBook.buyer_id, FinanceBook.tier)
+            .join(FinanceBookOffer, FinanceBookOffer.book_id == FinanceBook.id)
+            .where(FinanceBookOffer.id.in_(changed_offers)).distinct())).all()
+        for buyer_id, tier in sorted(affected, key=lambda item: (str(item[0]), item[1])):
+            await recalculate_carry_chain(db, workspace_id, buyer_id, tier)
     reasons = [
         text if count == 1 else f"{text} (фактов: {count})"
         for text, count in sorted(

@@ -1653,3 +1653,68 @@ async def test_a_connection_without_an_account_still_shows_up(meta_connection) -
     assert placeholder is not None
     assert placeholder["connection_id"] == str(meta_connection["connection"])
     assert placeholder["ad_accounts"] == 0
+
+
+async def test_error_diagnostics_redact_token_and_keep_subcode():
+    token = "test-secret-token-value"
+    def handler(request):
+        return httpx.Response(400, json={"error": {
+            "code": 10, "error_subcode": 123, "fbtrace_id": "trace-1",
+            "message": f"Denied {token} access_token=another-secret",
+            "access_token": token,
+        }})
+    client = MetaClient(token, transport=httpx.MockTransport(handler))
+    with pytest.raises(MetaError) as raised:
+        await client.check()
+    assert raised.value.details["error_subcode"] == 123
+    assert raised.value.details["fbtrace_id"] == "trace-1"
+    assert token not in str(raised.value.details)
+    assert "another-secret" not in str(raised.value.details)
+    assert token not in str(raised.value)
+
+
+async def test_a_campaign_without_spend_still_shows_in_the_overview(meta_connection) -> None:
+    """Свежая кампания видна в разделе до первой открутки.
+
+    Строки уровня собирались только из статистики, поэтому объект, у которого
+    показов ещё не было — только что созданный или стоящий на модерации, — в
+    списке не появлялся: в Ads Manager есть, в CRM нет, и правило на него не
+    поставить. Синхронизация при этом отработала и запись завела.
+    """
+    await _run_sync(meta_connection["connection"])
+    async with SessionLocal() as db:
+        account = await db.scalar(
+            select(MetaAdAccount).where(
+                MetaAdAccount.connection_id == meta_connection["connection"]
+            )
+        )
+        db.add(
+            MetaEntity(
+                workspace_id=meta_connection["workspace"],
+                connection_id=meta_connection["connection"],
+                account_id=account.id,
+                level="campaign",
+                external_id="120249472705360199",
+                name="Свежая кампания",
+                effective_status="IN_PROCESS",
+                objective="OUTCOME_TRAFFIC",
+            )
+        )
+        await db.commit()
+
+    window = "?date_from=2026-07-01&date_to=2026-07-01"
+    with _admin_client() as client:
+        payload = client.get(f"/api/v1/meta/overview/levels/campaigns{window}").json()
+        found = client.get(
+            f"/api/v1/meta/overview/levels/campaigns{window}&search=120249472705360199"
+        ).json()
+
+    rows = {row["id"]: row for row in payload["rows"]}
+    assert "120249472705360199" in rows
+    fresh = rows["120249472705360199"]
+    assert fresh["name"] == "Свежая кампания"
+    assert fresh["spend"] == 0
+    # Статус приезжает из справочника: по нему и видно, что объект на модерации.
+    assert fresh["status"] == "IN_PROCESS"
+    # Поиск по метовскому ID тоже её находит.
+    assert [row["id"] for row in found["rows"]] == ["120249472705360199"]

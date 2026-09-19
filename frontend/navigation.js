@@ -195,8 +195,10 @@
       '<h1 style="font:700 20px \'Alumni Sans\',Inter,sans-serif;color:#070505">Раздел недоступен</h1>' +
       '<p style="margin-top:10px;font-size:13px;color:#6A6161;line-height:1.55">У вашей роли нет прав на раздел «' +
       escapeHtml(rule.title) + '». Обратитесь к администратору, если доступ нужен для работы.</p>' +
-      '<a href="/" style="display:inline-block;margin-top:20px;height:40px;line-height:40px;padding:0 20px;' +
-      "background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;border-radius:10px;font:600 14px Alumni Sans,Inter,sans-serif;text-decoration:none\">" +
+      '<a href="/" style="display:inline-block;margin-top:20px;height:40px;line-height:40px;padding:0 16px;' +
+      "background:#B91414;color:#fff;border-radius:10px;font-family:Inter,-apple-system,Helvetica Neue,sans-serif;" +
+      "font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;" +
+      "box-shadow:0 8px 18px rgba(185,20,20,.24);text-decoration:none\">" +
       "На дашборд</a></section>";
   }
 
@@ -215,6 +217,41 @@
       element.style.display = hasPermission(user, rule.permission)
         ? element.dataset.shellDisplay
         : "none";
+    });
+    hideEmptyNavSections();
+  }
+
+  /* Подпись раздела меню («Основное», «Рабочее») без единого видимого пункта
+     висела пустым заголовком — у дизайнера над «Задачами» стояло «Основное».
+     Подпись — это div без иконки и без правила страницы; пункты раздела идут
+     за ней до следующей подписи. */
+  function hideEmptyNavSections() {
+    document.querySelectorAll("nav").forEach(function (nav) {
+      var label = null;
+      var visible = 0;
+      function settle() {
+        if (!label) return;
+        if (label.dataset.shellDisplay === undefined) {
+          label.dataset.shellDisplay = label.style.display || "";
+        }
+        label.style.display = visible ? label.dataset.shellDisplay : "none";
+      }
+      Array.prototype.forEach.call(nav.children, function (child) {
+        var name = pageName(child);
+        var rule = name && pageRules.find(function (item) { return item.title === name; });
+        if (rule) {
+          if (child.style.display !== "none") visible += 1;
+          return;
+        }
+        var isLabel = child.tagName === "DIV" && !child.querySelector("svg") &&
+          !child.children.length && (child.textContent || "").trim();
+        if (isLabel) {
+          settle();
+          label = child;
+          visible = 0;
+        }
+      });
+      settle();
     });
   }
 
@@ -305,12 +342,14 @@
       ".celestial-dialog-input:focus{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.1)}" +
       ".celestial-dialog-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:22px;" +
       "flex-wrap:wrap}" +
-      ".celestial-dialog-button{min-height:42px;padding:0 18px;border:1px solid #E8E2E2;" +
-      "border-radius:12px;background:#fff;color:#3A3030;font:700 13px Inter,sans-serif;cursor:pointer}" +
+      ".celestial-dialog-button{min-height:40px;padding:0 16px;border:1px solid #E8E2E2;" +
+      "border-radius:10px;background:#fff;color:#3A3030;font:700 12px Inter,sans-serif;cursor:pointer}" +
       ".celestial-dialog-button:hover{background:#F7F4F4}" +
       ".celestial-dialog-button--primary{border:0;background:#070505;color:#fff}" +
       ".celestial-dialog-button--primary:hover{background:#231A1A}" +
-      ".celestial-dialog-button--danger{background:#B91414;box-shadow:0 8px 18px rgba(185,20,20,.24)}" +
+      ".celestial-dialog-button--danger{border:0;background:#B91414;color:#fff;font-size:12px;" +
+      "font-weight:600;text-transform:uppercase;letter-spacing:.02em;" +
+      "box-shadow:0 8px 18px rgba(185,20,20,.24)}" +
       ".celestial-dialog-button--danger:hover{background:#A21212}" +
       "@keyframes celestial-dialog-in{from{opacity:0}to{opacity:1}}" +
       "@media(prefers-reduced-motion:reduce){.celestial-dialog-scrim{animation:none}}" +
@@ -640,8 +679,7 @@
         ? '<button type="button" data-profile-settings style="height:38px;border:1px solid #EBE6E6;background:#fff;' +
           'border-radius:9px;padding:0 14px;font:700 12px Inter,sans-serif;color:#B91414;cursor:pointer">Настройки</button>'
         : "") +
-      '<button type="button" data-profile-close style="height:38px;border:0;background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;' +
-      'border-radius:9px;padding:0 17px;font:700 12px Inter,sans-serif;cursor:pointer">Закрыть</button></div></section>';
+      '<button type="button" data-profile-close style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:Inter,-apple-system,Helvetica Neue,sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Закрыть</button></div></section>';
     document.body.appendChild(overlay);
     var close = overlay.querySelector("[data-profile-close]");
     if (close) close.focus();
@@ -690,10 +728,11 @@
     var label = row.children[1];
     var canSync = hasPermission(shellState.user, "settings.manage");
     var canConfigure = hasPermission(shellState.user, "settings.view");
-    var actionable = status.state !== "syncing" &&
+    var busy = status.state === "syncing" || status.state === "queued";
+    var actionable = !busy &&
       ((status.configured && canSync) || (!status.configured && canConfigure));
     card.dataset.actionable = String(actionable);
-    card.setAttribute("aria-busy", String(status.state === "syncing"));
+    card.setAttribute("aria-busy", String(busy));
     if (actionable) {
       card.setAttribute("role", "button");
       card.setAttribute("tabindex", "0");
@@ -708,6 +747,10 @@
       detail.textContent = "Подключение ещё не настроено";
       text = "Требует настройки";
       color = "#D8D0D0";
+    } else if (status.state === "queued") {
+      detail.textContent = "Ожидает запуска";
+      text = "В очереди";
+      color = "#FFD166";
     } else if (status.state === "syncing") {
       detail.textContent = "Синхронизация: " + Number(status.progress_pct || 0) + "%";
       text = "Обновление данных";
@@ -757,8 +800,20 @@
     if (!shellState.syncCard) return null;
     try {
       var status = await api.get("/integrations/keitaro/sidebar-status");
+      var previousStatus = shellState.syncStatus;
       shellState.syncStatus = status;
       renderSyncStatus(status);
+      // Синхронизация может быть запущена из настроек, другой вкладки или
+      // планировщиком. Сообщаем открытой странице о новых данных, а не только
+      // меняем подпись в боковом меню.
+      if (previousStatus && status && status.last_sync_at &&
+          status.last_sync_at !== previousStatus.last_sync_at &&
+          status.state !== "syncing" && status.state !== "queued" &&
+          status.state !== "error") {
+        window.dispatchEvent(new CustomEvent("celestial:keitaro-synced", {
+          detail: { lastSyncAt: status.last_sync_at }
+        }));
+      }
       return status;
     } catch (error) {
       renderSyncStatus({
@@ -780,10 +835,18 @@
       }
       return;
     }
-    if (!hasPermission(shellState.user, "settings.manage") || status.state === "syncing") return;
+    if (!hasPermission(shellState.user, "settings.manage") ||
+        status.state === "syncing" || status.state === "queued") return;
     shellState.syncBusy = true;
     renderSyncStatus(Object.assign({}, status, { state: "syncing", progress_pct: 0 }));
     try {
+      var utilitiesCatalogOnly = /(?:^|\/)Utilities\.dc\.html$/i.test(window.location.pathname);
+      if (utilitiesCatalogOnly) {
+        var catalog = await api.post("/integrations/keitaro/offers/refresh", {});
+        toast("Офферы и группы обновлены: " + Number(catalog.offers || 0));
+        window.setTimeout(function () { window.location.reload(); }, 500);
+        return;
+      }
       await api.post(
         "/integrations/keitaro/" + status.connection_id + "/sync?mode=incremental",
         {},
@@ -793,7 +856,7 @@
       for (var attempt = 0; attempt < 90; attempt += 1) {
         await new Promise(function (resolve) { window.setTimeout(resolve, 2000); });
         var current = await refreshSyncStatus();
-        if (current && current.state !== "syncing") {
+        if (current && current.state !== "syncing" && current.state !== "queued") {
           if (current.state === "error") {
             toast(current.error || "Синхронизация завершилась с ошибкой", "error");
           } else {

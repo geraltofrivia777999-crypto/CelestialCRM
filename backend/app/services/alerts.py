@@ -12,11 +12,14 @@ Meta, а не из трекера напрямую: алерт должен го
 кнопка «Тест» и этот движок, поэтому разойтись им негде.
 """
 
+import asyncio
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
+
+from html import escape
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +45,15 @@ ZERO = Decimal("0")
 # после долгого простоя очередь может быть в тысячи строк, и вывалить их
 # все в Telegram разом — значит упереться в его лимиты.
 MAX_DEPOSITS = 200
+# Telegram принимает около 20 сообщений в минуту в одну группу; сверх лимита он
+# отвечает 429 и сообщение теряется. Поэтому между отправками держим паузу.
+SEND_PAUSE_SECONDS = 3.0
+# Всплеск депозитов не растягиваем на часы: сверх этого числа за один прогон
+# они уходят одним сообщением-списком.
+MAX_SINGLE_DEPOSITS = 5
+# Потолок склеенного сообщения. У Telegram он 4096 символов, остаток берём на
+# заголовок и на то, что последняя строка не должна обрываться на полуслове.
+DIGEST_LIMIT = 3500
 
 __all__ = [
     "AlertEngine",
@@ -129,9 +141,9 @@ def cap_today(timezone_name: str | None) -> date:
     сбрасывается именно в её полночь.
     """
     try:
-        return datetime.now(ZoneInfo(timezone_name or "UTC")).date()
+        return datetime.now(ZoneInfo(timezone_name or "Europe/Moscow")).date()
     except Exception:
-        return datetime.now(UTC).date()
+        return datetime.now(ZoneInfo("Europe/Moscow")).date()
 
 
 def cap_period_range(period: str, today: date) -> tuple[date, date, str]:
@@ -201,6 +213,30 @@ async def metrics_for(
         int(row[2] or 0),
         int(row[3] or 0),
         int(row[4] or 0),
+    )
+
+
+async def cap_metrics(
+    db: AsyncSession,
+    rule: CapRule,
+    first: date,
+    last: date,
+) -> dict[str, Decimal | None]:
+    """Показатели капы: либо выбранные офферы, либо выбранный пользователь.
+
+    Пользователь часто является тимлидом, а выбранные офферы принадлежат его
+    баерам. Поэтому одновременное применение обоих фильтров обнуляло командные
+    связки. Явный список офферов является точной областью правила; если списка
+    нет, сохраняется режим лимита на показатели выбранного пользователя.
+    """
+    offer_ids = cap_offer_ids(rule)
+    return await metrics_for(
+        db,
+        rule.workspace_id,
+        first,
+        last,
+        user_id=None if offer_ids else rule.user_id,
+        offer_ids=offer_ids,
     )
 
 
@@ -332,6 +368,28 @@ def describe_conditions(tree: dict) -> str:
     return joiner.join(parts)
 
 
+def digest_deposits(rule: AlertRule, conversions: list) -> str:
+    """Несколько депозитов одним сообщением.
+
+    Сообщения собираются тем же шаблоном, что и одиночные: человек привык к
+    своему тексту, и в списке он должен выглядеть так же. Список обрезается по
+    длине сообщения Telegram — с явным хвостом, чтобы не создавалось
+    впечатления, будто депозитов было ровно столько.
+    """
+    total = sum((row.revenue or Decimal(0) for row in conversions), Decimal(0))
+    head = f"🔔 Депозитов: {len(conversions)} · {format_value('money', total)}"
+    lines: list[str] = []
+    used = len(head)
+    for index, conversion in enumerate(conversions):
+        text = render_deposit(rule, conversion)
+        if used + len(text) + 2 > DIGEST_LIMIT:
+            lines.append(f"…и ещё {len(conversions) - index}")
+            break
+        lines.append(text)
+        used += len(text) + 2
+    return head + "\n\n" + "\n\n".join(lines)
+
+
 def deposit_values(rule: AlertRule, conversion: KeitaroConversion) -> dict:
     values = {
         "campaign": conversion.campaign_name or conversion.campaign_external_id,
@@ -389,9 +447,9 @@ def rule_local(rule: AlertRule, moment: datetime) -> datetime:
     часами — а расписание должно быть проверяемо.
     """
     try:
-        return moment.astimezone(ZoneInfo(rule.timezone or "UTC"))
+        return moment.astimezone(ZoneInfo(rule.timezone or "Europe/Moscow"))
     except Exception:
-        return moment.astimezone(UTC)
+        return moment.astimezone(ZoneInfo("Europe/Moscow"))
 
 
 def rule_now(rule: AlertRule) -> datetime:
@@ -436,18 +494,46 @@ def scheduled_now(rule: AlertRule, now: datetime) -> bool:
     return not (not fired and created and created > slot.astimezone(UTC))
 
 
+def plain_number(value: Decimal) -> str:
+    """Число без хвоста нулей: лимит хранится как «500.0000»."""
+    text = format(value.normalize(), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 def render_cap_message(
-    rule: CapRule, value: Decimal, percent: int, subject: str | None
+    rule: CapRule,
+    value: Decimal,
+    percent: int,
+    offers: list[str] | None = None,
 ) -> str:
-    label = CAP_METRICS.get(rule.metric, rule.metric)
-    limit = rule.limit_value.quantize(Decimal("0.01"))
-    icon = "🛑" if percent >= 100 else "⚠️"
-    who = f"\nКто: {subject}" if subject else ""
-    return (
-        f"{icon} CAP: {rule.name}{who}\n"
-        f"{label}: {format_value(rule.metric, value)} из {limit} ({percent} %)\n"
-        f"Период: {CAP_PERIODS.get(rule.period, rule.period)}"
+    """Сообщение о достигнутом пороге капы.
+
+    Офферы перечисляются целиком, а не тремя первыми: кап обычно ставят на
+    связку из пяти-семи офферов, и «+4» вместо названий не даёт понять, о какой
+    именно связке речь. Обрезаем только на двадцатом — дальше упрёмся в предел
+    длины сообщения Telegram.
+    """
+    icon = "🔴" if percent >= 100 else "⚠️"
+    limit = rule.limit_value
+    exact = float(value / limit * 100) if limit else 0.0
+    names = list(offers or [])
+    shown = ", ".join(escape(name) for name in names[:20])
+    if len(names) > 20:
+        shown += f" +{len(names) - 20}"
+    lines = [
+        f"{icon} CAP Alert: {percent}% достигнуто",
+        "",
+        f"<blockquote>{escape(rule.name)}</blockquote>",
+        "",
+    ]
+    if shown:
+        lines.append(f"🎰 Офферы: {shown}")
+    lines.append(
+        f"📈 Прогресс: {format_value(rule.metric, value)} / {plain_number(limit)}"
+        f" ({exact:.1f}%)"
     )
+    lines.append(f"⏰ Период: {CAP_PERIODS.get(rule.period, rule.period)}")
+    return "\n".join(lines)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -492,6 +578,18 @@ class AlertEngine:
 
     def __init__(self, session_factory) -> None:
         self._session_factory = session_factory
+        # Когда в этот чат отправляли в последний раз: лимит Telegram считается
+        # на чат, а не на бота, и у разных чатов своя очередь.
+        self._last_send: dict[str, datetime] = {}
+
+    async def _pace(self, chat_id: str) -> None:
+        last = self._last_send.get(chat_id)
+        now = datetime.now(UTC)
+        if last:
+            wait = SEND_PAUSE_SECONDS - (now - last).total_seconds()
+            if wait > 0:
+                await asyncio.sleep(wait)
+        self._last_send[chat_id] = datetime.now(UTC)
 
     async def run(self) -> dict:
         async with self._session_factory() as db:
@@ -543,6 +641,7 @@ class AlertEngine:
             event.error = "Канал выключен или удалён"
             return
         try:
+            await self._pace(channel.chat_id)
             await telegram.send_message(
                 token, channel.chat_id, message,
                 getattr(rule, "thread_id", None) or channel.thread_id,
@@ -598,15 +697,24 @@ class AlertEngine:
         if not rows:
             return 0
         channel = await db.get(AlertChannel, rule.channel_id)
+        matched = [row for row in rows if deposit_matches(rule, row)]
         fired = 0
-        for conversion in rows:
-            if not deposit_matches(rule, conversion):
-                continue
+        if len(matched) > MAX_SINGLE_DEPOSITS:
+            # Всплеск: сотня отдельных сообщений упёрлась бы в лимит Telegram и
+            # растянулась бы на пять минут, поэтому уходит один список.
             await self._deliver(
-                db, rule, channel, render_deposit(rule, conversion),
-                conversion.revenue, "deposit",
+                db, rule, channel, digest_deposits(rule, matched),
+                sum((row.revenue or Decimal(0) for row in matched), Decimal(0)),
+                "deposit",
             )
-            fired += 1
+            fired = len(matched)
+        else:
+            for conversion in matched:
+                await self._deliver(
+                    db, rule, channel, render_deposit(rule, conversion),
+                    conversion.revenue, "deposit",
+                )
+                fired += 1
         # Курсор двигаем по всем просмотренным, а не только по отправленным:
         # иначе конверсии, не прошедшие фильтр, перебирались бы вечно.
         rule.cursor_at = rows[-1].seen_at
@@ -627,30 +735,14 @@ class AlertEngine:
         rule.last_fired_at = now
         return 1
 
-    async def _cap_subject(self, db: AsyncSession, rule: CapRule) -> str | None:
-        """Кого касается капа: баер и перечисленные офферы.
-
-        Больше трёх офферов в заголовок не влезает — остальные сворачиваются
-        в «+N», иначе сообщение начиналось бы с простыни названий.
-        """
-        parts: list[str] = []
-        if rule.user_id:
-            user = await db.get(User, rule.user_id)
-            if user:
-                parts.append(user.name or user.login)
+    async def _cap_offers(self, db: AsyncSession, rule: CapRule) -> list[str]:
+        """Названия офферов капы — единственное, что уточняет сообщение."""
         offer_ids = cap_offer_ids(rule)
-        if offer_ids:
-            names = list(
-                (
-                    await db.execute(select(Offer.name).where(Offer.id.in_(offer_ids)))
-                ).scalars()
-            )
-            if names:
-                shown = ", ".join(sorted(names)[:3])
-                if len(names) > 3:
-                    shown += f" +{len(names) - 3}"
-                parts.append(shown)
-        return " · ".join(parts) if parts else None
+        if not offer_ids:
+            return []
+        return sorted(
+            (await db.execute(select(Offer.name).where(Offer.id.in_(offer_ids)))).scalars()
+        )
 
     async def _run_caps(self, db: AsyncSession, now: datetime) -> int:
         rules = list(
@@ -670,14 +762,7 @@ class AlertEngine:
             if rule.notified_period != period_key:
                 rule.notified_period = period_key
                 rule.notified_percent = 0
-            values = await metrics_for(
-                db,
-                rule.workspace_id,
-                first,
-                last,
-                user_id=rule.user_id,
-                offer_ids=cap_offer_ids(rule),
-            )
+            values = await cap_metrics(db, rule, first, last)
             value = values.get(rule.metric) or ZERO
             percent = int(value / rule.limit_value * 100)
             thresholds = normalize_thresholds(rule.notify_at)
@@ -685,12 +770,12 @@ class AlertEngine:
             if reached <= rule.notified_percent:
                 continue
             channel = await db.get(AlertChannel, rule.channel_id)
-            subject = await self._cap_subject(db, rule)
+            offers = await self._cap_offers(db, rule)
             await self._deliver(
                 db,
                 rule,
                 channel,
-                render_cap_message(rule, value, percent, subject),
+                render_cap_message(rule, value, percent, offers),
                 value,
                 "cap",
             )

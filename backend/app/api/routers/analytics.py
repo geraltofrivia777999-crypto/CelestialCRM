@@ -2,7 +2,7 @@ import csv
 import io
 import uuid
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -33,6 +33,7 @@ from app.models import (
     Partner,
     Service,
     SpendProvider,
+    Status,
     User,
 )
 from app.schemas import (
@@ -40,11 +41,14 @@ from app.schemas import (
     DashboardSummary,
     FinanceRecordIn,
     FinanceValuesIn,
+    MediaDaySpendIn,
     MediaRecordIn,
     MediaValuesIn,
     Page,
 )
+from app.services import finance_spend
 from app.services.audit import audit
+from app.services.country_tiers import tier_for, tier_map
 from app.services.formulas import (
     amount_with_commission,
     finance_import_key,
@@ -104,6 +108,9 @@ def _media_filters(
             func.lower(func.coalesce(Offer.group_name, ""))
             != settings.keitaro_offers_group.strip().lower()
         )
+        # Удалённые или отключённые в Keitaro офферы остаются в базе ради
+        # целостности истории, но на рабочей доске больше не показываются.
+        filters.append(Offer.keitaro_state == Status.active)
     if date_from:
         filters.append(MediaRecord.record_date >= date_from)
     if date_to:
@@ -153,8 +160,14 @@ def _provider_amount_column(value_model, provider_model=SpendProvider):
     )
 
 
-def _group_dimensions(filtered):
-    return [
+def _group_dimensions(filtered, by_date: bool = False):
+    """Разрезы группы. День добавляется только по запросу доски.
+
+    Строк с днём столько же, сколько дней в периоде: месяц данных превращает
+    сотню пар «баер × оффер» в тысячи строк. Платить за это должна только та
+    доска, у которой уровень «Дата» включён.
+    """
+    dimensions = [
         filtered.c.buyer_id,
         filtered.c.buyer,
         filtered.c.geo,
@@ -163,17 +176,25 @@ def _group_dimensions(filtered):
         filtered.c.offer_id,
         filtered.c.offer,
     ]
+    if by_date:
+        dimensions.append(filtered.c.record_date)
+    return dimensions
 
 
 def _group_identity(row) -> tuple:
-    return (row.buyer_id, row.offer_id)
+    return (row.buyer_id, row.offer_id, getattr(row, "record_date", None))
 
 
-def _group_head(row) -> dict:
+def _group_head(row, tiers: dict) -> dict:
+    day = getattr(row, "record_date", None)
     return {
+        "date": day.isoformat() if day else None,
         "buyer_id": str(row.buyer_id),
         "buyer": row.buyer,
         "geo": row.geo,
+        # Тир считает сервер по справочнику «Тиры стран»: если бы его выводил
+        # клиент, доска и финансы однажды разошлись бы в том, что такое Tier1.
+        "tier": tier_for(row.geo, tiers),
         "partner_id": str(row.partner_id) if row.partner_id else None,
         "partner": row.partner,
         "offer_id": str(row.offer_id),
@@ -189,6 +210,7 @@ async def media_record_groups(
     offer_id: list[uuid.UUID] | None = Query(None),
     geo: list[str] | None = Query(None),
     partner_id: list[uuid.UUID] | None = Query(None),
+    by_date: bool = False,
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("media.view")),
 ) -> dict:
@@ -214,6 +236,7 @@ async def media_record_groups(
     filtered = (
         select(
             MediaRecord.id.label("record_id"),
+            MediaRecord.record_date.label("record_date"),
             MediaRecord.buyer_id.label("buyer_id"),
             User.name.label("buyer"),
             MediaRecord.offer_id.label("offer_id"),
@@ -234,7 +257,12 @@ async def media_record_groups(
         .where(*filters)
         .subquery("filtered_media")
     )
-    dimensions = _group_dimensions(filtered)
+    dimensions = _group_dimensions(filtered, by_date)
+    # Разбивки по сервисам и платёжкам режутся по тем же ключам, что и сама
+    # группа: иначе их суммы легли бы не в тот день.
+    breakdown_keys = [filtered.c.buyer_id, filtered.c.offer_id]
+    if by_date:
+        breakdown_keys.append(filtered.c.record_date)
 
     rent_per_record = (
         select(
@@ -281,19 +309,23 @@ async def media_record_groups(
                 spend_per_record, spend_per_record.c.record_id == filtered.c.record_id
             )
             .group_by(*dimensions)
-            .order_by(filtered.c.buyer, filtered.c.offer)
+            # Порядок строк — это порядок узлов на доске: без дня дни встали бы
+            # вперемешку внутри баера.
+            .order_by(*([filtered.c.record_date] if by_date else []),
+                      filtered.c.buyer, filtered.c.offer)
             .limit(GROUP_LIMIT + 1)
         )
     ).all()
     truncated = len(base_rows) > GROUP_LIMIT
     base_rows = base_rows[:GROUP_LIMIT]
 
+    tiers = await tier_map(db, current.workspace_id)
     groups: dict[tuple, dict] = {}
     record_count = 0
     for row in base_rows:
         record_count += int(row.records)
         groups[_group_identity(row)] = {
-            **_group_head(row),
+            **_group_head(row, tiers),
             "records": int(row.records),
             "installs": row.installs,
             "registrations": row.registrations,
@@ -308,8 +340,7 @@ async def media_record_groups(
     service_rows = (
         await db.execute(
             select(
-                filtered.c.buyer_id,
-                filtered.c.offer_id,
+                *breakdown_keys,
                 MediaServiceValue.service_id,
                 func.sum(MediaServiceValue.quantity).label("quantity"),
                 func.sum(_service_cost_column(MediaServiceValue)).label("cost"),
@@ -317,11 +348,11 @@ async def media_record_groups(
             .select_from(filtered)
             .join(MediaServiceValue, MediaServiceValue.media_record_id == filtered.c.record_id)
             .join(Service, Service.id == MediaServiceValue.service_id)
-            .group_by(filtered.c.buyer_id, filtered.c.offer_id, MediaServiceValue.service_id)
+            .group_by(*breakdown_keys, MediaServiceValue.service_id)
         )
     ).all()
     for row in service_rows:
-        group = groups.get((row.buyer_id, row.offer_id))
+        group = groups.get(_group_identity(row))
         if group is not None:
             group["services"][str(row.service_id)] = {
                 "quantity": row.quantity,
@@ -331,19 +362,18 @@ async def media_record_groups(
     provider_rows = (
         await db.execute(
             select(
-                filtered.c.buyer_id,
-                filtered.c.offer_id,
+                *breakdown_keys,
                 MediaSpendValue.provider_id,
                 func.sum(_provider_amount_column(MediaSpendValue)).label("amount"),
             )
             .select_from(filtered)
             .join(MediaSpendValue, MediaSpendValue.media_record_id == filtered.c.record_id)
             .join(SpendProvider, SpendProvider.id == MediaSpendValue.provider_id)
-            .group_by(filtered.c.buyer_id, filtered.c.offer_id, MediaSpendValue.provider_id)
+            .group_by(*breakdown_keys, MediaSpendValue.provider_id)
         )
     ).all()
     for row in provider_rows:
-        group = groups.get((row.buyer_id, row.offer_id))
+        group = groups.get(_group_identity(row))
         if group is not None:
             group["providers"][str(row.provider_id)] = {"amount": row.amount}
 
@@ -352,6 +382,308 @@ async def media_record_groups(
         "record_count": record_count,
         "truncated": truncated,
     }
+
+
+MEDIA_EXPORT_HEADERS = [
+    "Баер", "Тир", "GEO", "Партнёрка", "Оффер", "Записей",
+    "INST", "REG", "FTD", "SPEND", "REVENUE", "PROFIT", "ROI, %", "CPD",
+]
+
+TIER_TITLES = {"T1": "Tier1", "T23": "Tier2/3", "unassigned": "Без тира"}
+
+
+def _agent_amount(group: dict, agent_id: str) -> Decimal:
+    share = (group.get("providers") or {}).get(agent_id) or {}
+    return Decimal(str(share.get("amount") or 0))
+
+
+def _media_export_rows(
+    groups: list[dict], agents: list[tuple[str, str]] = ()
+) -> list[list]:
+    """Строки выгрузки — те же цифры, что в таблице.
+
+    PROFIT, ROI и CPD считаются здесь, а не берутся из группы: на доске это
+    производные колонки, и повторить их формулу в выгрузке — единственный
+    способ не получить два разных ответа на один вопрос.
+    """
+    rows = []
+    for group in groups:
+        spend = Decimal(str(group.get("spend") or 0))
+        revenue = Decimal(str(group.get("revenue") or 0))
+        ftd = int(group.get("ftd") or 0)
+        rows.append([
+            group.get("buyer") or "",
+            TIER_TITLES.get(group.get("tier"), group.get("tier") or ""),
+            group.get("geo") or "",
+            group.get("partner") or "",
+            group.get("offer") or "",
+            int(group.get("records") or 0),
+            int(group.get("installs") or 0),
+            int(group.get("registrations") or 0),
+            ftd,
+            spend,
+            revenue,
+            revenue - spend,
+            round((revenue - spend) / spend * 100, 2) if spend > 0 else "",
+            round(spend / ftd, 2) if ftd and spend > 0 else "",
+            # Спенд по агентам — в конце строки: колонки агентов у каждой
+            # выгрузки свои, а остальные стоят на привычных местах.
+            *[_agent_amount(group, agent_id) for agent_id, _name in agents],
+        ])
+    return rows
+
+
+def _media_export_total(rows: list[list], agent_count: int = 0) -> list:
+    """Итог по выгрузке — та же строка «Общая», что и внизу доски."""
+    spend = sum((row[9] for row in rows), Decimal(0))
+    revenue = sum((row[10] for row in rows), Decimal(0))
+    ftd = sum(row[8] for row in rows)
+    return [
+        "Общая", "", "", "", "",
+        sum(row[5] for row in rows),
+        sum(row[6] for row in rows),
+        sum(row[7] for row in rows),
+        ftd,
+        spend,
+        revenue,
+        revenue - spend,
+        round((revenue - spend) / spend * 100, 2) if spend > 0 else "",
+        round(spend / ftd, 2) if ftd and spend > 0 else "",
+        *[
+            sum((row[14 + index] for row in rows), Decimal(0))
+            for index in range(agent_count)
+        ],
+    ]
+
+
+# Уровни структуры доски — в том же смысле, что в board-ui.js (LEVELS).
+EXPORT_LEVELS = {
+    "buyer": "Баер", "date": "Дата", "agent": "Агент", "tier": "Тир",
+    "partner": "Партнёрка", "geo": "GEO", "offer": "Оффер",
+}
+EXPORT_METRICS = ["Записей", "INST", "REG", "FTD", "SPEND", "REVENUE", "PROFIT", "ROI, %", "CPD"]
+
+
+def _level_value(level: str, group: dict) -> tuple[str, str]:
+    """(ключ сортировки, подпись) строки на уровне структуры."""
+    if level == "buyer":
+        name = group.get("buyer") or ""
+        return name.lower(), name
+    if level == "date":
+        raw = group.get("date") or ""
+        label = ".".join(reversed(raw.split("-"))) if raw else "Без даты"
+        return raw, label
+    if level == "agent":
+        name = group.get("agent_name") or "Без агента"
+        # «Без агента» — последней строкой, как на доске.
+        return ("~" if name == "Без агента" else name.lower()), name
+    if level == "tier":
+        code = group.get("tier") or "unassigned"
+        return code, TIER_TITLES.get(code, code)
+    if level == "partner":
+        name = group.get("partner") or "Без ПП"
+        return name.lower(), name
+    if level == "geo":
+        name = group.get("geo") or "Без GEO"
+        return name.lower(), name
+    name = group.get("offer") or ""
+    return name.lower(), name
+
+
+def _split_by_agent(groups: list[dict], agents: dict[str, str]) -> list[dict]:
+    """Строки на уровне «Агент» — так же, как их раскладывает доска.
+
+    Спенд агента уходит в его строку; воронка и доход к агенту не привязаны и
+    остаются в «Без агента» вместе с неразнесённым спендом.
+    """
+    rows: list[dict] = []
+    for group in groups:
+        attributed = Decimal(0)
+        for agent_id, share in (group.get("providers") or {}).items():
+            amount = Decimal(str((share or {}).get("amount") or 0))
+            attributed += amount
+            rows.append({
+                **group, "agent_name": agents.get(agent_id, "Агент"), "spend": amount,
+                "installs": 0, "registrations": 0, "ftd": 0, "revenue": 0, "records": 0,
+                "providers": {agent_id: share},
+            })
+        rows.append({
+            **group, "agent_name": "Без агента",
+            "spend": Decimal(str(group.get("spend") or 0)) - attributed, "providers": {},
+        })
+    return rows
+
+
+def _structured_export(
+    groups: list[dict], levels: list[str], agents: list[tuple[str, str]]
+) -> tuple[list[str], list[list]]:
+    """Выгрузка по структуре доски: столбцы — выбранные уровни по порядку.
+
+    Каждая строка — одна «ветка» структуры до последнего уровня; числа
+    суммируются так же, как в таблице. Разбивка по агентам столбцами нужна,
+    только пока «Агент» не стоит уровнем — иначе она повторяет строки.
+    """
+    if "agent" in levels:
+        groups = _split_by_agent(groups, dict(agents))
+        agents = []
+    buckets: dict[tuple, dict] = {}
+    for group in groups:
+        values = [_level_value(level, group) for level in levels]
+        key = tuple(sort for sort, _label in values)
+        bucket = buckets.setdefault(key, {
+            "labels": [label for _sort, label in values],
+            "records": 0, "installs": 0, "registrations": 0, "ftd": 0,
+            "spend": Decimal(0), "revenue": Decimal(0),
+            "agents": [Decimal(0) for _agent in agents],
+        })
+        bucket["records"] += int(group.get("records") or 0)
+        bucket["installs"] += int(group.get("installs") or 0)
+        bucket["registrations"] += int(group.get("registrations") or 0)
+        bucket["ftd"] += int(group.get("ftd") or 0)
+        bucket["spend"] += Decimal(str(group.get("spend") or 0))
+        bucket["revenue"] += Decimal(str(group.get("revenue") or 0))
+        for index, (agent_id, _name) in enumerate(agents):
+            bucket["agents"][index] += _agent_amount(group, agent_id)
+
+    def line(labels: list[str], bucket: dict) -> list:
+        spend, revenue, ftd = bucket["spend"], bucket["revenue"], bucket["ftd"]
+        return [
+            *labels,
+            bucket["records"], bucket["installs"], bucket["registrations"], ftd,
+            spend, revenue, revenue - spend,
+            round((revenue - spend) / spend * 100, 2) if spend > 0 else "",
+            round(spend / ftd, 2) if ftd and spend > 0 else "",
+            *bucket["agents"],
+        ]
+
+    data = []
+    for key in sorted(buckets):
+        bucket = buckets[key]
+        empty = not any(
+            bucket[field] for field in ("records", "installs", "registrations", "ftd")
+        ) and not bucket["spend"] and not bucket["revenue"]
+        # Пустая «Без агента» — это строка без единого числа: на доске её тоже нет.
+        if empty and "agent" in levels:
+            continue
+        data.append(line(bucket["labels"], bucket))
+    if data:
+        total = {
+            "records": 0, "installs": 0, "registrations": 0, "ftd": 0,
+            "spend": Decimal(0), "revenue": Decimal(0),
+            "agents": [Decimal(0) for _agent in agents],
+        }
+        for bucket in buckets.values():
+            for field in ("records", "installs", "registrations", "ftd", "spend", "revenue"):
+                total[field] += bucket[field]
+            total["agents"] = [a + b for a, b in zip(total["agents"], bucket["agents"])]
+        labels = ["Общая"] + [""] * (len(levels) - 1) if levels else []
+        data.append(line(labels, total) if levels else line([], total))
+    headers = [EXPORT_LEVELS[level] for level in levels] + EXPORT_METRICS + [
+        f"SPEND · {name}" for _agent_id, name in agents
+    ]
+    if not levels:
+        headers = ["Итог"] + headers
+        data = [["Общая", *row] for row in data]
+    return headers, data
+
+
+async def _export_agents(
+    db: AsyncSession, workspace_id: uuid.UUID, groups: list[dict]
+) -> list[tuple[str, str]]:
+    """Агенты, через которых в выгрузке внесён спенд, — по имени."""
+    ids = {
+        agent_id for group in groups for agent_id in (group.get("providers") or {})
+    }
+    if not ids:
+        return []
+    rows = (
+        await db.execute(
+            select(SpendProvider.id, SpendProvider.name).where(
+                SpendProvider.workspace_id == workspace_id,
+                SpendProvider.id.in_([uuid.UUID(value) for value in ids]),
+            )
+        )
+    ).all()
+    return sorted(
+        ((str(row.id), row.name) for row in rows), key=lambda item: item[1].lower()
+    )
+
+
+@router.get("/exports/media")
+async def export_media(
+    format: str = "csv",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    buyer_id: list[uuid.UUID] | None = Query(None),
+    offer_id: list[uuid.UUID] | None = Query(None),
+    geo: list[str] | None = Query(None),
+    partner_id: list[uuid.UUID] | None = Query(None),
+    levels: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("media.view")),
+):
+    """Выгрузка доски: те же строки и фильтры, что видит человек.
+
+    `levels` — структура доски через запятую («buyer,date,agent»): выгрузка
+    повторяет её столбцами и строками. Без параметра — прежний плоский вид.
+
+    Берём готовую агрегацию доски, а не сырые записи: в выгрузке нужны те же
+    числа, что на экране, включая посчитанные сервером тиры.
+    """
+    wanted = None
+    if levels is not None:
+        wanted = [
+            level for level in dict.fromkeys(part.strip() for part in levels.split(","))
+            if level in EXPORT_LEVELS
+        ]
+    payload = await media_record_groups(
+        date_from=date_from,
+        date_to=date_to,
+        buyer_id=buyer_id,
+        offer_id=offer_id,
+        geo=geo,
+        partner_id=partner_id,
+        by_date=bool(wanted and "date" in wanted),
+        db=db,
+        current=current,
+    )
+    agents = await _export_agents(db, current.workspace_id, payload["groups"])
+    if wanted is not None:
+        headers, data = _structured_export(payload["groups"], wanted, agents)
+    else:
+        headers = MEDIA_EXPORT_HEADERS + [f"SPEND · {name}" for _agent_id, name in agents]
+        data = _media_export_rows(payload["groups"], agents)
+        data.sort(key=lambda row: (row[0], row[4]))
+        if data:
+            data.append(_media_export_total(data, len(agents)))
+    if format.lower() == "xlsx":
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Mediaboard"
+        sheet.append(headers)
+        for row in data:
+            sheet.append(row)
+        stream = io.BytesIO()
+        workbook.save(stream)
+        stream.seek(0)
+        return StreamingResponse(
+            stream,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": 'attachment; filename="mediaboard.xlsx"'},
+        )
+    stream = io.StringIO()
+    writer = csv.writer(stream, delimiter=";")
+    writer.writerow(headers)
+    writer.writerows(data)
+    return StreamingResponse(
+        # utf-8-sig и точка с запятой: Excel иначе открывает такой файл одной
+        # колонкой с «крякозябрами».
+        iter([stream.getvalue().encode("utf-8-sig")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="mediaboard.csv"'},
+    )
 
 
 @router.get("/media-records", response_model=Page)
@@ -449,6 +781,7 @@ async def list_media_records(
                 "amount": amount,
                 "manual_amount_override": value.manual_amount_override,
             }
+    tiers = await tier_map(db, current.workspace_id)
     items = []
     for record, buyer_name, offer_name, geo_value, partner_name, partner_id_value in rows:
         calculated_spend = spend_by_record.get(record.id, record.spend_calculated)
@@ -467,6 +800,10 @@ async def list_media_records(
                 "offer_id": str(record.offer_id),
                 "offer": offer_name,
                 "geo": geo_value,
+                # Тир считает сервер по тому же справочнику, что и в группах:
+                # без него доска не признаёт записи своими, когда уровень
+                # «Тир» включён, и ветка выглядит пустой.
+                "tier": tier_for(geo_value, tiers),
                 "partner": partner_name,
                 "partner_id": str(partner_id_value) if partner_id_value else None,
                 "installs": record.installs,
@@ -491,6 +828,7 @@ async def upsert_media_record(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("media.manage")),
 ) -> dict:
+    await finance_spend.lock_workspace(db, current.workspace_id)
     visible_buyers = await accessible_user_ids(db, current)
     if payload.buyer_id not in visible_buyers:
         raise HTTPException(status_code=403, detail="Buyer is outside your access hierarchy")
@@ -506,6 +844,29 @@ async def upsert_media_record(
         )
     )
     created = record is None
+    if created:
+        buyer = await db.get(User, payload.buyer_id)
+        buyer_group = (buyer.keitaro_offer_group or "").strip().lower() if buyer else ""
+        offer_group = (offer.group_name or "").strip().lower()
+        buyer_assignment = await db.scalar(
+            select(func.count()).select_from(OfferBuyer).where(
+                OfferBuyer.offer_id == offer.id,
+                OfferBuyer.user_id == payload.buyer_id,
+            )
+        )
+        lead_assignment = await db.scalar(
+            select(func.count()).select_from(OfferLead).where(
+                OfferLead.offer_id == offer.id,
+                OfferLead.user_id == payload.buyer_id,
+            )
+        )
+        if not (buyer_group and buyer_group == offer_group) and not (
+            buyer_assignment or lead_assignment
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Оффер не привязан к выбранному баеру",
+            )
     if not record:
         record = MediaRecord(
             workspace_id=current.workspace_id,
@@ -543,9 +904,198 @@ async def upsert_media_record(
         entity_type="media_record",
         entity_id=str(record.id),
     )
+    # Спенд книги идёт с доски: правка записи сразу меняет и его, иначе в
+    # финансах осталась бы вчерашняя цифра.
+    await finance_spend.refresh_for_record(
+        db, current.workspace_id, record.buyer_id, record.record_date
+    )
     await db.commit()
     await invalidate_dashboard_cache(current.workspace_id)
     return {"id": str(record.id), "created": created}
+
+
+def _even_split(total: Decimal, parts: int) -> list[Decimal]:
+    """Делит сумму на равные доли до копейки, без потери остатка.
+
+    Наивное `total / parts` на трёх записях и сотне долларов даёт 33.3333 в
+    каждой и теряет цент: сумма долей должна совпадать с введённой, иначе в
+    финансах у баера появится расхождение на ровном месте.
+    """
+    if parts <= 0:
+        return []
+    step = Decimal("0.0001")
+    share = (total / parts).quantize(step, rounding=ROUND_HALF_UP)
+    shares = [share] * parts
+    shares[0] += total.quantize(step, rounding=ROUND_HALF_UP) - share * parts
+    return shares
+
+
+TIER_LABELS = {"T1": "Tier1", "T23": "Tier2/3"}
+
+
+async def _day_spend_records(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    buyer_id: uuid.UUID,
+    day: date,
+    tier: str | None,
+) -> list[MediaRecord]:
+    """Записи баера за день — то, между чем делится расход дня.
+
+    `tier` сужает их до офферов одного тира. В финансах у баера две книги —
+    Tier1 и Tier2/3, — и расход, размазанный по офферам обоих, приезжал в них
+    не тем, чем был на самом деле.
+    """
+    rows = list(
+        (
+            await db.execute(
+                select(MediaRecord, Offer.geo)
+                .join(Offer, Offer.id == MediaRecord.offer_id)
+                .where(
+                    MediaRecord.workspace_id == workspace_id,
+                    MediaRecord.record_date == day,
+                    MediaRecord.buyer_id == buyer_id,
+                )
+                .order_by(MediaRecord.created_at, MediaRecord.id)
+            )
+        ).all()
+    )
+    if tier:
+        tiers = await tier_map(db, workspace_id)
+        rows = [row for row in rows if tier_for(row[1], tiers) == tier]
+    return [row[0] for row in rows]
+
+
+async def _spend_providers(
+    db: AsyncSession, workspace_id: uuid.UUID, values: list
+) -> dict[uuid.UUID, SpendProvider]:
+    """Агенты из запроса — все свои и без повторов, иначе 422."""
+    provider_ids = {value.provider_id for value in values}
+    providers = {
+        row.id: row
+        for row in (
+            await db.execute(
+                select(SpendProvider).where(
+                    SpendProvider.workspace_id == workspace_id,
+                    SpendProvider.id.in_(provider_ids),
+                )
+            )
+        ).scalars()
+    }
+    if len(provider_ids) != len(values) or set(providers) != provider_ids:
+        raise HTTPException(
+            status_code=422, detail="One or more spend providers are invalid"
+        )
+    return providers
+
+
+async def _lay_provider_shares(
+    db: AsyncSession,
+    records: list[MediaRecord],
+    amounts: list[tuple[uuid.UUID, Decimal]],
+    providers: dict[uuid.UUID, SpendProvider],
+) -> None:
+    """Сумма каждого агента — поровну между записями дня.
+
+    Прежние суммы агентов на этих записях заменяются целиком: окно правит
+    день, а не добавляет к нему.
+    """
+    await db.execute(
+        delete(MediaSpendValue).where(
+            MediaSpendValue.media_record_id.in_([record.id for record in records])
+        )
+    )
+    splits = {
+        provider_id: _even_split(amount, len(records)) for provider_id, amount in amounts
+    }
+    for index, record in enumerate(records):
+        spend = Decimal("0")
+        for provider_id, _amount in amounts:
+            share = splits[provider_id][index]
+            db.add(
+                MediaSpendValue(
+                    media_record_id=record.id,
+                    provider_id=provider_id,
+                    base_amount=share,
+                )
+            )
+            spend += amount_with_commission(share, providers[provider_id].commission_pct)
+        record.spend_calculated = spend
+        # Ручная фиксация расхода перебивает агентов, и оставить её значило
+        # бы показать старую цифру поверх только что введённой.
+        record.spend_override = None
+        record.manual_fields = sorted(set(record.manual_fields or []) - {"spend_override"})
+
+
+@router.post("/media-records/day-spend")
+async def spread_day_spend(
+    payload: MediaDaySpendIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("media.manage")),
+) -> dict:
+    """Расход дня, разложенный поровну по офферам этого дня.
+
+    Записи создаёт синхронизация Keitaro (или ручной ввод по офферу) — здесь
+    только раскладка: если за день у баера ни одной записи, делить не по чему,
+    и придумывать оффер за человека сервер не станет.
+
+    `tier` сужает раскладку до офферов одного тира. В финансах у баера две
+    книги — Tier1 и Tier2/3, — и расход всего дня, размазанный по офферам обоих,
+    приезжал в них не тем, чем был на самом деле.
+    """
+    if (payload.spend is None) == (payload.providers is None):
+        raise HTTPException(
+            status_code=422, detail="Pass either a spend total or the provider split"
+        )
+    await finance_spend.lock_workspace(db, current.workspace_id)
+    visible_buyers = await accessible_user_ids(db, current)
+    if payload.buyer_id not in visible_buyers:
+        raise HTTPException(status_code=403, detail="Buyer is outside your access hierarchy")
+    records = await _day_spend_records(
+        db, current.workspace_id, payload.buyer_id, payload.record_date, payload.tier
+    )
+    if not records:
+        # Текст уходит прямо в окно Медиаборда: баер выбирает день календарём
+        # и должен понять, почему сумму некуда положить.
+        where = f" {TIER_LABELS[payload.tier]}" if payload.tier else ""
+        raise HTTPException(
+            status_code=422,
+            detail=f"За этот день у баера нет офферов{where} — делить расход не по чему",
+        )
+
+    if payload.providers is not None:
+        providers = await _spend_providers(db, current.workspace_id, payload.providers)
+        await _lay_provider_shares(
+            db,
+            records,
+            [(value.provider_id, value.base_amount) for value in payload.providers],
+            providers,
+        )
+        total = sum((value.base_amount for value in payload.providers), Decimal("0"))
+    else:
+        shares = _even_split(payload.spend, len(records))
+        for index, record in enumerate(records):
+            record.spend_override = shares[index]
+            record.manual_fields = sorted(set(record.manual_fields or []) | {"spend_override"})
+        total = payload.spend
+
+    await audit(
+        db,
+        current,
+        "media.day_spend",
+        f"Spread {total} across {len(records)} offers"
+        + (f" of {payload.tier}" if payload.tier else ""),
+        request=request,
+        entity_type="media_record",
+        entity_id=str(payload.buyer_id),
+    )
+    await finance_spend.refresh_for_record(
+        db, current.workspace_id, payload.buyer_id, payload.record_date
+    )
+    await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
+    return {"records": len(records), "total": total}
 
 
 async def _media_rent(db: AsyncSession, record_id: uuid.UUID) -> Decimal:
@@ -575,6 +1125,7 @@ async def replace_media_values(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("media.manage")),
 ) -> dict:
+    await finance_spend.lock_workspace(db, current.workspace_id)
     record = await db.get(MediaRecord, record_id)
     visible_buyers = await accessible_user_ids(db, current)
     if (
@@ -655,6 +1206,11 @@ async def replace_media_values(
             )
             db.add(MediaSpendValue(media_record_id=record.id, **value.model_dump()))
         record.spend_calculated = spend
+        # Ручная фиксация расхода перебивает агентов. Она могла остаться от
+        # раскладки расхода по дню, и тогда введённые здесь суммы просто не
+        # дошли бы до доски: цифра в SPEND не изменилась бы вовсе.
+        record.spend_override = None
+        record.manual_fields = sorted(set(record.manual_fields or []) - {"spend_override"})
     await audit(
         db,
         current,
@@ -663,6 +1219,11 @@ async def replace_media_values(
         request=request,
         entity_type="media_record",
         entity_id=str(record.id),
+    )
+    # Спенд книги идёт с доски: правка записи сразу меняет и его, иначе в
+    # финансах осталась бы вчерашняя цифра.
+    await finance_spend.refresh_for_record(
+        db, current.workspace_id, record.buyer_id, record.record_date
     )
     await db.commit()
     await invalidate_dashboard_cache(current.workspace_id)
@@ -772,12 +1333,13 @@ async def finance_record_groups(
     truncated = len(base_rows) > GROUP_LIMIT
     base_rows = base_rows[:GROUP_LIMIT]
 
+    tiers = await tier_map(db, current.workspace_id)
     groups: dict[tuple, dict] = {}
     record_count = 0
     for row in base_rows:
         record_count += int(row.records)
         groups[_group_identity(row)] = {
-            **_group_head(row),
+            **_group_head(row, tiers),
             "records": int(row.records),
             "qual": row.qual,
             "rent": row.rent,
@@ -939,6 +1501,7 @@ async def list_finance_records(
                 "amount": amount,
                 "manual_amount_override": value.manual_amount_override,
             }
+    tiers = await tier_map(db, current.workspace_id)
     items = []
     for record, buyer_name, offer_name, geo_value, partner_name, partner_id_value in rows:
         effective_spend = (
@@ -953,6 +1516,10 @@ async def list_finance_records(
                 "offer_id": str(record.offer_id),
                 "offer": offer_name,
                 "geo": geo_value,
+                # Тир считает сервер по тому же справочнику, что и в группах:
+                # без него доска не признаёт записи своими, когда уровень
+                # «Тир» включён, и ветка выглядит пустой.
+                "tier": tier_for(geo_value, tiers),
                 "partner": partner_name,
                 "partner_id": str(partner_id_value) if partner_id_value else None,
                 "link": record.link,
@@ -1345,14 +1912,21 @@ async def export_finance(
     )
 
 
-async def _offers_widget(db: AsyncSession, current: User) -> dict[uuid.UUID, dict]:
+async def _offers_widget(
+    db: AsyncSession,
+    current: User,
+    *,
+    with_total: bool = False,
+) -> dict[uuid.UUID, dict] | tuple[dict[uuid.UUID, dict], int]:
     """Виджет «Ваши оффера» — тот же справочник, что в разделе «Оффера».
 
     Роль читается по правам, а не по названию: скопированная или переименованная
     роль (ТЗ 7.1) должна вести себя так же.
 
     * полный доступ и `offers.view_all` — весь справочник;
-    * остальные — только назначенные им, тимлиду или баеру.
+    * остальные — назначенные им и их людям: оффер сначала отдают тимлиду, а
+      тот раздаёт его баерам, поэтому у тимлида в виджете и его собственные
+      офферы, и офферы его баеров — ровно как в разделе.
 
     Статус здесь не фильтр: виджет показывает не «что ждёт действия», а то же,
     что человек увидит, открыв раздел, — иначе на дашборде и в разделе у него
@@ -1362,19 +1936,24 @@ async def _offers_widget(db: AsyncSession, current: User) -> dict[uuid.UUID, dic
     conditions = [Offer.workspace_id == current.workspace_id, Offer.connection_id.is_(None)]
     if not (await has_full_access(db, current)
             or has_permission(current, "offers.view_all")):
+        # Та же область видимости, что у раздела «Оффера»: свои и своей ветки.
+        # По одному `current.id` тимлид не видел офферов, которые сам же раздал
+        # баерам, — в разделе они есть, а на дашборде их не было.
+        visible = await accessible_user_ids(db, current)
         conditions.append(
             or_(
                 Offer.id.in_(
-                    select(OfferLead.offer_id).where(OfferLead.user_id == current.id)
+                    select(OfferLead.offer_id).where(OfferLead.user_id.in_(visible))
                 ),
                 Offer.id.in_(
-                    select(OfferBuyer.offer_id).where(OfferBuyer.user_id == current.id)
+                    select(OfferBuyer.offer_id).where(OfferBuyer.user_id.in_(visible))
                 ),
             )
         )
+    total = await db.scalar(select(func.count()).select_from(Offer).where(*conditions)) or 0
     rows = (
         await db.execute(
-            select(Offer.id, Offer.name, Offer.geo, Offer.cap, Partner.name)
+            select(Offer.id, Offer.name, Offer.geo, Partner.name)
             .outerjoin(Partner, Partner.id == Offer.partner_id)
             .where(*conditions)
             .order_by(Offer.is_starred.desc(), Offer.name, Offer.id)
@@ -1386,14 +1965,13 @@ async def _offers_widget(db: AsyncSession, current: User) -> dict[uuid.UUID, dic
             "id": str(offer_id),
             "name": name,
             "geo": normalize_geo(geo),
-            "cap": cap,
             "partner": partner_name,
             "buyers": [],
         }
-        for offer_id, name, geo, cap, partner_name in rows
+        for offer_id, name, geo, partner_name in rows
     }
     if not offers:
-        return offers
+        return (offers, total) if with_total else offers
     people = (
         await db.execute(
             select(OfferBuyer.offer_id, User.id, User.name)
@@ -1404,7 +1982,7 @@ async def _offers_widget(db: AsyncSession, current: User) -> dict[uuid.UUID, dic
     ).all()
     for offer_id, user_id, user_name in people:
         offers[offer_id]["buyers"].append({"id": str(user_id), "name": user_name})
-    return offers
+    return (offers, total) if with_total else offers
 
 
 @router.get("/dashboard", response_model=DashboardSummary)
@@ -1478,7 +2056,9 @@ async def dashboard(
         }
         for row_date, row_revenue, row_spend in series_rows
     ]
-    working_offer_map = await _offers_widget(db, current)
+    working_offer_map, working_offers_total = await _offers_widget(
+        db, current, with_total=True
+    )
     summary = DashboardSummary(
         leads=leads,
         sales=sales,
@@ -1488,6 +2068,7 @@ async def dashboard(
         profit=profit,
         roi=None if spend == 0 else profit / spend * 100,
         working_offers=list(working_offer_map.values()),
+        working_offers_total=working_offers_total,
         series=series,
     )
     if redis:

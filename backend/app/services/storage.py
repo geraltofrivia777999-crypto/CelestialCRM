@@ -14,6 +14,7 @@ import unicodedata
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from app.core.config import settings
 
@@ -68,9 +69,54 @@ def safe_file_name(name: str) -> str:
     return clean[:200] or "file"
 
 
-def normalize_mime_type(mime_type: str) -> str:
+def _ascii_part(value: str) -> str:
+    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    return _SAFE_NAME.sub("_", folded).strip("._")
+
+
+def disposition(file_name: str, *, inline: bool) -> str:
+    """Content-Disposition с настоящим именем файла.
+
+    Раньше в заголовок уходил id вложения, и файл сохранялся на диск как
+    «36d124b8-…» без расширения: имя из заголовка сильнее атрибута `download`
+    у ссылки, поэтому браузер брал именно его.
+
+    Имя приходит от пользователя, поэтому в кавычках едет только ASCII без
+    кавычек и переводов строк — иначе заголовок можно было бы разорвать и
+    подставить свой. Настоящее имя (кириллица, пробелы) уходит в `filename*`
+    по RFC 5987, его понимают все живые браузеры.
+    """
+    clean = safe_file_name(file_name)
+    # Имя и расширение чистим порознь: от кириллического имени в ASCII не
+    # остаётся ничего, и без этого запасным вариантом стало бы одно расширение.
+    stem = _ascii_part(Path(clean).stem) or "file"
+    extension = _ascii_part(Path(clean).suffix.lstrip("."))
+    ascii_name = stem + ("." + extension if extension else "")
+    return (
+        f'{"inline" if inline else "attachment"}; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(clean, safe='')}"
+    )
+
+
+# Один и тот же .zip браузеры называют по-разному: Chrome на Windows шлёт
+# `application/x-zip-compressed`, часть клиентов — `octet-stream`. Тип из
+# multipart и без того не доказательство: настоящий формат подтверждает
+# сигнатура, поэтому синонимы просто сводим к одному имени.
+_ZIP_ALIASES = {
+    "application/x-zip-compressed",
+    "application/x-zip",
+    "application/x-compressed",
+    "multipart/x-zip",
+    "application/octet-stream",
+}
+
+
+def normalize_mime_type(mime_type: str, content: bytes | None = None) -> str:
     """Normalize a multipart Content-Type before validation and persistence."""
-    return str(mime_type or "").split(";", 1)[0].strip().lower()
+    clean = str(mime_type or "").split(";", 1)[0].strip().lower()
+    if clean in _ZIP_ALIASES and content is not None and content.startswith(_ZIP_SIGNATURES):
+        return "application/zip"
+    return clean
 
 
 def validate_content(mime_type: str, content: bytes) -> None:
@@ -84,11 +130,11 @@ def validate_content(mime_type: str, content: bytes) -> None:
     This is format identification, not antivirus scanning.  Images and video
     are still served with ``nosniff`` and documents are downloaded.
     """
-    mime_type = normalize_mime_type(mime_type)
+    mime_type = normalize_mime_type(mime_type, content)
     if mime_type not in ALLOWED_MIME_TYPES:
         raise StorageError(
             "Такой тип файла загружать нельзя. Подойдут картинки, видео MP4/WEBM, "
-            "PDF, документы Office, txt и csv."
+            "PDF, документы Office, архивы ZIP, txt и csv."
         )
 
     valid = False
@@ -157,7 +203,7 @@ def store(workspace_id: uuid.UUID, file_name: str, mime_type: str, content: byte
         raise StorageError(
             f"Файл больше {settings.upload_max_bytes // (1024 * 1024)} МБ"
         )
-    mime_type = normalize_mime_type(mime_type)
+    mime_type = normalize_mime_type(mime_type, content)
     validate_content(mime_type, content)
 
     suffix = _SAFE_NAME.sub("", Path(safe_file_name(file_name)).suffix)[:12]

@@ -49,9 +49,8 @@
     accounts: [],
     campaigns: [],
     buyers: [],
-    period: "7",
+    period: "today",
     accountId: "",
-    ownerId: "",
     level: "users",
     levelSearch: "",
     hour: null,
@@ -59,9 +58,13 @@
     // Каскад структуры: владельцы подключений сужают Meta-аккаунты, а выбранные
     // Meta-аккаунты — все уровни под ними.
     levelFilterPick: {},
+    // Выбранные метрики структуры по порядку; null — ещё не загружены.
+    metricColumns: null,
+    columnsDraft: null,
     // Фиксация расхода за отрезок времени: что отмечено в таблице кампаний и
     // что насчитала Meta по этим кампаниям за выбранное окно.
     spendPick: {},
+    spendPickLevel: null,
     spend: { rows: [], commits: [], loading: false },
     spendRefs: null,
     busy: false,
@@ -138,11 +141,104 @@
   }
 
   function iso(date) {
-    return date.toISOString().slice(0, 10);
+    return window.CelestialTime.dateISO(date);
+  }
+
+  // Сервер Meta Ads отдаёт статистику не дальше полугода (MAX_PERIOD_DAYS).
+  var MAX_PERIOD_DAYS = 186;
+
+  /* Период страницы — из календаря. Пустой календарь (первый вход) — сегодня. */
+  function currentRange() {
+    var fromInput = byId("metaDateFrom");
+    var toInput = byId("metaDateTo");
+    var fallback = periodRange(state.period || "today");
+    var to = toInput && toInput.value ? toInput.value : fallback.to;
+    var from = fromInput && fromInput.value
+      ? fromInput.value
+      : (toInput && toInput.value ? to : fallback.from);
+    if (from > to) {
+      var swap = from; from = to; to = swap;
+    }
+    return { from: from, to: to };
+  }
+
+  var PERIOD_PREFERENCE = "meta.period";
+
+  /* Период запоминается относительно сегодняшнего дня: «Сегодня» завтра должно
+     остаться сегодня, «Последние 7 дней» — сдвигаться вместе с календарём, и
+     только произвольный отрезок в прошлом хранится как есть. */
+  function periodPreference() {
+    var range = currentRange();
+    var now = window.CelestialTime.today();
+    var today = iso(now);
+    var yesterday = iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+    if (range.from === yesterday && range.to === yesterday) return { kind: "yesterday" };
+    if (range.to !== today) return { kind: "fixed", from: range.from, to: range.to };
+    if (range.from === today.slice(0, 8) + "01") return { kind: "month" };
+    return { kind: "days", days: dayNumber(range.to) - dayNumber(range.from) + 1 };
+  }
+
+  function rangeFromPreference(value) {
+    var today = window.CelestialTime.today();
+    if (!value || typeof value !== "object") return null;
+    if (value.kind === "fixed" && /^\d{4}-\d{2}-\d{2}$/.test(value.from || "") &&
+      /^\d{4}-\d{2}-\d{2}$/.test(value.to || "")) {
+      return { from: value.from, to: value.to };
+    }
+    if (value.kind === "month") return periodRange("month");
+    if (value.kind === "yesterday") return periodRange("yesterday");
+    var days = Number(value.days);
+    if (value.kind === "days" && days >= 1 && days <= MAX_PERIOD_DAYS + 1) {
+      var start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
+      return { from: iso(start), to: iso(today) };
+    }
+    return null;
+  }
+
+  function savePeriod() {
+    api.put("/me/preferences/" + PERIOD_PREFERENCE, { value: periodPreference() })
+      .catch(function () { /* не сохранилось — на странице период уже применён */ });
+  }
+
+  async function restorePeriod() {
+    var stored = null;
+    try {
+      stored = await api.get("/me/preferences/" + PERIOD_PREFERENCE);
+    } catch (error) {
+      stored = null;
+    }
+    var range = rangeFromPreference(stored && stored.value);
+    if (!range) return;
+    var fromInput = byId("metaDateFrom");
+    var toInput = byId("metaDateTo");
+    if (fromInput) fromInput.value = range.from;
+    if (toInput) toInput.value = range.to;
+  }
+
+  function dayNumber(value) {
+    var parts = String(value).split("-");
+    return Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])) / 86400000;
+  }
+
+  /* Слишком длинный период обрезаем до полугода от конца и говорим об этом:
+     молча показывать меньше, чем выбрали, нельзя, а ошибка 422 ничего не объяснит. */
+  function clampPeriod() {
+    var range = currentRange();
+    if (dayNumber(range.to) - dayNumber(range.from) <= MAX_PERIOD_DAYS) return false;
+    var parts = range.to.split("-");
+    var start = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]) - MAX_PERIOD_DAYS);
+    byId("metaDateFrom").value = iso(start);
+    if (window.CelestialDateRange) window.CelestialDateRange.refresh();
+    notify({
+      title: "Период сокращён до полугода",
+      message: "Meta Ads показывает статистику не больше чем за полгода — период начнётся с " +
+        iso(start) + "."
+    });
+    return true;
   }
 
   function periodRange(period) {
-    var now = new Date();
+    var now = window.CelestialTime.today();
     var to = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     var from = new Date(to);
     if (period === "today") return { from: iso(to), to: iso(to) };
@@ -229,8 +325,11 @@
       '22;border-radius:14px;padding:14px 18px">' +
       '<div style="font-size:13px;font-weight:700;color:' + color + '">' +
       escapeHtml(title) + "</div>" +
-      '<div style="font-size:12px;color:#6A6161;font-weight:500;margin-top:5px;line-height:1.55">' +
-      escapeHtml(text) + "</div></div>";
+      // Без пояснения — только заголовок: пустой блок оставил бы отступ под ним.
+      (text
+        ? '<div style="font-size:12px;color:#6A6161;font-weight:500;margin-top:5px;' +
+          'line-height:1.55">' + escapeHtml(text) + "</div>"
+        : "") + "</div>";
   }
 
   /* ==========================================================
@@ -296,8 +395,7 @@
       { key: "name", label: "Кабинет", wide: true },
       { key: "kind", label: "Тип", kind: true },
       { key: "account_status", label: "Статус", status: true },
-      { key: "business", label: "БМ", text: true },
-      { key: "owner", label: "Ответственный", owner: true }
+      { key: "business", label: "БМ", text: true }
     ],
     campaigns: [
       { key: "name", label: "Кампания", wide: true },
@@ -317,30 +415,78 @@
     ]
   };
 
-  // Общий хвост метрик. `revenue` показываем только там, где доход вообще
-  // существует: ниже кампании атрибуции Keitaro нет, и пустой столбец врал бы.
-  var LEVEL_METRICS = [
-    { key: "spend", label: "Расход", money: true },
+  /* Метрики таблицы «Структура». Человек сам выбирает, какие из них видеть и в
+     каком порядке, — как «Настроить столбцы» в Dolphin. Keitaro-столбцы
+     (`revenue`) видны только там, где доход вообще существует: ниже кампании
+     атрибуции нет, и пустой столбец врал бы. `entity` — поля самих кампаний,
+     адсетов и объявлений, у кабинета или БМа их нет. */
+  var METRIC_CATALOG = [
+    { key: "spend", label: "Расход", money: true, locked: true },
     { key: "impressions", label: "Показы", num: true },
+    { key: "clicks", label: "Клики (все)", num: true },
     { key: "link_clicks", label: "Клики по ссылке", num: true },
-    { key: "link_ctr", label: "Клики, CR", percent: true },
-    { key: "cpc", label: "CPC", money: true },
+    { key: "ctr", label: "CTR (все)", percent: true },
+    { key: "link_ctr", label: "CTR (по ссылке)", percent: true },
+    { key: "cpc_link", label: "CPC (за клик по ссылке)", money: true },
+    { key: "cpc", label: "CPC (все клики)", money: true },
     { key: "cpm", label: "CPM", money: true },
-    { key: "results", label: "Результаты", num: true },
-    { key: "cpa", label: "CPA", money: true }
+    { key: "pixel_leads", label: "Лиды", num: true, hint: "Пиксель Meta" },
+    { key: "cost_per_pixel_lead", label: "Цена за лид", money: true, hint: "Пиксель Meta" },
+    { key: "registrations", label: "Завершённые регистрации", num: true },
+    { key: "cost_per_registration", label: "Цена за регистрацию", money: true },
+    { key: "results", label: "Депозиты (результаты)", num: true },
+    { key: "cpa", label: "Цена за депозит (результат)", money: true },
+    { key: "result_cr", label: "CR клик → результат", percent: true },
+    { key: "pixel_purchases", label: "Покупки", num: true, hint: "Пиксель Meta" },
+    { key: "cost_per_purchase", label: "Цена покупки", money: true, hint: "Пиксель Meta" },
+    { key: "landing_views", label: "Просмотры лендинга", num: true },
+    { key: "cost_per_landing_view", label: "Цена просмотра лендинга", money: true },
+    { key: "installs", label: "Установки приложения", num: true },
+    { key: "cost_per_install", label: "Цена установки", money: true },
+    { key: "daily_budget", label: "Дневной бюджет", money: true, entity: true,
+      hint: "Кампании и адсеты" },
+    { key: "leads", label: "Лиды (Keitaro)", num: true, revenue: true },
+    { key: "cpl", label: "Цена лида (Keitaro)", money: true, revenue: true },
+    { key: "sales", label: "Депозиты (Keitaro)", num: true, revenue: true },
+    { key: "cost_per_sale", label: "Цена депозита (Keitaro)", money: true, revenue: true },
+    { key: "revenue", label: "Доход", money: true, revenue: true },
+    { key: "profit", label: "Профит", money: true, tone: true, revenue: true },
+    { key: "roi", label: "ROI", percent: true, tone: true, revenue: true }
   ];
-  var LEVEL_REVENUE = [
-    { key: "leads", label: "Лиды", num: true },
-    { key: "revenue", label: "Доход", money: true },
-    { key: "profit", label: "Профит", money: true, tone: true },
-    { key: "roi", label: "ROI", percent: true, tone: true }
+  var DEFAULT_METRICS = [
+    "clicks", "link_clicks", "pixel_leads", "cost_per_pixel_lead", "registrations",
+    "cost_per_registration", "ctr", "link_ctr", "cpm", "cpc_link", "spend", "results", "cpa",
+    "leads", "revenue", "profit", "roi"
   ];
+  var COLUMNS_PREFERENCE = "meta.structure.columns";
+
+  function metricByKey(key) {
+    return METRIC_CATALOG.filter(function (column) { return column.key === key; })[0] || null;
+  }
+
+  /* Сохранённый набор мог устареть: столбец убрали из каталога — пропускаем,
+     «Расход» без него не бывает — возвращаем в начало. */
+  function cleanMetricKeys(keys) {
+    var result = [];
+    (keys || []).forEach(function (key) {
+      if (metricByKey(key) && result.indexOf(key) < 0) result.push(key);
+    });
+    if (!result.length) return DEFAULT_METRICS.slice();
+    if (result.indexOf("spend") < 0) result.unshift("spend");
+    return result;
+  }
 
   var KIND_LABELS = { business: "БМ", personal: "Личный" };
 
   function levelColumns(payload) {
     var head = LEVEL_HEADS[payload.level] || LEVEL_HEADS.accounts;
-    return head.concat(LEVEL_METRICS).concat(payload.has_revenue ? LEVEL_REVENUE : []);
+    var entityLevel = ["campaigns", "adsets", "ads"].indexOf(payload.level) >= 0;
+    var metrics = cleanMetricKeys(state.metricColumns).map(metricByKey).filter(function (column) {
+      if (column.revenue && !payload.has_revenue) return false;
+      if (column.entity && (!entityLevel || payload.level === "ads")) return false;
+      return true;
+    });
+    return head.concat(metrics);
   }
 
   function cellValue(column, row) {
@@ -356,7 +502,6 @@
       return '<span class="meta-chip" style="background:#F2EDED;color:#6A6161">' +
         escapeHtml(KIND_LABELS[value] || "—") + "</span>";
     }
-    if (column.owner) return ownerControl(row);
     if (column.wide) {
       // Под именем показываем ID объекта в Meta: по нему ищут и его же копируют,
       // когда из комментариев или чужой ссылки известно только его число.
@@ -414,7 +559,7 @@
 
   async function loadHours(refresh) {
     if (!state.hour) return;
-    var range = periodRange(state.period);
+    var range = currentRange();
     var payload = await api.get("/meta/insights/hourly?external_id=" +
       encodeURIComponent(state.hour.externalId) + "&level=" + state.hour.level +
       "&date_from=" + range.from + "&date_to=" + range.to +
@@ -497,8 +642,24 @@
   /* Кампании отмечают прямо в таблице: одна кампания за день успевает полить
      разные офферы, а один оффер — набраться из нескольких кампаний. Поэтому
      сначала выбор строк, и только потом «на что и за какие часы относим». */
+  /* Фиксировать расход можно на двух уровнях: кампаниями — когда баер знает,
+     какие именно крутились на оффер, и кабинетами целиком — когда весь кабинет
+     лил один оффер и перечислять его кампании незачем. */
+  var SPEND_LEVELS = ["campaigns", "accounts"];
+  // Кампании, адсеты и объявления отмечают ещё и для действий в самой Meta:
+  // старт, пауза, бюджет, копии. Это деньги в кабинете — только с meta.launch.
+  var ENTITY_LEVELS = ["campaigns", "adsets", "ads"];
+
+  function hasSpendFixing(level) {
+    return SPEND_LEVELS.indexOf(level) >= 0 && state.canFixSpend;
+  }
+
+  function hasEntityActions(level) {
+    return ENTITY_LEVELS.indexOf(level) >= 0 && state.canLaunch;
+  }
+
   function hasPickColumn(level) {
-    return level === "campaigns" && state.canFixSpend;
+    return hasSpendFixing(level) || hasEntityActions(level);
   }
 
   function hasFilterPickColumn(level) {
@@ -510,7 +671,13 @@
     return state.levelFilterPick[level];
   }
 
+  var PICK_LABELS = {
+    accounts: "Выбрать кабинет", campaigns: "Выбрать кампанию",
+    adsets: "Выбрать адсет", ads: "Выбрать объявление"
+  };
+
   function renderLevelTable(payload) {
+    state.levelPayload = payload;
     var columns = levelColumns(payload);
     var rows = payload.rows || [];
     var spendPick = hasPickColumn(payload.level);
@@ -526,7 +693,7 @@
       '<tr style="border-top:1px solid #F0EBEB;border-bottom:1px solid #F0EBEB">' +
       (spendPick
         ? '<th class="meta-th meta-check" style="padding-left:24px">' +
-          '<input type="checkbox" data-spend-all aria-label="Выбрать все кампании"' +
+          '<input type="checkbox" data-spend-all aria-label="Выбрать все строки"' +
           (allPicked ? " checked" : "") + "></th>"
         : filterPick
           ? '<th class="meta-th meta-check" style="padding-left:24px">' +
@@ -568,7 +735,9 @@
             '<input type="checkbox" data-spend-pick="' + escapeHtml(row.id) + '"' +
             ' data-spend-name="' + escapeHtml(row.name) + '"' +
             (state.spendPick[row.id] ? " checked" : "") +
-            ' aria-label="Выбрать кампанию"></td>'
+            ' aria-label="' +
+            (PICK_LABELS[payload.level] || "Выбрать строку") +
+            '"></td>'
           : filterPick
             ? '<td class="meta-cell meta-check" style="padding-left:24px">' +
               '<input type="checkbox" data-level-filter-pick="' +
@@ -593,14 +762,19 @@
       (pick ? '<td class="meta-check" style="padding-left:24px"></td>' : "") +
       columns.map(function (column, index) {
         var style = lead(index);
+        // Выравнивание берём у той же колонки в таблице: иначе прочерки итога
+        // стояли бы у правого края, а значения над ними — у левого.
+        var align = index === 0 || column.wide || column.text || column.status ||
+          column.kind ? " meta-cell--left" : "";
         if (index === columns.length - 1) style += "padding-right:24px;";
-        if (index === 0) return '<td style="' + style + '">Итого</td>';
+        if (index === 0) return '<td class="' + align.trim() + '" style="' + style + '">Итого</td>';
         // Итог по строкам-именам не суммируется — там прочерк, а не ноль.
         if (!(column.money || column.num || column.percent)) {
-          return '<td style="' + style + ';color:#C9BFBF">—</td>';
+          return '<td class="' + align.trim() + '" style="' + style + ';color:#C9BFBF">—</td>';
         }
         if (column.tone) style += "color:" + toneForNumber(totals[column.key]) + ";";
-        return '<td style="' + style + '">' + cellValue(column, totals) + "</td>";
+        return '<td class="' + align.trim() + '" style="' + style + '">' +
+          cellValue(column, totals) + "</td>";
       }).join("") + "</tr>";
     byId("metaResultCount").textContent = "Строк: " + rows.length;
     renderSpendButton();
@@ -616,6 +790,12 @@
     if (level === "socials" || level === "businesses" || level === "fanpages") {
       return "Пусто. Аккаунты, БМы и фан-пейджи приходят из Meta — " +
         "токену нужны права business_management и pages_show_list";
+    }
+    // Кампании, адсеты и объявления показываются и без открутки, поэтому
+    // пустая таблица здесь означает не «не тратили», а «объектов нет вовсе».
+    if (["campaigns", "adsets", "ads"].indexOf(level) >= 0) {
+      return "Пусто. Объекты приходят синхронизацией кабинета — нажмите " +
+        "«Синхронизировать» или проверьте, что кабинет виден токену";
     }
     return "За выбранный период открутки не было";
   }
@@ -663,10 +843,9 @@
   }
 
   async function loadLevel() {
-    var range = periodRange(state.period);
+    var range = currentRange();
     var query = "?date_from=" + range.from + "&date_to=" + range.to +
       (state.accountId ? "&account_id=" + encodeURIComponent(state.accountId) : "") +
-      (state.ownerId ? "&owner_id=" + encodeURIComponent(state.ownerId) : "") +
       (state.levelSearch ? "&search=" + encodeURIComponent(state.levelSearch) : "");
     FILTER_LEVELS.forEach(function (source) {
       if (!levelBelow(state.level, source)) return;
@@ -680,40 +859,6 @@
     renderLevelHint(payload);
     renderLevelTable(payload);
   }
-
-  /* Ответственный — единственное поле кабинета, которое принадлежит CRM, а не Meta,
-     поэтому назначается прямо в строке уровня «Кабинеты». */
-  function ownerControl(row) {
-    if (!state.canManage) {
-      return row.owner
-        ? escapeHtml(row.owner)
-        : '<span style="color:#C9821F">Не назначен</span>';
-    }
-    var options = ['<option value="">Не назначен</option>'].concat(
-      state.buyers.map(function (buyer) {
-        return '<option value="' + escapeHtml(buyer.id) + '"' +
-          (buyer.name === row.owner ? " selected" : "") + ">" +
-          escapeHtml(buyer.name) + "</option>";
-      })
-    );
-    return '<select class="meta-control meta-select" data-meta-owner="' +
-      escapeHtml(row.id) + '" aria-label="Ответственный за кабинет" ' +
-      'style="height:32px;font-size:12px;min-width:168px">' + options.join("") + "</select>";
-  }
-
-  async function assignOwner(accountId, ownerId) {
-    try {
-      await api.patch("/meta/accounts/" + accountId, { owner_id: ownerId || null });
-      await load();
-    } catch (error) {
-      notify({
-        title: "Не удалось назначить ответственного",
-        message: error && error.message ? error.message : ""
-      });
-      await load();
-    }
-  }
-
 
   /* ---------- фиксация расхода за отрезок времени (ТЗ 2.4.4) ---------- */
 
@@ -738,7 +883,7 @@
      переходить через полночь — от часа одного дня до часа другого. Модалка эти
      значения только показывает, а расход относят по часам кабинета. */
   function defaultWindowDay() {
-    return periodRange(state.period).to;
+    return currentRange().to;
   }
 
   function spendRange() {
@@ -767,11 +912,11 @@
       windowStamp(range_.date_to, range_.hour_to);
   }
 
+  /* Поля окна живут в самой форме фиксации, поэтому прятать их по уровню
+     таблицы незачем: форма и открывается только там, где расход фиксируют. */
   function renderWindowBox() {
     var box = byId("metaWindowBox");
     if (!box) return;
-    box.hidden = !hasPickColumn(state.level);
-    if (box.hidden) return;
     if (!byId("metaWindowDate").value) {
       byId("metaWindowDate").value = defaultWindowDay();
     }
@@ -805,9 +950,10 @@
 
   function renderSpendButton() {
     renderWindowBox();
+    renderEntityBar();
     var button = byId("metaSpendOpen");
     if (!button) return;
-    var visible = hasPickColumn(state.level);
+    var visible = hasSpendFixing(state.level);
     button.style.display = visible ? "" : "none";
     if (!visible) return;
     var count = selectedIds().length;
@@ -835,8 +981,691 @@
 
   function toggleSpendPick(box, on) {
     var id = box.getAttribute("data-spend-pick");
-    if (on) state.spendPick[id] = box.getAttribute("data-spend-name") || id;
-    else delete state.spendPick[id];
+    if (on) {
+      state.spendPick[id] = box.getAttribute("data-spend-name") || id;
+      state.spendPickLevel = state.level;
+    } else {
+      delete state.spendPick[id];
+    }
+  }
+
+  /* ---------- действия с кампаниями, адсетами и объявлениями ----------
+   *
+   * Как в Dolphin: отметили строки — над таблицей панель со стартом, паузой,
+   * бюджетом, копиями и остальным. Каждое действие уходит в Meta по одному
+   * объекту, поэтому ответ приходит построчно: часть может пройти, часть нет,
+   * и человек видит, что именно не получилось.
+   */
+
+  var ENTITY_CONFIRM = {
+    start: { title: "Запустить", label: "Запустить", done: "запущено" },
+    pause: { title: "Поставить на паузу", label: "Пауза", done: "на паузе" },
+    archive: { title: "Архивировать", label: "Архивировать", done: "в архиве" },
+    unarchive: {
+      title: "Разархивировать", label: "Разархивировать", done: "вернулось из архива"
+    },
+    duplicate: { title: "Дублировать", label: "Дублировать", done: "скопировано" },
+    "delete": { title: "Удалить в Facebook", label: "Удалить", done: "удалено", danger: true }
+  };
+
+  var ENTITY_NOUNS = {
+    campaigns: ["кампанию", "кампании", "кампаний"],
+    adsets: ["адсет", "адсета", "адсетов"],
+    ads: ["объявление", "объявления", "объявлений"]
+  };
+
+  function entityNoun(level, count) {
+    var forms = ENTITY_NOUNS[level] || ["объект", "объекта", "объектов"];
+    var tens = count % 100;
+    var ones = count % 10;
+    if (tens > 10 && tens < 20) return count + " " + forms[2];
+    if (ones === 1) return count + " " + forms[0];
+    if (ones > 1 && ones < 5) return count + " " + forms[1];
+    return count + " " + forms[2];
+  }
+
+  function entityPicks() {
+    return Object.keys(state.spendPick).map(function (id) {
+      return { id: id, name: state.spendPick[id] || id };
+    });
+  }
+
+  function renderEntityBar() {
+    var bar = byId("metaEntityBar");
+    if (!bar) return;
+    var visible = hasEntityActions(state.level);
+    bar.style.display = visible ? "" : "none";
+    if (!visible) {
+      closeEntityMenu();
+      return;
+    }
+    var count = entityPicks().length;
+    byId("metaEntityCount").textContent = "Выбрано: " + count;
+    Array.prototype.forEach.call(bar.querySelectorAll("[data-entity-action]"), function (button) {
+      var action = button.getAttribute("data-entity-action");
+      var off = !count || state.entityBusy;
+      // У объявления бюджета нет — он живёт на адсете или кампании.
+      if (action === "budget" && state.level === "ads") off = true;
+      button.disabled = off;
+    });
+    byId("metaEntityMore").disabled = !count || state.entityBusy;
+    byId("metaEntityClear").style.visibility = count ? "" : "hidden";
+    if (!count) closeEntityMenu();
+  }
+
+  function closeEntityMenu() {
+    var menu = byId("metaEntityMenu");
+    if (!menu || menu.hidden) return;
+    menu.hidden = true;
+    byId("metaEntityMore").setAttribute("aria-expanded", "false");
+  }
+
+  function entityFailures(results) {
+    var names = state.spendPick;
+    return (results || []).filter(function (row) { return !row.ok; }).map(function (row) {
+      return "«" + (names[row.id] || row.id) + "»: " + (row.error || "ошибка");
+    });
+  }
+
+  async function sendEntityAction(action, items) {
+    state.entityBusy = true;
+    renderEntityBar();
+    try {
+      return await api.post("/meta/entities/actions", {
+        level: state.level, action: action, items: items
+      });
+    } finally {
+      state.entityBusy = false;
+      renderEntityBar();
+    }
+  }
+
+  async function runEntityAction(action) {
+    var picks = entityPicks();
+    if (!picks.length) return;
+    var level = state.level;
+    var meta = ENTITY_CONFIRM[action];
+    var names = picks.slice(0, 5).map(function (pick) { return "«" + pick.name + "»"; });
+    if (picks.length > 5) names.push("и ещё " + (picks.length - 5));
+    var warning = {
+      start: "Объекты начнут откручиваться и тратить бюджет.",
+      duplicate: level === "ads"
+        ? "Копии появятся в тех же адсетах на паузе."
+        : "Копии создаются вместе с вложенными объектами и сразу стоят на паузе.",
+      "delete": "Объекты удалятся в Facebook безвозвратно — восстановить их не получится.",
+      archive: "Архивные объекты не откручиваются; вернуть их можно разархивацией."
+    }[action];
+    if (!(await askConfirm({
+      title: meta.title + " " + entityNoun(level, picks.length) + "?",
+      message: names.join(", ") + (warning ? "\n\n" + warning : ""),
+      confirmLabel: meta.label,
+      danger: !!meta.danger
+    }))) return;
+    var response;
+    try {
+      response = await sendEntityAction(action, picks.map(function (pick) {
+        return { id: pick.id };
+      }));
+    } catch (error) {
+      notify({ title: "Действие не выполнено", message: error.message || String(error) });
+      return;
+    }
+    if (action === "delete") {
+      response.results.forEach(function (row) {
+        if (row.ok) delete state.spendPick[row.id];
+      });
+    }
+    await reportEntityResult(response, meta.done);
+  }
+
+  async function reportEntityResult(response, doneWord) {
+    var failures = entityFailures(response.results);
+    loadLevel().catch(showFailure);
+    if (!failures.length) return;
+    await notify({
+      title: response.done
+        ? "Готово частично: " + doneWord + " " + response.done + " из " +
+          response.results.length
+        : "Meta не выполнила действие",
+      message: failures.slice(0, 8).join("\n") +
+        (failures.length > 8 ? "\nи ещё " + (failures.length - 8) : "")
+    });
+  }
+
+  /* Окно «Бюджет и ставка» и «Переименовать» — одна таблица: строка на объект,
+     после сохранения в последней колонке появляется ответ Meta по этой строке. */
+
+  function openEntityModal(kind) {
+    var picks = entityPicks();
+    if (!picks.length) return;
+    state.entityModal = {
+      kind: kind, level: state.level, loading: kind === "budget", saving: false,
+      rows: picks.map(function (pick) {
+        return { id: pick.id, name: pick.name, draftName: pick.name, result: null };
+      }),
+      strategies: {}
+    };
+    byId("metaEntityTitle").textContent = kind === "budget"
+      ? "Бюджет и ставка" : "Переименовать в FB";
+    byId("metaEntitySubtitle").textContent = kind === "budget"
+      ? "Изменения уходят в Meta по каждой строке отдельно. Пустое поле не меняется."
+      : "Новое название сразу меняется в Facebook.";
+    byId("metaEntityError").style.display = "none";
+    byId("metaEntityModal").style.display = "flex";
+    renderEntityModal();
+    if (kind === "budget") loadEntityDetails();
+  }
+
+  function closeEntityModal() {
+    state.entityModal = null;
+    byId("metaEntityModal").style.display = "none";
+  }
+
+  async function loadEntityDetails() {
+    var modal = state.entityModal;
+    var query = "?level=" + modal.level + modal.rows.map(function (row) {
+      return "&ids=" + encodeURIComponent(row.id);
+    }).join("");
+    try {
+      var payload = await api.get("/meta/entities/details" + query);
+      if (state.entityModal !== modal) return;
+      var byEntity = {};
+      (payload.items || []).forEach(function (item) { byEntity[item.id] = item; });
+      modal.strategies = payload.bid_strategies || {};
+      modal.rows.forEach(function (row) {
+        var item = byEntity[row.id];
+        row.detail = item || null;
+        if (!item) return;
+        row.name = item.name || row.name;
+        row.budget = item.daily_budget == null ? "" : String(item.daily_budget);
+        row.strategy = item.bid_strategy || "";
+        row.bid = item.bid_amount == null ? "" : String(item.bid_amount);
+        row.initial = { budget: row.budget, strategy: row.strategy, bid: row.bid };
+      });
+    } catch (error) {
+      if (state.entityModal !== modal) return;
+      showEntityError(error.message || "Не удалось получить бюджеты из Meta");
+    }
+    modal.loading = false;
+    renderEntityModal();
+  }
+
+  function showEntityError(message) {
+    var box = byId("metaEntityError");
+    box.textContent = message;
+    box.style.display = message ? "" : "none";
+  }
+
+  function bidNeeded(strategy) {
+    return strategy === "LOWEST_COST_WITH_BID_CAP" || strategy === "COST_CAP";
+  }
+
+  function entityResultCell(row) {
+    if (!row.result) return '<span class="entity-state" style="color:#C9BFBF">—</span>';
+    if (row.result.ok) return '<span class="entity-state is-ok">Сохранено</span>';
+    return '<span class="entity-state is-fail">' + escapeHtml(row.result.error || "Ошибка") +
+      "</span>";
+  }
+
+  function renderEntityModal() {
+    var modal = state.entityModal;
+    if (!modal) return;
+    var body = byId("metaEntityBody");
+    var save = byId("metaEntitySave");
+    save.disabled = modal.loading || modal.saving;
+    save.style.opacity = save.disabled ? ".6" : "";
+    save.textContent = modal.saving ? "Сохраняем…" : "Сохранить";
+    if (modal.loading) {
+      body.innerHTML = '<div style="padding:30px 0;text-align:center;color:#9B9292;' +
+        'font-size:13px">Получаем бюджеты и ставки из Meta…</div>';
+      return;
+    }
+    if (modal.kind === "rename") {
+      body.innerHTML = '<table class="entity-table"><thead><tr><th style="width:40%">ID</th>' +
+        "<th>Название</th><th style=\"width:170px\">Статус</th></tr></thead><tbody>" +
+        modal.rows.map(function (row, index) {
+          return "<tr><td><div class=\"entity-sub\" style=\"margin:0\">" + escapeHtml(row.id) +
+            "</div></td><td><input class=\"meta-control\" data-entity-name=\"" + index +
+            '" value="' + escapeHtml(row.draftName) + '" aria-label="Название"' +
+            (modal.saving ? " disabled" : "") + "></td><td>" + entityResultCell(row) +
+            "</td></tr>";
+        }).join("") + "</tbody></table>";
+      return;
+    }
+    var strategies = modal.strategies;
+    body.innerHTML = '<table class="entity-table"><thead><tr><th>Название</th>' +
+      '<th style="width:170px">Дневной бюджет</th><th style="width:220px">Стратегия ставок</th>' +
+      '<th style="width:150px">Размер ставки</th><th style="width:150px">Статус</th>' +
+      "</tr></thead><tbody>" + modal.rows.map(function (row, index) {
+        var detail = row.detail;
+        var head = '<td><div class="entity-name">' + escapeHtml(row.name) + "</div>" +
+          '<div class="entity-sub">' + escapeHtml(row.id) +
+          (detail && detail.account ? " · " + escapeHtml(detail.account) : "") + "</div></td>";
+        if (!detail) {
+          return "<tr>" + head + '<td colspan="3" style="color:#9B9292">Объект не найден ' +
+            "в доступных кабинетах</td><td>" + entityResultCell(row) + "</td></tr>";
+        }
+        var currency = escapeHtml(detail.currency || "");
+        var lock = modal.saving ? " disabled" : "";
+        // Бюджет на весь срок и бюджет на уровне адсетов (кампания без CBO)
+        // дневным полем не заменить — Meta такой запрос отклонит.
+        var budgetOff = detail.has_lifetime_budget || (modal.level === "campaigns" &&
+          detail.daily_budget == null);
+        var budgetCell = budgetOff
+          ? '<span style="color:#9B9292;font-size:12px">' +
+            (detail.has_lifetime_budget ? "Бюджет на весь срок" : "Бюджет в адсетах") +
+            "</span>"
+          : '<div class="entity-money"><input class="meta-control" type="number" min="0" ' +
+            'step="0.01" inputmode="decimal" data-entity-budget="' + index + '" value="' +
+            escapeHtml(row.budget) + '" aria-label="Дневной бюджет"' + lock +
+            "><span>" + currency + "</span></div>";
+        var strategyCell = row.strategy || !budgetOff || modal.level === "adsets"
+          ? '<select class="meta-control meta-select" data-entity-strategy="' + index + '"' +
+            ' aria-label="Стратегия ставок"' + lock + ">" +
+            (row.strategy ? "" : '<option value="">—</option>') +
+            Object.keys(strategies).map(function (code) {
+              return '<option value="' + code + '"' + (code === row.strategy ? " selected" : "") +
+                ">" + escapeHtml(strategies[code]) + "</option>";
+            }).join("") + "</select>"
+          : '<span style="color:#9B9292;font-size:12px">—</span>';
+        var bidCell = bidNeeded(row.strategy)
+          ? '<div class="entity-money"><input class="meta-control" type="number" min="0" ' +
+            'step="0.01" inputmode="decimal" data-entity-bid="' + index + '" value="' +
+            escapeHtml(row.bid) + '" aria-label="Размер ставки"' + lock + "><span>" + currency +
+            "</span></div>"
+          : '<span style="color:#9B9292;font-size:12px">Не нужна</span>';
+        return "<tr>" + head + "<td>" + budgetCell + "</td><td>" + strategyCell + "</td><td>" +
+          bidCell + "</td><td>" + entityResultCell(row) + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  function entityBudgetItems(modal) {
+    var items = [];
+    var problems = [];
+    modal.rows.forEach(function (row) {
+      if (!row.detail || (row.result && row.result.ok && !row.dirty)) return;
+      var start = row.initial || {};
+      var item = { id: row.id };
+      var budget = String(row.budget || "").trim();
+      if (budget && budget !== start.budget) {
+        if (!(Number(budget) > 0)) return problems.push("«" + row.name + "»: бюджет больше нуля");
+        item.daily_budget = budget;
+      }
+      var strategyChanged = row.strategy && row.strategy !== start.strategy;
+      var bid = String(row.bid || "").trim();
+      var bidChanged = bidNeeded(row.strategy) && bid !== start.bid;
+      if (strategyChanged || bidChanged) {
+        if (bidNeeded(row.strategy) && !(Number(bid) > 0)) {
+          return problems.push("«" + row.name + "»: укажите размер ставки");
+        }
+        item.bid_strategy = row.strategy;
+        if (bidNeeded(row.strategy)) item.bid_amount = bid;
+      }
+      if (Object.keys(item).length > 1) items.push(item);
+    });
+    return { items: items, problems: problems };
+  }
+
+  async function saveEntityModal() {
+    var modal = state.entityModal;
+    if (!modal || modal.saving || modal.loading) return;
+    var items;
+    var doneWord;
+    if (modal.kind === "rename") {
+      items = [];
+      var empty = modal.rows.filter(function (row) { return !String(row.draftName).trim(); });
+      if (empty.length) return showEntityError("Название не может быть пустым");
+      modal.rows.forEach(function (row) {
+        if (String(row.draftName).trim() !== row.name) {
+          items.push({ id: row.id, name: String(row.draftName).trim() });
+        }
+      });
+      doneWord = "переименовано";
+    } else {
+      var collected = entityBudgetItems(modal);
+      if (collected.problems.length) return showEntityError(collected.problems.join("; "));
+      items = collected.items;
+      doneWord = "изменено";
+    }
+    if (!items.length) return showEntityError("Нечего сохранять — значения не изменились");
+    showEntityError("");
+    modal.saving = true;
+    renderEntityModal();
+    var response;
+    try {
+      response = await api.post("/meta/entities/actions", {
+        level: modal.level, action: modal.kind, items: items
+      });
+    } catch (error) {
+      modal.saving = false;
+      if (state.entityModal !== modal) return;
+      renderEntityModal();
+      return showEntityError(error.message || "Meta не приняла изменения");
+    }
+    modal.saving = false;
+    if (state.entityModal !== modal) return;
+    var results = {};
+    response.results.forEach(function (row) { results[row.id] = row; });
+    modal.rows.forEach(function (row) {
+      var result = results[row.id];
+      if (!result) return;
+      row.result = result;
+      if (!result.ok) return;
+      if (modal.kind === "rename") {
+        row.name = row.draftName = String(row.draftName).trim();
+        state.spendPick[row.id] = row.name;
+      } else {
+        row.initial = { budget: row.budget, strategy: row.strategy, bid: row.bid };
+      }
+    });
+    loadLevel().catch(showFailure);
+    if (!response.failed) {
+      closeEntityModal();
+      return;
+    }
+    renderEntityModal();
+    showEntityError(response.done
+      ? doneWord.charAt(0).toUpperCase() + doneWord.slice(1) + " " + response.done + " из " +
+        response.results.length + " — причины ошибок в колонке «Статус»"
+      : "Meta не приняла изменения — причины в колонке «Статус»");
+  }
+
+  /* Автоправило в CRM привязывается к одной кампании; для остального — просто
+     вкладка правил, где видно, что уже настроено. */
+  function openEntityRules() {
+    var picks = entityPicks();
+    setTab("rules");
+    if (state.level !== "campaigns" || picks.length !== 1) {
+      if (picks.length) {
+        notify({
+          title: "Правило создаётся на одну кампанию",
+          message: "Чтобы сразу открыть новое правило с нужной кампанией, отметьте " +
+            "ровно одну кампанию. Сейчас открыт список правил."
+        });
+      }
+      return;
+    }
+    openRuleEditor(null);
+    state.ruleForm.name = "Правило · " + picks[0].name;
+    state.ruleForm.scope_kind = "campaign";
+    state.ruleForm.campaign_external_id = picks[0].id;
+    ensureCampaigns(true);
+    renderRuleForm();
+  }
+
+  function exportEntityRows() {
+    var payload = state.levelPayload;
+    if (!payload) return;
+    var columns = levelColumns(payload);
+    var rows = (payload.rows || []).filter(function (row) { return state.spendPick[row.id]; });
+    if (!rows.length) {
+      notify({
+        title: "Нечего выгружать",
+        message: "Отмеченных строк нет в текущей таблице — сбросьте поиск или фильтр."
+      });
+      return;
+    }
+    var cell = function (value) {
+      var text = value === null || value === undefined ? "" : String(value);
+      return /[";\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+    };
+    var head = ["ID"].concat(columns.map(function (column) { return column.label; }));
+    var lines = [head.map(cell).join(";")].concat(rows.map(function (row) {
+      return [row.id].concat(columns.map(function (column) {
+        var value = row[column.key];
+        if (column.kind) value = KIND_LABELS[value] || value;
+        // Excel с русской локалью ждёт запятую в дробях.
+        if (typeof value === "number") value = String(value).replace(".", ",");
+        return value;
+      })).map(cell).join(";");
+    }));
+    var range = currentRange();
+    var blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    var link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "meta-" + state.level + "-" + range.from + "_" + range.to + ".csv";
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(link.href);
+      link.remove();
+    }, 0);
+  }
+
+  function bindEntityBar() {
+    var bar = byId("metaEntityBar");
+    if (!bar) return;
+    bar.addEventListener("click", function (event) {
+      if (event.target.closest("#metaEntityMore")) {
+        var menu = byId("metaEntityMenu");
+        menu.hidden = !menu.hidden;
+        // Карточка структуры обрезает всё, что выходит за её край, а под
+        // короткой таблицей меню бы не поместилось — ставим его поверх страницы.
+        var spot = byId("metaEntityMore").getBoundingClientRect();
+        menu.style.top = spot.bottom + 6 + "px";
+        menu.style.left = Math.max(8, Math.min(spot.left, window.innerWidth - 250)) + "px";
+        byId("metaEntityMore").setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+        return;
+      }
+      if (event.target.closest("#metaEntityClear")) {
+        state.spendPick = {};
+        syncTableChecks();
+        renderSpendButton();
+        return;
+      }
+      var button = event.target.closest("[data-entity-action]");
+      if (!button || button.disabled) return;
+      closeEntityMenu();
+      var action = button.getAttribute("data-entity-action");
+      if (action === "budget" || action === "rename") return openEntityModal(action);
+      if (action === "rules") return openEntityRules();
+      if (action === "export") return exportEntityRows();
+      runEntityAction(action);
+    });
+    document.addEventListener("click", function (event) {
+      if (!event.target.closest || !event.target.closest(".meta-bulk__more")) closeEntityMenu();
+    });
+    window.addEventListener("scroll", closeEntityMenu, true);
+    byId("metaEntityClose").addEventListener("click", closeEntityModal);
+    byId("metaEntityCancel").addEventListener("click", closeEntityModal);
+    byId("metaEntitySave").addEventListener("click", saveEntityModal);
+    byId("metaEntityModal").addEventListener("click", function (event) {
+      if (event.target === event.currentTarget) closeEntityModal();
+    });
+    var body = byId("metaEntityBody");
+    body.addEventListener("input", function (event) {
+      var modal = state.entityModal;
+      if (!modal) return;
+      var target = event.target;
+      var row;
+      if (target.hasAttribute("data-entity-name")) {
+        row = modal.rows[Number(target.getAttribute("data-entity-name"))];
+        row.draftName = target.value;
+      } else if (target.hasAttribute("data-entity-budget")) {
+        row = modal.rows[Number(target.getAttribute("data-entity-budget"))];
+        row.budget = target.value;
+      } else if (target.hasAttribute("data-entity-bid")) {
+        row = modal.rows[Number(target.getAttribute("data-entity-bid"))];
+        row.bid = target.value;
+      }
+      if (row) row.dirty = true;
+    });
+    body.addEventListener("change", function (event) {
+      var modal = state.entityModal;
+      var target = event.target;
+      if (!modal || !target.hasAttribute("data-entity-strategy")) return;
+      var row = modal.rows[Number(target.getAttribute("data-entity-strategy"))];
+      row.strategy = target.value;
+      row.dirty = true;
+      // Колонка ставки появляется и прячется вместе со стратегией.
+      renderEntityModal();
+    });
+  }
+
+  /* ---------- настройка столбцов структуры ---------- */
+
+  async function loadColumnPreference() {
+    try {
+      var stored = await api.get("/me/preferences/" + COLUMNS_PREFERENCE);
+      var keys = stored && stored.value && stored.value.columns;
+      state.metricColumns = cleanMetricKeys(keys && keys.length ? keys : DEFAULT_METRICS);
+    } catch (error) {
+      // Без настроек таблица всё равно нужна — показываем набор по умолчанию.
+      state.metricColumns = DEFAULT_METRICS.slice();
+    }
+  }
+
+  function openColumnsModal() {
+    state.columnsDraft = cleanMetricKeys(state.metricColumns || DEFAULT_METRICS);
+    byId("metaColumnsSearch").value = "";
+    byId("metaColumnsPickedSearch").value = "";
+    byId("metaColumnsModal").style.display = "flex";
+    renderColumnsModal();
+    byId("metaColumnsSearch").focus();
+  }
+
+  function closeColumnsModal() {
+    state.columnsDraft = null;
+    byId("metaColumnsModal").style.display = "none";
+  }
+
+  function columnMatches(column, query) {
+    if (!query) return true;
+    return (column.label + " " + (column.hint || "")).toLowerCase().indexOf(query) >= 0;
+  }
+
+  function columnLabelHtml(column) {
+    var hint = column.hint || (column.revenue ? "Только с атрибуцией Keitaro" : "");
+    return '<span class="cols-item__label">' + escapeHtml(column.label) +
+      (hint ? '<span class="cols-item__hint">' + escapeHtml(hint) + "</span>" : "") + "</span>";
+  }
+
+  function renderColumnsModal() {
+    var draft = state.columnsDraft;
+    if (!draft) return;
+    var query = byId("metaColumnsSearch").value.trim().toLowerCase();
+    var pickedQuery = byId("metaColumnsPickedSearch").value.trim().toLowerCase();
+    var available = METRIC_CATALOG.filter(function (column) {
+      return draft.indexOf(column.key) < 0;
+    });
+    var shown = available.filter(function (column) { return columnMatches(column, query); });
+    byId("metaColumnsAvailableCount").textContent = available.length;
+    byId("metaColumnsAvailable").innerHTML = shown.length
+      ? shown.map(function (column) {
+        return '<div class="cols-item">' + columnLabelHtml(column) +
+          '<button type="button" data-col-add="' + column.key + '" aria-label="Добавить «' +
+          escapeHtml(column.label) + '»">+</button></div>';
+      }).join("")
+      : '<div class="cols-empty">' + (available.length ? "Ничего не найдено" : "Все столбцы уже в таблице") +
+        "</div>";
+    byId("metaColumnsPickedCount").textContent = draft.length;
+    // Во время поиска порядок не трогаем: перетаскивание по отфильтрованному
+    // списку переставляло бы строки относительно скрытых.
+    var dragging = !pickedQuery;
+    byId("metaColumnsPicked").innerHTML = draft.map(metricByKey).filter(function (column) {
+      return columnMatches(column, pickedQuery);
+    }).map(function (column) {
+      return '<div class="cols-item' + (dragging ? " cols-item--picked" : "") + '"' +
+        (dragging ? ' draggable="true"' : "") + ' data-col-key="' + column.key + '">' +
+        (dragging ? '<span class="cols-item__grip" aria-hidden="true">≡</span>' : "") +
+        columnLabelHtml(column) +
+        '<button type="button" data-col-remove="' + column.key + '"' +
+        (column.locked ? ' disabled title="Расход в таблице всегда"' : "") +
+        ' aria-label="Убрать «' + escapeHtml(column.label) + '»">×</button></div>';
+    }).join("") || '<div class="cols-empty">Ничего не найдено</div>';
+  }
+
+  async function saveColumnsModal() {
+    var keys = cleanMetricKeys(state.columnsDraft);
+    state.metricColumns = keys;
+    closeColumnsModal();
+    if (state.levelPayload) renderLevelTable(state.levelPayload);
+    try {
+      await api.put("/me/preferences/" + COLUMNS_PREFERENCE, { value: { columns: keys } });
+    } catch (error) {
+      notify({
+        title: "Столбцы не сохранились",
+        message: "На этой странице они уже применены, но после перезагрузки вернутся прежние. " +
+          (error && error.message ? error.message : "")
+      });
+    }
+  }
+
+  function clearDropMarks() {
+    Array.prototype.forEach.call(
+      document.querySelectorAll(".cols-item--over-before,.cols-item--over-after"),
+      function (item) { item.classList.remove("cols-item--over-before", "cols-item--over-after"); }
+    );
+  }
+
+  function bindColumnsModal() {
+    if (!byId("metaColumnsModal")) return;
+    byId("metaColumnsOpen").addEventListener("click", openColumnsModal);
+    byId("metaColumnsClose").addEventListener("click", closeColumnsModal);
+    byId("metaColumnsCancel").addEventListener("click", closeColumnsModal);
+    byId("metaColumnsSave").addEventListener("click", saveColumnsModal);
+    byId("metaColumnsReset").addEventListener("click", function () {
+      state.columnsDraft = DEFAULT_METRICS.slice();
+      renderColumnsModal();
+    });
+    byId("metaColumnsModal").addEventListener("click", function (event) {
+      if (event.target === event.currentTarget) return closeColumnsModal();
+      var add = event.target.closest("[data-col-add]");
+      if (add) {
+        state.columnsDraft.push(add.getAttribute("data-col-add"));
+        return renderColumnsModal();
+      }
+      var remove = event.target.closest("[data-col-remove]");
+      if (remove && !remove.disabled) {
+        var key = remove.getAttribute("data-col-remove");
+        state.columnsDraft = state.columnsDraft.filter(function (item) { return item !== key; });
+        renderColumnsModal();
+      }
+    });
+    byId("metaColumnsSearch").addEventListener("input", renderColumnsModal);
+    byId("metaColumnsPickedSearch").addEventListener("input", renderColumnsModal);
+
+    var picked = byId("metaColumnsPicked");
+    var dragKey = null;
+    picked.addEventListener("dragstart", function (event) {
+      var item = event.target.closest("[data-col-key]");
+      if (!item) return;
+      dragKey = item.getAttribute("data-col-key");
+      item.classList.add("cols-item--dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", dragKey);
+    });
+    picked.addEventListener("dragover", function (event) {
+      var item = event.target.closest("[data-col-key]");
+      if (!dragKey || !item) return;
+      event.preventDefault();
+      clearDropMarks();
+      if (item.getAttribute("data-col-key") === dragKey) return;
+      var box = item.getBoundingClientRect();
+      item.classList.add(event.clientY < box.top + box.height / 2
+        ? "cols-item--over-before" : "cols-item--over-after");
+    });
+    picked.addEventListener("drop", function (event) {
+      var item = event.target.closest("[data-col-key]");
+      event.preventDefault();
+      clearDropMarks();
+      if (!dragKey || !item) return;
+      var target = item.getAttribute("data-col-key");
+      if (target === dragKey) return;
+      var box = item.getBoundingClientRect();
+      var after = event.clientY >= box.top + box.height / 2;
+      var draft = state.columnsDraft.filter(function (key) { return key !== dragKey; });
+      draft.splice(draft.indexOf(target) + (after ? 1 : 0), 0, dragKey);
+      state.columnsDraft = draft;
+      dragKey = null;
+      renderColumnsModal();
+    });
+    picked.addEventListener("dragend", function () {
+      dragKey = null;
+      clearDropMarks();
+      Array.prototype.forEach.call(picked.querySelectorAll(".cols-item--dragging"),
+        function (item) { item.classList.remove("cols-item--dragging"); });
+    });
   }
 
   function syncLevelFilterChecks(level) {
@@ -874,18 +1703,14 @@
 
   function openSpendModal() {
     if (!selectedIds().length) return;
-    var range_ = spendRange();
-    if (!windowOpens(range_)) {
-      return notify({
-        title: "Проверьте окно",
-        message: "Конец окна должен быть позже начала."
-      });
-    }
-    byId("metaSpendWindowValue").textContent = windowLabel(range_);
+    /* Окно правят в самой форме, поэтому неверное окно её не закрывает и не
+       мешает открыть: о том, что конец раньше начала, скажет подсказка под
+       полями — там же, где окно и правят. */
     state.spend = { rows: [], commits: [], loading: false };
     byId("metaSpendCommits").innerHTML = "";
-    byId("metaSpendWindowHint").textContent =
-      "Расход берётся по часам кабинета — Meta других вариантов не даёт.";
+    byId("metaSpendWindowHint").textContent = state.spendPickLevel === "accounts"
+      ? "Кабинеты целиком: в окно уйдут все их кампании с расходом за эти часы."
+      : "Часы по Москве (UTC+3).";
     spendError("");
     renderSpendRows();
     renderSpendTotal();
@@ -978,11 +1803,12 @@
     try {
       // Часы спрашиваем только по отмеченным кампаниям: остальные к этой
       // фиксации отношения не имеют, а каждый лишний поход — запрос в Meta.
+      var param = state.spendPickLevel === "accounts" ? "&account_ids=" : "&campaign_ids=";
       var query = "?from=" + encodeURIComponent(range_.date_from) +
         "&to=" + encodeURIComponent(range_.date_to) +
         "&hour_from=" + range_.hour_from + "&hour_to=" + range_.hour_to +
         ids.map(function (id) {
-          return "&campaign_ids=" + encodeURIComponent(id);
+          return param + encodeURIComponent(id);
         }).join("") +
         (refresh ? "&refresh=true" : "");
       var payload = await api.get("/meta/spend/window" + query);
@@ -991,11 +1817,7 @@
         encodeURIComponent(range_.date_from) + "&to=" + encodeURIComponent(range_.date_to));
       state.spend.commits = commits.items || [];
       byId("metaSpendWindowHint").textContent = (payload.timezones || []).length
-        ? "Часы считает Meta по таймзоне кабинета: " + payload.timezones.join(", ") +
-          ". Окно: " + windowLabel(range_) +
-          (range_.date_from === range_.date_to
-            ? " — часы " + range_.hour_from + "–" + (range_.hour_to - 1) + " включительно."
-            : ".")
+        ? "Часы по Москве (UTC+3). Окно: " + windowLabel(range_) + "."
         : "За этот период у выбранных кампаний расхода не было.";
       renderSpendRows();
       renderSpendCommits();
@@ -1025,6 +1847,7 @@
 
   function renderSpendRows() {
     var host = byId("metaSpendRows");
+    var byAccounts = state.spendPickLevel === "accounts";
     var ids = selectedIds();
     if (!ids.length) {
       host.innerHTML = "";
@@ -1033,7 +1856,22 @@
     var range_ = spendRange();
     var known = {};
     state.spend.rows.forEach(function (row) { known[row.campaign_id] = row; });
-    host.innerHTML = '<div class="spend-title">Выбранные кампании</div>' +
+    /* Отметили кабинеты — в списке всё равно кампании: расход относится на
+       оффер кампанией, и человек должен видеть, что именно уедет. Пока Meta
+       не ответила, показывать нечего — у кабинета имён кампаний ещё нет. */
+    if (byAccounts) {
+      ids = state.spend.rows.map(function (row) { return row.campaign_id; });
+      if (!ids.length) {
+        host.innerHTML = state.spend.loading
+          ? ""
+          : '<div class="spend-title">Кампании кабинетов</div>' +
+            '<div style="padding:14px;color:#9B9292;font-size:12.5px;font-weight:600">' +
+            "За это окно у выбранных кабинетов расхода не было.</div>";
+        return;
+      }
+    }
+    host.innerHTML = '<div class="spend-title">' +
+      (byAccounts ? "Кампании выбранных кабинетов" : "Выбранные кампании") + "</div>" +
       ids.map(function (id) {
         // Пока Meta не ответила, строка уже на месте — с именем из таблицы.
         var row = known[id] ||
@@ -1134,7 +1972,9 @@
         hour_from: range_.hour_from,
         date_to: range_.date_to,
         hour_to: range_.hour_to,
-        campaign_ids: selectedIds(),
+        campaign_ids: state.spendPickLevel === "accounts"
+          ? (state.spend.rows || []).map(function (row) { return row.campaign_id; })
+          : selectedIds(),
         offer_id: values.offer_id,
         buyer_id: values.buyer_id,
         provider_id: values.provider_id
@@ -1199,7 +2039,6 @@
           }
           renderSpendButton();
           if (byId("metaSpendModal").style.display !== "flex") return;
-          byId("metaSpendWindowValue").textContent = windowLabel();
           loadSpendWindow().catch(function () {});
         });
       }
@@ -1207,6 +2046,8 @@
     byId("metaSpendRows").addEventListener("click", function (event) {
       var drop = event.target.closest ? event.target.closest("[data-spend-remove]") : null;
       if (!drop) return;
+      // На уровне кабинетов строка списка — это кампания, а отмечен кабинет:
+      // убрать одну кампанию из его окна нельзя, снимается весь кабинет.
       delete state.spendPick[drop.getAttribute("data-spend-remove")];
       syncTableChecks();
       renderSpendButton();
@@ -1227,7 +2068,6 @@
 
   function renderFilters(payload) {
     var accountSelect = byId("metaAccountFilter");
-    var ownerSelect = byId("metaOwnerFilter");
     var accounts = payload.accounts || [];
     // Список кабинетов приходит уже отфильтрованным по правам, поэтому при
     // выбранном кабинете его нельзя перерисовывать из ответа — останется один пункт.
@@ -1236,22 +2076,8 @@
         accounts.map(function (account) {
           return accountOptionHtml(account, "");
         }).join("");
-      var owners = [];
-      accounts.forEach(function (account) {
-        if (account.owner_id && !owners.some(function (item) {
-          return item.id === account.owner_id;
-        })) {
-          owners.push({ id: account.owner_id, name: account.owner_name });
-        }
-      });
-      ownerSelect.innerHTML = '<option value="">Все ответственные</option>' +
-        owners.map(function (owner) {
-          return '<option value="' + escapeHtml(owner.id) + '">' +
-            escapeHtml(owner.name) + "</option>";
-        }).join("");
     }
     accountSelect.value = state.accountId;
-    ownerSelect.value = state.ownerId;
   }
 
   function renderSyncState() {
@@ -1292,7 +2118,7 @@
     if (!value) return "—";
     var moment = new Date(value);
     if (isNaN(moment.getTime())) return "—";
-    return moment.toLocaleString("ru-RU", {
+    return window.CelestialTime.format(moment, {
       day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
     });
   }
@@ -1324,10 +2150,9 @@
   }
 
   async function load() {
-    var range = periodRange(state.period);
+    var range = currentRange();
     var query = "?date_from=" + range.from + "&date_to=" + range.to +
-      (state.accountId ? "&account_id=" + encodeURIComponent(state.accountId) : "") +
-      (state.ownerId ? "&owner_id=" + encodeURIComponent(state.ownerId) : "");
+      (state.accountId ? "&account_id=" + encodeURIComponent(state.accountId) : "");
     var payload = await api.get("/meta/overview" + query);
     state.accounts = payload.accounts || [];
     state.campaigns = payload.campaigns || [];
@@ -1429,6 +2254,11 @@
     byId("metaFieldName").value = editing ? connection.name : "";
     byId("metaFieldToken").value = "";
     byId("metaFieldProxy").value = editing ? (connection.proxy_url || "") : "";
+    var proxyStatus = byId("metaModalProxyStatus");
+    if (proxyStatus) proxyStatus.textContent = "";
+    // Слепок доступов на момент открытия: по нему «Сохранить» и понимает,
+    // нужно ли перезаходить в Facebook или менялось только название.
+    state.modalSession = sessionFingerprint();
     byId("metaFieldUserAgent").value = editing ? (connection.user_agent || "") : "";
     byId("metaModalCookies").value = "";
     byId("metaModalSessionToken").value = "";
@@ -1446,9 +2276,7 @@
       byId("metaModal").querySelectorAll("input, textarea, select"),
       function (field) { field.disabled = !editable; }
     );
-    ["metaModalSessionStart", "metaModalSessionClose"].forEach(function (id) {
-      byId(id).disabled = !editable;
-    });
+    byId("metaModalSessionClose").disabled = !editable;
     byId("metaModalChecks").style.display = "none";
     modalError("");
     byId("metaModalStatus").textContent = "";
@@ -1499,9 +2327,7 @@
               ? ' <span style="color:#9B9292">' + (row.count || 0) + "</span>"
               : ' <span style="color:#9B9292">' + escapeHtml(row.error || "") + "</span>") +
             "</span></div>";
-        }).join("") +
-        '<div style="margin-top:8px;color:#6A6161;font-weight:500">' +
-        escapeHtml(result.auth_method_hint || "") + "</div>";
+        }).join("");
       host.style.display = "";
     } catch (error) {
       modalError(error && error.message ? error.message : "Meta не ответила");
@@ -1509,6 +2335,17 @@
       button.disabled = false;
       byId("metaModalStatus").textContent = "";
     }
+  }
+
+  /* Что определяет браузерную сессию: cookies, прокси и user-agent. Меняется
+     любое из трёх — прежний токен к новым доступам не подходит, и его нужно
+     получать заново. Название и прочее к сессии отношения не имеют. */
+  function sessionFingerprint() {
+    return [
+      byId("metaModalCookies").value.trim(),
+      byId("metaFieldProxy").value.trim(),
+      byId("metaFieldUserAgent").value.trim()
+    ].join("\u0000");
   }
 
   async function saveConnection() {
@@ -1530,8 +2367,22 @@
         return;
       }
       token = byId("metaModalSessionToken").value;
+      // Браузер поднимает само сохранение — и только когда доступы изменились.
+      // Прежде для этого была отдельная кнопка, и её жали даже при правке
+      // названия: лишний вход в Facebook с чужого IP — риск для аккаунта.
+      if (!token && (!connection || sessionFingerprint() !== state.modalSession)) {
+        try {
+          token = await sessionStart("modal");
+        } catch (error) {
+          // Причина уже написана в строке статуса блока «Браузер Facebook».
+          byId("metaModalSave").disabled = false;
+          byId("metaModalStatus").textContent = "";
+          return;
+        }
+        token = byId("metaModalSessionToken").value || token;
+      }
       if (!connection && !token) {
-        modalError("Получите токен через браузер (блок «Браузер Facebook»)");
+        modalError("Не удалось получить токен через браузер — проверьте доступы");
         return;
       }
     } else if (!connection && !token) {
@@ -1911,8 +2762,7 @@
     var inflight =
       (state.launches || []).some(function (launch) {
         return launch.status === "queued" || launch.status === "publishing";
-      }) ||
-      (state.queue || []).some(function (row) { return row.status === "pending"; });
+      });
     if (!inflight) return;
     state.launchPollTimer = window.setTimeout(async function () {
       if (state.launchPollBusy) {
@@ -1922,7 +2772,6 @@
       state.launchPollBusy = true;
       try {
         await loadLaunches();
-        if (state.launchView === "queue") await loadQueue();
       } catch (error) {
         // Тихий опрос: одна неудача не должна гасить обновление насовсем.
       } finally {
@@ -2059,7 +2908,7 @@
         options: dictOptions(reference.call_to_actions,
           launch.call_to_action || "LEARN_MORE") },
       { name: "page_id", label: "ID страницы Facebook", half: true, value: launch.page_id || "",
-        hint: "если не задан в шаблоне" },
+        hint: "страница, от имени которой выйдет объявление" },
       { name: "pixel_id", label: "ID пикселя", half: true, value: launch.pixel_id || "" },
       { name: "creative_ids", label: "Креативы", type: "checklist",
         empty: "В этом кабинете ещё нет загруженных креативов",
@@ -2098,13 +2947,11 @@
     // и что с ним происходит», а отдельной вкладкой она дублировала бы журнал.
     byId("metaLaunchList").style.display = view === "queue" ? "" : "none";
     byId("metaLaunchWizard").style.display = view === "wizard" ? "" : "none";
-    byId("metaLaunchQueue").style.display = view === "queue" ? "" : "none";
     if (view === "bundles") loadTemplates().catch(showFailure);
     if (view === "wizard") startUpload();
-    if (view === "queue") {
-      loadLaunches().catch(showFailure);
-      loadQueue().catch(showFailure);
-    }
+    // Очередь — это таблица заливов: одна строка на залив, как в Dolphin.
+    // Пошаговый журнал вызовов Graph API отсюда убран.
+    if (view === "queue") loadLaunches().catch(showFailure);
   }
 
   function startUpload() {
@@ -2120,9 +2967,7 @@
       assets: {},
       // Активный язык объявления на шаге «Креативы» — чипсы-табы.
       textTabs: {},
-      // Дополнительные поля шага «Кабинеты»: включаются свитчерами сверху.
-      // Бенефициар тянется из подсказок самого кабинета (DSA-прозрачность).
-      switches: { naming: true, urlTags: true, displayLink: true, beneficiary: true },
+      // Подсказки бенефициара, которые кабинет отдаёт сам (DSA-прозрачность).
       beneficiaries: {},
       accountSearch: "",
       onlyPicked: false,
@@ -2134,8 +2979,6 @@
       languageNames: {},
       // Модалка «Добавить языки»: открытость, поиск, отметки.
       langPicker: null,
-      split: false,
-      unique: false,
       values: {
         name: "", template_id: "", offer_id: "", partner_id: "", owner_id: "",
         geo: "", daily_budget: "", spend_limit: "", start_date: "", end_date: "",
@@ -2152,6 +2995,7 @@
         budget_level: "",
         budget_kind: "",
         budget_randomize: false,
+        budget_randomize_pct: "10",
         adset_budget_limit: "",
         budget_limit_on: false,
         budget_limit_min: "",
@@ -2253,6 +3097,30 @@
     values.description = blocks.ad.description || values.description;
     values.call_to_action = bundle.call_to_action || values.call_to_action;
     values.page_id = bundle.page_id || values.page_id;
+    // Разброс бюджета приходит из связки вместе с процентом — в заливе его
+    // видно и можно поменять под конкретные кабинеты.
+    values.budget_randomize = !!blocks.campaign.budget_randomize;
+    values.budget_randomize_pct = String(blocks.campaign.budget_randomize_pct || 10);
+    // Мультиязычная связка: «Языки» включаются сами, тексты подставляются —
+    // остаётся добавить креативы. Уже выбранные файлы не теряем.
+    var texts = blocks.ad.multilingual ? (blocks.ad.texts || []) : [];
+    if (texts.length) {
+      var kept = ((state.upload.ads || [])[0] || {}).files || [];
+      state.upload.languages = true;
+      state.upload.textTabs = {};
+      state.upload.ads = [{
+        files: kept,
+        texts: texts.map(function (text) {
+          return Object.assign(emptyText(text.language, text.language_name), {
+            headline: text.headline || "",
+            primary_text: text.primary_text || "",
+            description: text.description || "",
+            call_to_action: bundle.call_to_action || "LEARN_MORE"
+          });
+        })
+      }];
+      fillLanguageLinks();
+    }
   }
 
   function bundleSummaryHtml() {
@@ -2374,11 +3242,12 @@
       uploadField("spend_limit", "Лимит расхода", 'type="number" min="0" step="0.01"',
         "Необязательно") +
       uploadSelect("call_to_action", "Кнопка", ctaOptions()) +
-      uploadField("page_id", "Fan page ID", 'maxlength="60"', "Пусто — возьмётся из связки") +
+      uploadField("page_id", "Fan page ID", 'maxlength="60"',
+        "Пусто — берётся у кабинета на шаге «Кабинеты»") +
       "</div>" +
       '<div style="margin-top:14px">' +
       uploadField("link_url", "Ссылка", 'placeholder="https://..."',
-        "Пусто — возьмётся из связки") + "</div>" +
+        "Пусто — берётся у кабинета на шаге «Кабинеты»") + "</div>" +
       '<div class="meta-up-grid" style="margin-top:14px">' +
       uploadField("url_tags", "Параметры URL", 'placeholder="utm_source=fb&utm_campaign={{campaign.id}}"',
         "Уходят в url_tags объявления — Meta допишет их к ссылке сама") +
@@ -2414,6 +3283,12 @@
 
   /* Цель кампании: 4 селекта поверх связки — цель, событие пикселя,
      окно конверсии и вовлечённые просмотры. */
+  var ENGAGED_VIEWS = [
+    { value: "none", label: "Отсутствует" },
+    { value: "1d", label: "1 день" },
+    { value: "7d", label: "7 дней" }
+  ];
+
   function goalCardHtml() {
     var values = state.upload.values;
     var bundle = state.reference || {};
@@ -2440,18 +3315,55 @@
       '<div style="display:grid;gap:14px">' + goalSelect +
       '<label class="meta-field"><span>Событие пикселя</span>' +
       '<select class="meta-control meta-select" style="width:100%" data-up-field="custom_event_type">' +
-      plainOptions(events, "Из связки", values.custom_event_type) + "</select></label>" +
+      plainOptions(withoutInherited("custom_event_type", events), bundleFallback("custom_event_type", events),
+        values.custom_event_type) + "</select></label>" +
       '<label class="meta-field"><span>Окно конверсии</span>' +
       '<select class="meta-control meta-select" style="width:100%" data-up-field="attribution">' +
-      plainOptions(windows, "Из связки", values.attribution) + "</select></label>" +
+      plainOptions(withoutInherited("attribution", windows), bundleFallback("attribution", windows),
+        values.attribution) + "</select></label>" +
       '<label class="meta-field"><span>Вовлечённые просмотры (только для видео)</span>' +
       '<select class="meta-control meta-select" style="width:100%" data-up-field="engaged_view">' +
-      plainOptions([
-        { value: "none", label: "Отсутствует" },
-        { value: "1d", label: "1 день" },
-        { value: "7d", label: "7 дней" }
-      ], "Из связки", values.engaged_view) + "</select></label>" +
+      plainOptions(withoutInherited("engaged_view", ENGAGED_VIEWS),
+        bundleFallback("engaged_view", ENGAGED_VIEWS),
+        values.engaged_view) + "</select></label>" +
       "</div></div>";
+  }
+
+  /* Что подставит связка, если поле оставить пустым. Раньше здесь стояло
+     «Из связки», и человек не видел, с чем именно уйдёт залив: чтобы узнать
+     событие пикселя или стратегию ставок, приходилось открывать саму связку. */
+  function bundleFieldValue(field) {
+    var bundle = uploadBundle();
+    if (!bundle) return "";
+    var blocks = bundleSettings(bundle);
+    if (field === "custom_event_type") {
+      return bundle.custom_event_type || blocks.adset.custom_event_type || "";
+    }
+    if (field === "bid_strategy") {
+      return bundle.bid_strategy || blocks.campaign.bid_strategy || "";
+    }
+    var own = blocks.adset[field];
+    if (own === undefined || own === null || own === "") own = blocks.campaign[field];
+    return own === undefined || own === null ? "" : own;
+  }
+
+  function bundleFallback(field, items) {
+    var value = bundleFieldValue(field);
+    var found = (items || []).filter(function (row) {
+      return String(row.value) === String(value);
+    })[0];
+    // Связка не выбрана или значения в ней нет — говорим как есть, а не
+    // показываем чужое значение первым в списке.
+    return found ? found.label : "Из связки";
+  }
+
+  /* Значение связки уже стоит первым — второй раз тем же словом его в списке
+     не показываем. Выбор того же самого руками ничего бы не изменил: в Meta
+     ушло бы то же число, только записанное в залив, а не унаследованное. */
+  function withoutInherited(field, items) {
+    var value = String(bundleFieldValue(field));
+    if (!value) return items;
+    return items.filter(function (row) { return String(row.value) !== value; });
   }
 
   function plainOptions(items, placeholder, selected) {
@@ -2463,6 +3375,15 @@
       }).join("");
   }
 
+  var BUDGET_LEVELS = [
+    { value: "campaign", label: "Кампания" },
+    { value: "adset", label: "Адсет" }
+  ];
+  var BUDGET_KINDS = [
+    { value: "daily", label: "Дневной" },
+    { value: "lifetime", label: "На весь срок" }
+  ];
+
   /* Бюджет и ставка: уровень, тип, разброс, лимит адсета (мин/макс),
      запланированное увеличение бюджета, стратегия ставок. */
   function budgetCardHtml() {
@@ -2473,16 +3394,12 @@
       '<div style="display:grid;gap:14px">' +
       '<div class="meta-line"><span>Уровень бюджета</span>' +
       segHtml("budget_level", [
-        { value: "", label: "Из связки" },
-        { value: "campaign", label: "Кампания" },
-        { value: "adset", label: "Адсет" }
-      ]) + "</div>" +
+        { value: "", label: bundleFallback("budget_level", BUDGET_LEVELS) }
+      ].concat(withoutInherited("budget_level", BUDGET_LEVELS))) + "</div>" +
       '<div class="meta-line"><span>Тип бюджета</span>' +
       segHtml("budget_kind", [
-        { value: "", label: "Из связки" },
-        { value: "daily", label: "Дневной" },
-        { value: "lifetime", label: "На весь срок" }
-      ]) + "</div>" +
+        { value: "", label: bundleFallback("budget_kind", BUDGET_KINDS) }
+      ].concat(withoutInherited("budget_kind", BUDGET_KINDS))) + "</div>" +
       '<div class="meta-line"><span>Бюджет</span>' +
       '<input class="meta-control" style="width:130px;padding:0 13px" type="number" min="0" ' +
       'step="0.01" data-up-field="daily_budget" value="' +
@@ -2491,16 +3408,24 @@
       escapeHtml(values.budget_currency || "USD") + "</span>" +
       '<label class="meta-switch"><input type="checkbox" data-up-field="budget_randomize"' +
       (values.budget_randomize ? " checked" : "") +
-      '><span class="meta-switch__box"></span><span>Рандомизировать</span></label></div>' +
+      '><span class="meta-switch__box"></span><span>Рандомизировать</span></label>' +
+      (values.budget_randomize
+        ? randomizePctHtml('data-up-field="budget_randomize_pct"', values.budget_randomize_pct)
+        : "") + "</div>" +
       budgetLimitHtml() +
       budgetIncreaseHtml() +
       '<div class="meta-line"><span>Стратегия ставок</span>' +
       '<select class="meta-control meta-select" style="width:240px" data-up-field="bid_strategy">' +
-      '<option value="">Из связки</option>' +
-      Object.keys(strategies).map(function (code) {
-        return '<option value="' + escapeHtml(code) + '"' +
-          (code === values.bid_strategy ? " selected" : "") + ">" +
-          escapeHtml(strategies[code]) + "</option>";
+      '<option value="">' + escapeHtml(bundleFallback("bid_strategy",
+        Object.keys(strategies).map(function (code) {
+          return { value: code, label: strategies[code] };
+        }))) + "</option>" +
+      withoutInherited("bid_strategy", Object.keys(strategies).map(function (code) {
+        return { value: code, label: strategies[code] };
+      })).map(function (row) {
+        return '<option value="' + escapeHtml(row.value) + '"' +
+          (row.value === values.bid_strategy ? " selected" : "") + ">" +
+          escapeHtml(row.label) + "</option>";
       }).join("") + "</select></div></div></div>";
   }
 
@@ -2600,16 +3525,30 @@
       '<input type="checkbox" data-up-field="rules_on"' + (values.rules_on ? " checked" : "") +
       '><span class="meta-switch__box"></span><span>Применить автоправила</span></label>' +
       (values.rules_on
-        ? '<select class="meta-control meta-select" style="width:100%;margin-top:10px" ' +
-          'multiple size="4" data-up-field="rule_ids">' +
+        // Список галочек, а не multiple-select: .meta-control задаёт высоту в
+        // 42 px, и список из четырёх строк схлопывался в одну полоску со
+        // стрелкой от одиночного селекта. Заодно это тот же вид, что в группах
+        // правил, и видно, что делает каждое правило.
+        ? '<div style="display:grid;gap:8px;margin-top:10px;max-height:240px;' +
+          'overflow-y:auto">' +
           (rules.length
             ? rules.map(function (rule) {
-              return '<option value="' + escapeHtml(rule.id) + '"' +
-                ((values.rule_ids || []).indexOf(rule.id) >= 0 ? " selected" : "") + ">" +
-                escapeHtml(rule.name) + " · " + escapeHtml(rule.level || "") + "</option>";
+              var on = (values.rule_ids || []).indexOf(rule.id) >= 0;
+              return '<label style="display:flex;align-items:center;gap:10px;' +
+                'padding:9px 11px;border:1px solid ' + (on ? "#B91414" : "#EBE6E6") +
+                ';border-radius:10px;background:' + (on ? "#FCF1F1" : "#fff") +
+                ';cursor:pointer;font-size:12.5px;font-weight:600;color:#3A3030">' +
+                '<input type="checkbox" data-up-rule-pick="' + escapeHtml(rule.id) + '"' +
+                (on ? " checked" : "") +
+                ' style="width:16px;height:16px;accent-color:#B91414;flex-shrink:0">' +
+                '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;' +
+                'white-space:nowrap">' + escapeHtml(rule.name) + "</span>" +
+                '<span style="font-size:11px;color:#9B9292;font-weight:700;' +
+                'white-space:nowrap">' + escapeHtml(ruleActionLabel(rule)) + "</span></label>";
             }).join("")
-            : '<option value="">Автоправил пока не создано — заведите их на вкладке «Автоправила»</option>') +
-          "</select>" +
+            : '<div class="meta-note">Автоправил пока не создано — заведите их на ' +
+              "вкладке «Правила FB».</div>") +
+          "</div>" +
           '<span class="meta-switch__hint">Правила будут смотреть только на объекты этого залива.</span>'
         : "") +
       "</div></div>" +
@@ -2677,8 +3616,11 @@
       (state.upload.advanced ? campaignsCardHtml() : "") +
       (state.upload.advanced ? goalCardHtml() : "") +
       (state.upload.advanced ? budgetCardHtml() : "") +
-      (state.upload.advanced ? rulesCardHtml() : "") +
-      (state.upload.advanced ? tagsCardHtml() : "");
+      (state.upload.advanced ? rulesCardHtml() : "");
+    // Карточка «Дополнительно» (теги на созданных объектах) скрыта по просьбе
+    // заказчика: tagsCardHtml() и отправка tags в payload остались на месте,
+    // вернуть блок — снова добавить его в left. Без карточки tag_names пустой,
+    // и тегов в запросе не будет.
 
     return '<div class="meta-up-split"><div class="meta-up-col">' + left + "</div>" +
       '<div class="meta-card" style="align-self:start">' + bundleSummaryHtml() + "</div></div>";
@@ -2700,6 +3642,15 @@
       };
     }
     return state.upload.perAccount[account.id];
+  }
+
+  /* Бюджет кабинета начинается с бюджета связки: чаще всего на все кабинеты
+     он один, и перепечатывать одно и то же число в каждой строке — работа
+     впустую. Уже введённое не трогаем: своя цифра сильнее подставленной. */
+  function fillAccountBudget(id) {
+    var row = accountRow({ id: id });
+    if (row.daily_budget) return;
+    row.daily_budget = state.upload.values.daily_budget || "";
   }
 
   function accountAssets(id) {
@@ -2745,25 +3696,28 @@
     renderUpload();
   }
 
-  function assetSelect(accountId, field, list, placeholder, loading, error) {
+  /* Пустой список — тоже список: строкой текста вместо селекта поле съезжало
+     и выглядело сломанным рядом с соседним. Выбирать в нём нечего, поэтому он
+     закрыт и говорит об этом словами. */
+  function emptySelect(text, tone) {
+    return '<select class="meta-control meta-select" style="width:100%;height:36px' +
+      (tone ? ";color:" + tone : "") + '" disabled><option>' + escapeHtml(text) +
+      "</option></select>";
+  }
+
+  function assetSelect(accountId, field, list, placeholder, loading, error, empty) {
     var value = accountRow({ id: accountId })[field];
-    if (loading) {
-      return '<span style="font-size:11.5px;color:#9B9292;font-weight:600">Загружаем…</span>';
-    }
-    if (error) {
-      return '<span style="font-size:11.5px;color:#B91414;font-weight:600">' +
-        escapeHtml(error) + "</span>";
-    }
-    if (!list.length) {
-      return '<span style="font-size:11.5px;color:#9B9292;font-weight:600">' +
-        escapeHtml(placeholder) + "</span>";
-    }
+    if (loading) return emptySelect("Загружаем…");
+    if (error) return emptySelect(error, "#B91414");
+    if (!list.length) return emptySelect(empty || placeholder);
     return '<select class="meta-control meta-select" style="width:100%;height:36px" ' +
       'data-up-account-field="' + field + '" data-up-account-id="' + escapeHtml(accountId) +
       '"><option value="">' + escapeHtml(placeholder) + "</option>" +
       list.map(function (row) {
         return '<option value="' + escapeHtml(row.id) + '"' +
-          (row.id === value ? " selected" : "") + ">" + escapeHtml(row.name) + "</option>";
+          (row.id === value ? " selected" : "") +
+          (row.name === row.id ? "" : ' data-hint="' + escapeHtml(row.id) + '"') +
+          ">" + escapeHtml(row.name) + "</option>";
       }).join("") + "</select>";
   }
 
@@ -2788,10 +3742,6 @@
       '<label class="meta-switch"><input type="checkbox" data-up-only-picked' +
       (state.upload.onlyPicked ? " checked" : "") +
       '><span class="meta-switch__box"></span><span>Только выбранные</span></label>' +
-      uploadSwitch("naming", "Кастомный нейминг") +
-      uploadSwitch("urlTags", "Параметры URL") +
-      uploadSwitch("displayLink", "Отображаемый URL") +
-      uploadSwitch("beneficiary", "Бенефициар") +
       '<div style="flex:1"></div>' +
       '<button class="meta-action" type="button" data-up-link-all>Ссылка для всех</button>' +
       '<input class="meta-control" style="width:220px;padding:0 13px" type="search" ' +
@@ -2809,7 +3759,7 @@
         '<input type="checkbox" data-up-account="' + escapeHtml(account.id) + '"' +
         (on ? " checked" : "") +
         ' style="width:16px;height:16px;accent-color:#B91414"></td>' +
-        '<td class="meta-cell meta-cell--left" style="min-width:200px">' +
+        '<td class="meta-cell meta-cell--left" style="min-width:170px">' +
         '<div style="font-weight:700;font-size:12.5px">' + escapeHtml(account.name) + "</div>" +
         '<div style="font-size:11px;color:#9B9292;font-weight:600;margin-top:3px">ID: ' +
         escapeHtml(String(account.external_id || "")) + " · " +
@@ -2818,99 +3768,83 @@
         '<span class="meta-chip" style="background:' +
         (account.status === "active" ? "#E4F7F0;color:#0E7350" : "#FCF1F1;color:#B91414") +
         '">' + escapeHtml(account.status === "active" ? "ACTIVE" : "STOP") + "</span></td>" +
-        '<td class="meta-cell meta-cell--left" style="min-width:230px">' +
+        '<td class="meta-cell meta-cell--left" style="min-width:190px">' +
         (on
           ? '<div style="display:grid;gap:6px">' +
             assetSelect(account.id, "page_id", assets.pages, "Выберите ФП",
-              assets.loading, assets.error) +
+              assets.loading, assets.error, "Фан-пейджей нет") +
             assetSelect(account.id, "pixel_id", assets.pixels, "Выберите пиксель",
-              assets.loading, assets.error) + "</div>"
+              assets.loading, assets.error, "Пикселей нет") + "</div>"
           : '<span style="font-size:11.5px;color:#C6BDBD">отметьте кабинет</span>') +
         "</td>" +
-        '<td class="meta-cell meta-cell--left" style="min-width:200px">' +
-        '<input class="meta-control" style="width:100%;height:36px;padding:0 11px" ' +
-        'placeholder="Ссылка" data-up-account-field="link_url" data-up-account-id="' +
-        escapeHtml(account.id) + '" value="' + escapeHtml(own.link_url || "") + '"></td>' +
-        '<td class="meta-cell meta-cell--left" style="min-width:130px">' +
-        '<input class="meta-control" style="width:100%;height:36px;padding:0 11px" ' +
-        'type="number" min="0" step="0.01" placeholder="Бюджет" ' +
-        'data-up-account-field="daily_budget" data-up-account-id="' +
-        escapeHtml(account.id) + '" value="' + escapeHtml(String(own.daily_budget || "")) +
-        '"></td>' +
-        '<td class="meta-cell meta-cell--left" style="min-width:230px">' +
-        (on ? accountExtras(account.id) : "") + "</td></tr>";
+        '<td class="meta-cell meta-cell--left" colspan="2" style="min-width:320px;width:38%">' +
+        (on ? accountFormHtml(account.id) : "") + "</td></tr>";
     }).join("");
 
     return head +
       '<div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;overflow:hidden">' +
       '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;' +
-      'min-width:1170px"><thead><tr style="border-bottom:1px solid #F0EBEB">' +
+      'min-width:940px"><thead><tr style="border-bottom:1px solid #F0EBEB">' +
       '<th class="meta-th meta-th--left" style="padding-left:16px"></th>' +
       '<th class="meta-th meta-th--left">Кабинет</th>' +
       '<th class="meta-th meta-th--left">Статус</th>' +
       '<th class="meta-th meta-th--left">Фан-пейдж и пиксель</th>' +
-      '<th class="meta-th meta-th--left">Ссылка</th>' +
-      '<th class="meta-th meta-th--left">Бюджет</th>' +
-      '<th class="meta-th meta-th--left">Дополнительно</th></tr></thead><tbody>' +
-      (body || '<tr><td colspan="7" style="padding:26px;text-align:center;color:#9B9292;' +
+      '<th class="meta-th meta-th--left"></th>' +
+      '<th class="meta-th meta-th--left"></th></tr></thead><tbody>' +
+      (body || '<tr><td colspan="6" style="padding:26px;text-align:center;color:#9B9292;' +
         'font-size:12.5px;font-weight:600">Ничего не нашлось</td></tr>') +
       "</tbody></table></div></div>";
   }
 
-  function uploadSwitch(key, label) {
-    return '<label class="meta-switch"><input type="checkbox" data-up-switch="' + key + '"' +
-      (state.upload.switches[key] ? " checked" : "") +
-      '><span class="meta-switch__box"></span><span>' + label + "</span></label>";
+  /* Поля кабинета: состав фиксированный, свитчеров над таблицей больше нет.
+     Свитчеры перестраивали строку на каждое нажатие — поля прыгали с места на
+     место, и было непонятно, где что. Частое сверху и во всю ширину (ссылка),
+     дальше пары; бенефициар — селект с подсказками самого кабинета (DSA), а
+     если кабинет подсказок не дал, поле превращается в ручной ввод.
+
+     Подписи у полей нет: название стоит в самом поле. Строка кабинета и без
+     того высокая, а подпись над каждым полем добавляла ей ещё половину. */
+  function accountInput(accountId, field, label, extra) {
+    var own = accountRow({ id: accountId });
+    return '<input class="meta-control" style="width:100%;height:36px;padding:0 11px" ' +
+      (extra || "") + ' placeholder="' + escapeHtml(label) + '" data-up-account-field="' +
+      field + '" data-up-account-id="' + escapeHtml(accountId) + '" value="' +
+      escapeHtml(String(own[field] === null || own[field] === undefined ? "" : own[field])) +
+      '">';
   }
 
-  /* Дополнительные поля кабинета. Состав зависит от свитчеров: выключенный
-     свитчер убирает поле — и его значение не уходит в залив. Бенефициар —
-     селект с подсказками самого кабинета; если кабинет подсказок не дал,
-     поле превращается в ручной ввод. */
-  function accountExtras(accountId) {
+  function beneficiaryFieldHtml(accountId) {
     var own = accountRow({ id: accountId });
-    var switches = state.upload.switches;
-    var extra = "";
-    if (switches.beneficiary) {
-      var refs = accountBeneficiaries(accountId);
-      if (refs.loading) {
-        extra += '<div style="font-size:11.5px;color:#9B9292;font-weight:600">' +
-          "Загружаем бенефициара…</div>";
-      } else if (refs.items.length) {
-        extra += '<select class="meta-control meta-select" style="width:100%;height:36px"' +
-          ' data-up-account-field="beneficiary" data-up-account-id="' +
-          escapeHtml(accountId) + '"><option value="">Бенефициар / Плательщик</option>' +
-          refs.items.map(function (item) {
-            return '<option value="' + escapeHtml(item) + '"' +
-              (own.beneficiary === item ? " selected" : "") + ">" +
-              escapeHtml(item) + "</option>";
-          }).join("") + "</select>";
-      } else {
-        extra += '<input class="meta-control" style="width:100%;height:36px;padding:0 11px"' +
-          ' placeholder="Бенефициар / Плательщик" data-up-account-field="beneficiary"' +
-          ' data-up-account-id="' + escapeHtml(accountId) + '" value="' +
-          escapeHtml(own.beneficiary || "") + '">';
-      }
+    var refs = accountBeneficiaries(accountId);
+    if (refs.loading) {
+      return '<div style="font-size:11.5px;color:#9B9292;font-weight:600;height:36px;' +
+        'display:flex;align-items:center">Загружаем бенефициара…</div>';
     }
-    if (switches.naming) {
-      extra += '<input class="meta-control" style="width:100%;height:36px;padding:0 11px;' +
-        (extra ? "margin-top:6px;" : "") + '" placeholder="Кастомный нейминг"' +
-        ' data-up-account-field="campaign_name" data-up-account-id="' +
-        escapeHtml(accountId) + '" value="' + escapeHtml(own.campaign_name || "") + '">';
+    if (!refs.items.length) {
+      return accountInput(accountId, "beneficiary", "Бенефициар / плательщик");
     }
-    if (switches.urlTags) {
-      extra += '<input class="meta-control" style="width:100%;height:36px;padding:0 11px;' +
-        (extra ? "margin-top:6px;" : "") + '" placeholder="Параметры URL"' +
-        ' data-up-account-field="url_tags" data-up-account-id="' +
-        escapeHtml(accountId) + '" value="' + escapeHtml(own.url_tags || "") + '">';
-    }
-    if (switches.displayLink) {
-      extra += '<input class="meta-control" style="width:100%;height:36px;padding:0 11px;' +
-        (extra ? "margin-top:6px;" : "") + '" placeholder="Отображаемый URL"' +
-        ' data-up-account-field="display_link" data-up-account-id="' +
-        escapeHtml(accountId) + '" value="' + escapeHtml(own.display_link || "") + '">';
-    }
-    return extra || '<span style="font-size:11.5px;color:#C6BDBD">включите свитчер сверху</span>';
+    return '<select class="meta-control meta-select" style="width:100%;height:36px"' +
+      ' data-up-account-field="beneficiary" data-up-account-id="' +
+      escapeHtml(accountId) + '"><option value="">Бенефициар / плательщик</option>' +
+      refs.items.map(function (item) {
+        return '<option value="' + escapeHtml(item) + '"' +
+          (own.beneficiary === item ? " selected" : "") + ">" +
+          escapeHtml(item) + "</option>";
+      }).join("") + "</select>";
+  }
+
+  function accountFormHtml(accountId) {
+    var wide = 'style="grid-column:1/-1"';
+    return '<div style="display:grid;gap:10px 14px;' +
+      'grid-template-columns:repeat(2,minmax(0,1fr))">' +
+      "<div " + wide + ">" +
+      accountInput(accountId, "campaign_name", "Кастомный нейминг кампании") + "</div>" +
+      "<div>" + accountInput(accountId, "link_url", "Ссылка — https://…") + "</div>" +
+      "<div>" + accountInput(accountId, "daily_budget", "Бюджет",
+        'type="number" min="0" step="0.01"') + "</div>" +
+      "<div>" + accountInput(accountId, "display_link", "Отображаемый URL") + "</div>" +
+      "<div>" + accountInput(accountId, "url_tags", "Параметры URL") + "</div>" +
+      "<div " + wide + ">" + beneficiaryFieldHtml(accountId) + "</div></div>";
   }
 
   /* ----- шаг 3: креативы и объявления -----
@@ -2923,17 +3857,75 @@
      Meta показывает зрителю текст на его языке сама. */
 
   var LANGUAGE_PRESETS = [
+    { code: "af_ZA", label: "Afrikaans" },
+    { code: "sq_AL", label: "Albanian" },
+    { code: "ar_AR", label: "Arabic" },
+    { code: "hy_AM", label: "Armenian" },
+    { code: "az_AZ", label: "Azerbaijani" },
+    { code: "eu_ES", label: "Basque" },
+    { code: "be_BY", label: "Belarusian" },
+    { code: "bs_BA", label: "Bosnian" },
+    { code: "bg_BG", label: "Bulgarian" },
+    { code: "ca_ES", label: "Catalan" },
+    { code: "zh_CN", label: "Chinese (Simplified)" },
+    { code: "hr_HR", label: "Croatian" },
+    { code: "cs_CZ", label: "Czech" },
+    { code: "da_DK", label: "Danish" },
+    { code: "nl_NL", label: "Dutch" },
     { code: "en_US", label: "English (US)" },
     { code: "en_GB", label: "English (UK)" },
+    { code: "et_EE", label: "Estonian" },
+    { code: "fil_PH", label: "Filipino" },
+    { code: "fi_FI", label: "Finnish" },
     { code: "de_DE", label: "Deutsch" },
     { code: "fr_FR", label: "Français" },
+    { code: "ka_GE", label: "Georgian" },
+    { code: "el_GR", label: "Greek" },
+    { code: "he_IL", label: "Hebrew" },
+    { code: "hi_IN", label: "Hindi" },
+    { code: "hu_HU", label: "Hungarian" },
+    { code: "is_IS", label: "Icelandic" },
+    { code: "id_ID", label: "Indonesian" },
+    { code: "ga_IE", label: "Irish" },
     { code: "es_ES", label: "Español" },
     { code: "it_IT", label: "Italiano" },
+    { code: "ja_JP", label: "Japanese" },
+    { code: "kk_KZ", label: "Kazakh" },
+    { code: "ko_KR", label: "Korean" },
+    { code: "la_VA", label: "Latin" },
+    { code: "lv_LV", label: "Latvian" },
+    { code: "lt_LT", label: "Lithuanian" },
+    { code: "mk_MK", label: "Macedonian" },
+    { code: "ms_MY", label: "Malay" },
+    { code: "ml_IN", label: "Malayalam" },
+    { code: "mr_IN", label: "Marathi" },
+    { code: "ne_NP", label: "Nepali" },
+    { code: "ku_TR", label: "Northern Kurdish (Kurmanji)" },
+    { code: "nb_NO", label: "Norwegian (bokmal)" },
+    { code: "fa_IR", label: "Persian" },
     { code: "pt_BR", label: "Português (BR)" },
+    { code: "pt_PT", label: "Portuguese" },
     { code: "pl_PL", label: "Polski" },
+    { code: "ro_RO", label: "Romanian" },
     { code: "ru_RU", label: "Русский" },
-    { code: "tr_TR", label: "Türkçe" }
-  ];
+    { code: "sr_RS", label: "Serbian" },
+    { code: "sk_SK", label: "Slovak" },
+    { code: "sl_SI", label: "Slovenian" },
+    { code: "sw_KE", label: "Swahili" },
+    { code: "sv_SE", label: "Swedish" },
+    { code: "ta_IN", label: "Tamil" },
+    { code: "te_IN", label: "Telugu" },
+    { code: "th_TH", label: "Thai" },
+    { code: "zh_HK", label: "Traditional Chinese (Hong Kong)" },
+    { code: "zh_TW", label: "Traditional Chinese (Taiwan)" },
+    { code: "tr_TR", label: "Türkçe" },
+    { code: "uk_UA", label: "Ukrainian" },
+    { code: "ur_PK", label: "Urdu" },
+    { code: "vi_VN", label: "Vietnamese" },
+    { code: "cy_GB", label: "Welsh" }
+  ].sort(function (left, right) {
+    return left.label.localeCompare(right.label, "en");
+  });
 
   function uploadAds() {
     if (!state.upload.ads.length) state.upload.ads = [emptyAd()];
@@ -2942,6 +3934,37 @@
 
   function emptyAd() {
     return { files: [], texts: [emptyText("")] };
+  }
+
+  /* Ссылка шага «Кабинеты» без параметров: у языковых текстов своё поле
+     ссылки, и набирать один и тот же адрес на каждый язык — работа впустую.
+     Параметры и метки отрезаем: они живут в «Параметрах URL» кабинета, а Meta
+     дописывает их сама — иначе они уехали бы в ссылку дважды.
+
+     Общая ссылка залива сильнее кабинетной: тексты у пачки одни на всех, и
+     подставлять адрес одного из кабинетов остальным было бы враньём. */
+  function launchLinkBase() {
+    var upload = state.upload;
+    var link = (upload.values.link_url || "").trim();
+    if (!link) {
+      var first = (upload.accountIds || []).filter(function (id) {
+        return ((upload.perAccount || {})[id] || {}).link_url;
+      })[0];
+      link = first ? String(upload.perAccount[first].link_url).trim() : "";
+    }
+    return link.split("#")[0].split("?")[0];
+  }
+
+  function fillLanguageLinks() {
+    if (!state.upload.languages) return;
+    var base = launchLinkBase();
+    if (!base) return;
+    uploadAds().forEach(function (ad) {
+      (ad.texts || []).forEach(function (text) {
+        // Своя ссылка языка сильнее подставленной: её задавали руками.
+        if (!String(text.link_url || "").trim()) text.link_url = base;
+      });
+    });
   }
 
   function emptyText(language, languageName) {
@@ -2973,7 +3996,10 @@
     uploadPreviewUrls.clear();
   }
 
-  function creativePreviewHtml(adIndex, file, index, textIndex) {
+  /* Плитка креатива: квадрат 76×76 с превью и крестиком в углу. Карточки в
+     полторы сотни пикселей с подписью занимали всю ширину объявления, хотя
+     смотрят на них один раз — при загрузке. Имя файла ушло в подсказку. */
+  function creativePreviewHtml(adIndex, file, index) {
     var name = String(file && file.name || "Креатив");
     var type = String(file && file.type || "").toLowerCase();
     var extension = name.split(".").pop().toLowerCase();
@@ -2982,32 +4008,37 @@
     var isImage = type.indexOf("image/") === 0 ||
       ["gif", "jpeg", "jpg", "png", "webp"].indexOf(extension) >= 0;
     var url = uploadPreviewUrl(file);
+    var fill = "width:100%;height:100%;object-fit:cover;background:#F7F4F4;display:block";
     var media = isVideo && url
-      ? '<video src="' + escapeHtml(url) + '" controls muted playsinline ' +
-        'preload="metadata" style="width:100%;height:150px;object-fit:contain;background:#F7F4F4"></video>'
+      ? '<video src="' + escapeHtml(url) + '" muted playsinline preload="metadata" ' +
+        'style="' + fill + '"></video>'
       : isImage && url
         ? '<img src="' + escapeHtml(url) + '" alt="' + escapeHtml(name) +
-          '" style="width:100%;height:150px;object-fit:contain;background:#F7F4F4">'
-        : '<div style="height:150px;display:flex;align-items:center;justify-content:center;' +
-          'padding:14px;color:#9B9292;font-size:12px;font-weight:700;text-align:center;' +
-          'background:#F7F4F4">' + escapeHtml(type || "Файл") + "</div>";
-    var dropKey = textIndex == null
-      ? adIndex + ":" + index
-      : adIndex + ":" + textIndex + ":" + index;
-    return '<div style="position:relative;min-width:0;overflow:hidden;border:1px solid #EBE6E6;' +
+          '" style="' + fill + '">'
+        : '<div style="width:100%;height:100%;display:flex;align-items:center;' +
+          'justify-content:center;padding:6px;color:#9B9292;font-size:10px;font-weight:700;' +
+          'text-align:center;word-break:break-all;background:#F7F4F4">' +
+          escapeHtml(extension ? "." + extension : "файл") + "</div>";
+    var dropKey = adIndex + ":" + index;
+    return '<div title="' + escapeHtml(name) + '" style="position:relative;width:76px;' +
+      'height:76px;flex-shrink:0;overflow:hidden;border:1px solid #EBE6E6;' +
       'border-radius:12px;background:#fff">' + media +
-      '<div title="' + escapeHtml(name) + '" style="padding:9px 34px 9px 10px;overflow:hidden;' +
-      'text-overflow:ellipsis;white-space:nowrap;color:#4D4343;font-size:11.5px;font-weight:700">' +
-      escapeHtml(name) + "</div>" +
+      (isVideo
+        ? '<span style="position:absolute;left:6px;bottom:6px;padding:1px 5px;' +
+          'border-radius:6px;background:rgba(0,0,0,.55);color:#fff;font-size:9px;' +
+          'font-weight:700">MP4</span>'
+        : "") +
       '<button type="button" data-up-file-drop="' + dropKey +
-      '" aria-label="Убрать ' + escapeHtml(name) + '" style="position:absolute;top:7px;right:7px;' +
-      'width:24px;height:24px;padding:0;border:1px solid #E5DFDF;border-radius:50%;' +
-      'background:rgba(255,255,255,.94);color:#B91414;font-size:17px;line-height:20px;cursor:pointer">×</button>' +
+      '" aria-label="Убрать ' + escapeHtml(name) + '" style="position:absolute;top:4px;' +
+      'right:4px;width:20px;height:20px;padding:0;border:1px solid #E5DFDF;border-radius:50%;' +
+      'background:rgba(255,255,255,.94);color:#B91414;font-size:14px;line-height:16px;' +
+      'cursor:pointer">×</button>' +
       "</div>";
   }
 
   function languageLabel(code) {
-    var custom = state.upload && state.upload.languageNames[code];
+    var custom = state.upload && state.upload.languageNames &&
+      state.upload.languageNames[code];
     if (custom) return custom;
     var found = LANGUAGE_PRESETS.filter(function (row) { return row.code === code; })[0];
     return found ? found.label : code;
@@ -3053,25 +4084,26 @@
       "</div>";
   }
 
-  function adFilesHtml(adIndex, files, textIndex) {
-    var key = textIndex == null ? String(adIndex) : adIndex + ":" + textIndex;
-    var hint = textIndex == null
-      ? "jpg, png, gif, mp4 — файл уйдёт в каждый выбранный кабинет"
-      : "Креатив этого языка: Meta покажет его зрителю именно этого языка";
-    return '<div style="border:1px dashed #E2DADA;border-radius:14px;padding:16px;' +
-      'margin-top:12px">' +
-      '<button class="meta-action" type="button" data-up-files="' + key + '">' +
-      "+ Добавить креативы</button>" +
-      '<span style="margin-left:10px;font-size:11.5px;color:#9B9292;font-weight:600">' +
-      hint + "</span>" +
-      (files.length
-        ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));' +
-          'gap:10px;margin-top:14px">' + files.map(function (file, index) {
-            return creativePreviewHtml(adIndex, file, index, textIndex);
-          }).join("") + "</div>"
-        : '<div style="margin-top:10px;font-size:11.5px;color:#C6BDBD;font-weight:600">' +
-          "Пока пусто — без креатива объявление не создастся</div>") +
-      "</div>";
+  /* Плитки креативов. Объявление несёт ровно один креатив — и в языках, и без
+     них: одно объявление на один файл, и второй в него класть некуда. Поэтому
+     показываем выбранный файл и прячем квадрат «+»; чтобы поменять креатив,
+     плитку снимают крестиком. Несколько креативов — это несколько объявлений,
+     их добавляют кнопкой «+ Добавить объявление». */
+  function adFilesHtml(adIndex, files) {
+    var shown = files.slice(0, 1);
+    var hint = "Один креатив на объявление: jpg, png, gif, webp, mp4, mov, avi, webm";
+    return '<div style="display:flex;flex-wrap:wrap;gap:8px;width:160px;flex-shrink:0">' +
+      (shown.length
+        ? ""
+        : '<button type="button" data-up-files="' + String(adIndex) +
+          '" title="' + escapeHtml(hint) + '" ' +
+          'style="width:76px;height:76px;flex-shrink:0;border:1px dashed #C9BEBE;' +
+          'border-radius:12px;background:#fff;' +
+          'color:#B91414;font-size:24px;font-weight:600;line-height:1;cursor:pointer;' +
+          'display:flex;align-items:center;justify-content:center">+</button>') +
+      shown.map(function (file, index) {
+        return creativePreviewHtml(adIndex, file, index);
+      }).join("") + "</div>";
   }
 
   function renderUploadCreatives() {
@@ -3093,35 +4125,22 @@
       '><span class="meta-switch__box"></span><span>Языки' +
       '<span class="meta-switch__hint">Один креатив с текстами на нескольких языках — ' +
       "Meta покажет зрителю его язык сама.</span></span></label>" +
-      '<label class="meta-switch"><input type="checkbox" data-up-split' +
-      (state.upload.split ? " checked" : "") +
-      '><span class="meta-switch__box"></span><span>В кампаниях разные крео' +
-      '<span class="meta-switch__hint">Файлы раздаются по кабинетам по очереди, ' +
-      "а не копируются в каждый.</span></span></label>" +
-      '<label class="meta-switch"><input type="checkbox" data-up-unique' +
-      (state.upload.unique ? " checked" : "") +
-      '><span class="meta-switch__box"></span><span>Уникализировать креативы' +
-      '<span class="meta-switch__hint">В файл дописывается случайная метка, ' +
-      "поэтому в каждом кабинете у него свой хэш.</span></span></label>" +
       "</div></div>";
 
     var ads = uploadAds().map(function (ad, index) {
-      // Языки — табы: чипс выбранного языка, под ним его строка текстов
-      // и его креативы («на каждый язык свой»).
+      // Языки — табы: чипс выбранного языка, под ним его строка текстов.
       var activeText = state.upload.textTabs[index] || 0;
       if (!ad.texts[activeText]) activeText = 0;
-      var textRow;
-      var filesHtml;
-      if (state.upload.languages) {
-        var text = ad.texts[activeText];
-        textRow = adTextFields(index, activeText, text);
-        filesHtml = adFilesHtml(index, text.files || [], activeText);
-      } else {
-        textRow = ad.texts.map(function (entry, textIndex) {
+      // Креатив у объявления один и хранится у самого объявления, поэтому
+      // плитка одна и та же в обоих режимах — различаются только тексты.
+      var filesHtml = adFilesHtml(index, ad.files);
+      var textRow = state.upload.languages
+        ? adTextFields(index, activeText, ad.texts[activeText])
+        : ad.texts.map(function (entry, textIndex) {
           return adTextFields(index, textIndex, entry);
         }).join('<div style="height:10px"></div>');
-        filesHtml = adFilesHtml(index, ad.files, null);
-      }
+      // Креативы слева, тексты справа: колонка плиток и колонка полей стоят
+      // рядом, и объявление занимает одну полосу вместо двух.
       return '<div class="meta-card" style="margin-bottom:14px">' +
         '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">' +
         '<div class="meta-card__title" style="margin:0">Объявление №' + (index + 1) + "</div>" +
@@ -3132,16 +4151,14 @@
           ? '<button class="meta-action meta-action--danger" type="button" ' +
             'data-up-ad-drop="' + index + '">Убрать</button>'
           : "") + "</div>" +
+        '<div style="display:flex;gap:14px;align-items:flex-start">' + filesHtml +
+        '<div style="flex:1;min-width:0">' +
         (state.upload.languages ? adLanguagesHtml(index, ad) : "") +
-        '<div style="margin-bottom:12px">' + textRow + "</div>" +
-        filesHtml + "</div>";
+        textRow + "</div></div></div>";
     }).join("");
 
     return panel + ads +
       '<button class="meta-action" type="button" data-up-ad-add>+ Добавить объявление</button>' +
-      '<div class="meta-note" style="margin-top:14px">Кабинетов выбрано: ' + accounts.length +
-      ". Каждый файл загрузится в каждый из них — один и тот же файл в другом кабинете " +
-      "имеет другой хэш, и чужой Meta не примет.</div>" +
       (state.upload.langPicker ? langPickerHtml() : "");
   }
 
@@ -3166,7 +4183,7 @@
       var label = languageLabel(text.language);
       return '<span class="meta-tag" data-up-lang-tab="' + adIndex + ":" + textIndex +
         '" title="Показать тексты этого языка" style="cursor:pointer;' +
-        (on ? "background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;" : "") +
+        (on ? "background:#B91414;color:#fff;font-family:Inter,-apple-system,Helvetica Neue,sans-serif;text-transform:uppercase;letter-spacing:.02em;" : "") +
         '"' + (on ? ' data-up-lang-active="1"' : "") + ">" +
         escapeHtml(label) +
         (ad.texts.length > 1
@@ -3305,9 +4322,7 @@
       '<button type="button" data-up-lang-cancel style="height:38px;padding:0 16px;' +
       'border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;' +
       'font-size:12.5px;font-weight:700;cursor:pointer">Отмена</button>' +
-      '<button type="button" data-up-lang-apply style="height:38px;padding:0 18px;' +
-      'border:0;border-radius:12px;background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;font-size:14px;' +
-      'font-weight:700;cursor:pointer">Добавить</button>' +
+      '<button type="button" data-up-lang-apply style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:Inter,-apple-system,Helvetica Neue,sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Добавить</button>' +
       "</div></div></div></div>";
   }
 
@@ -3370,17 +4385,12 @@
         }
       }
       upload.step = 3;
+      // Ссылку задавали на этом шаге — на следующем она уже стоит в языках.
+      fillLanguageLinks();
       return renderUpload();
     }
-    var noFiles = uploadAds().filter(function (ad) {
-      if (state.upload.languages) {
-        return ad.texts.some(function (text) { return !(text.files || []).length; });
-      }
-      return !ad.files.length;
-    });
-    if (noFiles.length) return uploadError(state.upload.languages
-      ? "У каждого языка объявления должен быть свой креатив"
-      : "У каждого объявления должен быть креатив");
+    var noFiles = uploadAds().filter(function (ad) { return !ad.files.length; });
+    if (noFiles.length) return uploadError("У каждого объявления должен быть креатив");
     if (state.upload.languages) {
       var noLanguage = uploadAds().some(function (ad) {
         return ad.texts.some(function (text) { return !text.language; });
@@ -3411,21 +4421,16 @@
       adsByAccount[id] = [];
     });
 
-    // Файлы пачки складываем по кабинетам: у «Разные крео» — по очереди.
-    async function uploadForAccount(files, accountId, slot) {
-      var picked = upload.split
-        ? files.filter(function (_file, position) {
-          return position % upload.accountIds.length === slot;
-        })
-        : files;
+    // Файл уходит в каждый выбранный кабинет: у кабинетов разные хэши одного и
+    // того же файла, и чужой Meta не примет.
+    async function uploadForAccount(files, accountId) {
       var ids = [];
-      for (var index = 0; index < picked.length; index += 1) {
+      for (var index = 0; index < files.length; index += 1) {
         var form = new FormData();
-        form.append("file", picked[index]);
-        form.append("name", picked[index].name);
+        form.append("file", files[index]);
+        form.append("name", files[index].name);
         var created = await api.upload(
-          "/meta/creatives?account_id=" + encodeURIComponent(accountId) +
-            (upload.unique ? "&unique=true" : ""),
+          "/meta/creatives?account_id=" + encodeURIComponent(accountId),
           form
         );
         ids.push(created.id);
@@ -3439,21 +4444,19 @@
       for (var slot = 0; slot < upload.accountIds.length; slot += 1) {
         var accountId = upload.accountIds[slot];
         if (upload.languages) {
-          // Свой креатив на каждый язык: тексты несут свои файлы и свои ids.
-          var texts = [];
-          for (var textIndex = 0; textIndex < ad.texts.length; textIndex += 1) {
-            var text = ad.texts[textIndex];
-            var ownIds = await uploadForAccount(text.files || [], accountId, slot);
+          // Креатив у объявления один на все языки: Meta сама покажет зрителю
+          // текст его языка, а картинку берёт общую из asset_feed_spec.
+          var sharedIds = await uploadForAccount(ad.files.slice(0, 1), accountId);
+          var texts = ad.texts.map(function (text) {
             var clean = Object.assign({}, text);
             delete clean.files;
-            clean.creative_ids = ownIds;
-            texts.push(clean);
-          }
-          if (texts.length) {
-            adsByAccount[accountId].push({ texts: texts, creative_ids: [] });
+            return clean;
+          });
+          if (sharedIds.length && texts.length) {
+            adsByAccount[accountId].push({ texts: texts, creative_ids: sharedIds });
           }
         } else {
-          var ids = await uploadForAccount(ad.files, accountId, slot);
+          var ids = await uploadForAccount(ad.files.slice(0, 1), accountId);
           if (ids.length) {
             adsByAccount[accountId].push({
               // Ссылка языка уходит как есть: пустая — сервер подставит общую
@@ -3509,6 +4512,8 @@
       budget_level: values.budget_level || null,
       budget_kind: values.budget_kind || null,
       budget_randomize: !!values.budget_randomize,
+      budget_randomize_pct: values.budget_randomize
+        ? randomizePct(values.budget_randomize_pct) : null,
       budget_limit_min: values.budget_limit_on && values.budget_limit_min
         ? String(values.budget_limit_min) : null,
       budget_limit_max: values.budget_limit_on && values.budget_limit_max
@@ -3590,17 +4595,13 @@
      сервер считает всё в UTC — без явного перевода залив уехал бы на несколько
      часов в сторону. */
   function localMoment(value) {
-    if (!value) return null;
-    var parsed = new Date(value);
-    return isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    return window.CelestialTime.localInputISO(value);
   }
 
   function startMoment(values) {
     if (values.start_mode === "custom") return localMoment(values.start_at);
     if (values.start_mode === "midnight") {
-      var midnight = new Date();
-      midnight.setHours(24, 0, 0, 0);
-      return midnight.toISOString();
+      return window.CelestialTime.nextMidnightISO();
     }
     return null;
   }
@@ -3677,8 +4678,26 @@
       }
       // Переключатели, после которых карточка меняет состав полей.
       if (name === "budget_limit_on" || name === "budget_increase_on" ||
+        name === "budget_randomize" ||
         name === "rules_on" || name === "rule_group_on") {
         return renderUpload();
+      }
+      return;
+    }
+    var rulePick = target.closest ? target.closest("[data-up-rule-pick]") : null;
+    if (rulePick) {
+      var picked = state.upload.values.rule_ids || [];
+      var pickedId = rulePick.getAttribute("data-up-rule-pick");
+      var pickedAt = picked.indexOf(pickedId);
+      if (rulePick.checked && pickedAt < 0) picked.push(pickedId);
+      if (!rulePick.checked && pickedAt >= 0) picked.splice(pickedAt, 1);
+      state.upload.values.rule_ids = picked;
+      // Перекрашиваем строку на месте: renderUpload() пересобирает всю форму
+      // залива и сбрасывает прокрутку к началу на каждой галочке.
+      var pickRow = rulePick.closest("label");
+      if (pickRow) {
+        pickRow.style.borderColor = rulePick.checked ? "#B91414" : "#EBE6E6";
+        pickRow.style.background = rulePick.checked ? "#FCF1F1" : "#fff";
       }
       return;
     }
@@ -3738,15 +4757,6 @@
       state.upload.onlyPicked = target.checked;
       return renderUpload();
     }
-    var extraSwitch = target.closest ? target.closest("[data-up-switch]") : null;
-    if (extraSwitch) {
-      state.upload.switches[extraSwitch.getAttribute("data-up-switch")] = target.checked;
-      // Включили бенефициара — спрашиваем подсказки у уже отмеченных кабинетов.
-      if (extraSwitch.getAttribute("data-up-switch") === "beneficiary" && target.checked) {
-        state.upload.accountIds.forEach(function (id) { loadAccountBeneficiaries(id); });
-      }
-      return renderUpload();
-    }
     if (target.closest && target.closest("[data-up-languages]")) {
       state.upload.languages = target.checked;
       // Включили языки — первому тексту нужен язык, иначе Meta не поймёт,
@@ -3757,24 +4767,19 @@
           text.language = "en_US";
           text.language_name = "English (US)";
         }
-        if (!target.checked) {
-          // Файлы языка переносим в общий блок: без языков объявление
-          // использует один креатив на все тексты.
-          ad.files = ad.files.concat(text.files || []);
-          text.files = [];
-          ad.texts = [text];
-        }
+        // Креатив у объявления один и хранится у самого объявления — и с
+        // языками, и без них. Файлы, оставшиеся у языков или от прежних
+        // версий, сводим к первому: остальные всё равно некуда показать.
+        ad.texts.forEach(function (entry) {
+          ad.files = ad.files.concat(entry.files || []);
+          entry.files = [];
+        });
+        ad.files = ad.files.slice(0, 1);
+        if (!target.checked) ad.texts = [text];
       });
       // После переключения панель языков всегда открыта на основном.
       state.upload.textTabs = {};
-      return renderUpload();
-    }
-    if (target.closest && target.closest("[data-up-split]")) {
-      state.upload.split = target.checked;
-      return renderUpload();
-    }
-    if (target.closest && target.closest("[data-up-unique]")) {
-      state.upload.unique = target.checked;
+      fillLanguageLinks();
       return renderUpload();
     }
     if (target.closest && target.closest("[data-up-advanced]")) {
@@ -3803,10 +4808,11 @@
       var picked = state.upload.accountIds.filter(function (value) { return value !== id; });
       if (account.checked) {
         picked.push(id);
+        fillAccountBudget(id);
         // Страницы и пиксели спрашиваем у Meta только для отмеченного: на все
         // видимые кабинеты это были бы десятки запросов ради трёх нужных.
         loadAccountAssets(id);
-        if (state.upload.switches.beneficiary) loadAccountBeneficiaries(id);
+        loadAccountBeneficiaries(id);
       }
       state.upload.accountIds = picked;
       return renderUpload();
@@ -3842,8 +4848,9 @@
       state.upload.accountIds = pick ? all : [];
       if (pick) {
         all.forEach(function (id) {
+          fillAccountBudget(id);
           loadAccountAssets(id);
-          if (state.upload.switches.beneficiary) loadAccountBeneficiaries(id);
+          loadAccountBeneficiaries(id);
         });
       }
       return renderUpload();
@@ -3870,7 +4877,14 @@
 
     var adAdd = closest("[data-up-ad-add]");
     if (adAdd) {
-      uploadAds().push(emptyAd());
+      var fresh = emptyAd();
+      if (state.upload.languages) {
+        // Новое объявление в режиме языков начинается с основного языка —
+        // иначе Meta не поймёт, кому показывать его тексты.
+        fresh.texts = [emptyText("en_US", "English (US)")];
+      }
+      uploadAds().push(fresh);
+      fillLanguageLinks();
       return renderUpload();
     }
     var adCopy = closest("[data-up-ad-copy]");
@@ -3922,6 +4936,7 @@
         // Показать строку последнего добавленного языка: его заполнять дальше.
         state.upload.textTabs[picker.adIndex] = owner.texts.length - 1;
         state.upload.langPicker = null;
+        fillLanguageLinks();
       }
       return renderUpload();
     }
@@ -3958,16 +4973,9 @@
     if (fileDrop) {
       var where = fileDrop.getAttribute("data-up-file-drop").split(":");
       var host = uploadAds()[Number(where[0])];
-      if (where.length === 3 && state.upload.languages) {
-        var text = host.texts[Number(where[1])];
-        text.files = (text.files || []).filter(function (_file, position) {
-          return position !== Number(where[2]);
-        });
-      } else {
-        host.files = host.files.filter(function (_file, position) {
-          return position !== Number(where[1]);
-        });
-      }
+      host.files = host.files.filter(function (_file, position) {
+        return position !== Number(where[1]);
+      });
       return renderUpload();
     }
   }
@@ -3995,13 +5003,9 @@
       if (chosen.length) {
         var parts = String(key).split(":");
         var ad = uploadAds()[Number(parts[0])];
-        if (parts.length > 1 && state.upload.languages) {
-          // Свои креативы языка: складываем в его тексты.
-          (ad.texts[Number(parts[1])].files = ad.texts[Number(parts[1])].files || [])
-            .push.apply(ad.texts[Number(parts[1])].files, chosen);
-        } else {
-          ad.files = ad.files.concat(chosen);
-        }
+        // Креатив у объявления один: выбранный файл заменяет прежний, даже
+        // если в диалоге отметили несколько.
+        ad.files = chosen.slice(0, 1);
         renderUpload();
       }
       input.onchange = null;
@@ -4012,6 +5016,7 @@
   /* ----- очередь заливки ----- */
 
   var QUEUE_KINDS = {
+    account_check: "Проверка кабинета",
     campaign_create: "Кампания",
     adset_create: "Группа объявлений",
     creative_create: "Креатив",
@@ -4052,6 +5057,22 @@
         : row.target_external_id
           ? '<span style="color:#9B9292">ID ' + escapeHtml(row.target_external_id) + "</span>"
           : '<span style="color:#C9BFBF">—</span>';
+      if (row.error) {
+        var diagnostic = row.diagnostics || {};
+        var details = [];
+        if (row.connection_name) details.push("Подключение: " + row.connection_name);
+        if (diagnostic.error_user_title) details.push(diagnostic.error_user_title);
+        if (diagnostic.code != null) details.push("Код: " + diagnostic.code);
+        if (diagnostic.error_subcode != null) details.push("Подкод: " + diagnostic.error_subcode);
+        if (diagnostic.fbtrace_id) details.push("Запрос Meta: " + diagnostic.fbtrace_id);
+        if (details.length) info += '<details style="margin-top:6px"><summary>Подробности ошибки</summary>' +
+          details.map(function (detail) { return '<div>' + escapeHtml(detail) + '</div>'; }).join("") + '</details>';
+        if (diagnostic.code === 10 || /код 10\)/.test(row.error)) {
+          info += '<div style="margin-top:6px"><a href="https://www.facebook.com/accountquality/" ' +
+            'target="_blank" rel="noopener noreferrer">Проверить ограничения в Meta</a>' +
+            '<div>Откройте Meta под профилем подключения CRM. Повторите залив после устранения причины.</div></div>';
+        }
+      }
       return '<tr class="meta-row" style="border-bottom:1px solid #F7F4F4">' +
         '<td class="meta-cell meta-cell--left" style="padding-left:20px;font-weight:700">' +
         escapeHtml(QUEUE_KINDS[row.kind] || row.kind) + "</td>" +
@@ -4441,8 +5462,12 @@
       budget: "",
       budget_currency: "USD",
       budget_randomize: false,
+      budget_randomize_pct: "10",
       budget_kind: "daily",
       budget_level: "campaign",
+      // Лимит адсета включают тумблером — как в Dolphin: поле без него висело
+      // пустым и выглядело обязательным.
+      adset_limit_on: false,
       adset_budget_limit: "",
       bid_strategy: "LOWEST_COST_WITHOUT_CAP",
       bid_amount: "",
@@ -4470,6 +5495,9 @@
       targeting_expansion: true,
       auto_placements: true,
       placements: [],
+      // Места размещения строками «платформа:код» — так их проще складывать и
+      // сравнивать; на сервер они уезжают разложенными по платформам.
+      placement_positions: [],
       devices: "all",
       os: "all",
       android_smartphone: true,
@@ -4482,6 +5510,8 @@
       wifi_only: false,
       ad_name: "ad #{{ad.number}}",
       multilingual: false,
+      // Тексты мультиязычной связки: язык и его заголовок, текст, описание.
+      ad_texts: [],
       headline: "",
       primary_text: "",
       description: "",
@@ -4511,6 +5541,12 @@
       });
     values.interests = (bundle.interests || []).slice();
     values.placements = ((bundle.placements || {}).publisher_platforms || []).slice();
+    values.placement_positions = [];
+    Object.keys(PLACEMENT_KEYS).forEach(function (platform) {
+      ((bundle.placements || {})[PLACEMENT_KEYS[platform]] || []).forEach(function (code) {
+        values.placement_positions.push(platform + ":" + code);
+      });
+    });
     values.budget = bundle.daily_budget || bundle.lifetime_budget || "";
     values.page_id = bundle.page_id || "";
     values.pixel_id = bundle.pixel_id || "";
@@ -4525,8 +5561,13 @@
         }
       });
     });
+    values.ad_texts = (blocks.ad.texts || []).map(function (text) {
+      return bundleText(text.language, text.language_name, text);
+    });
     if (values.geo_regions.length) values.geo_mode = "regions";
     if (values.geo_cities.length) values.geo_mode = "cities";
+    // Сохранённого тумблера нет — он выводится из самого лимита.
+    values.adset_limit_on = Number(values.adset_budget_limit) > 0;
     return values;
   }
 
@@ -4598,9 +5639,28 @@
       "</label>";
   }
 
-  function bSwitch(name, label, hint) {
-    return '<label class="meta-switch"><input type="checkbox" data-b-field="' + name + '"' +
-      (bundleValue(name) ? " checked" : "") + '><span class="meta-switch__box"></span>' +
+  /* «Рандомизировать ± N %» — как в Dolphin: процент появляется рядом с
+     включённым тумблером. Каждому кабинету бюджет достаётся в этих пределах. */
+  function randomizePctHtml(attribute, value) {
+    return '<span class="meta-random-pct"><span>±</span>' +
+      '<input class="meta-control" type="number" min="1" max="90" step="1" ' + attribute +
+      ' value="' + escapeHtml(String(value == null || value === "" ? "10" : value)) + '"' +
+      ' aria-label="Разброс бюджета, %" title="Бюджет каждого кабинета — в пределах ± этого процента">' +
+      "<span>%</span></span>";
+  }
+
+  function randomizePct(value) {
+    var pct = Math.round(Number(String(value == null ? "" : value).replace(",", ".")));
+    if (!isFinite(pct) || pct <= 0) return 10;
+    return Math.min(90, pct);
+  }
+
+  function bSwitch(name, label, hint, locked) {
+    return '<label class="meta-switch' + (locked ? " meta-switch--off" : "") +
+      '"><input type="checkbox" data-b-field="' + name + '"' +
+      (locked ? " disabled" : "") +
+      (!locked && bundleValue(name) ? " checked" : "") +
+      '><span class="meta-switch__box"></span>' +
       "<span>" + escapeHtml(label) +
       (hint ? '<span class="meta-switch__hint">' + escapeHtml(hint) + "</span>" : "") +
       "</span></label>";
@@ -4858,6 +5918,30 @@
     renderBundleWizard();
   }
 
+  /* Предельная ставка — единственная стратегия с потолком ставки, и только с
+     ней Meta разрешает ускоренный показ. */
+  function bidCapChosen() {
+    return bundleValue("bid_strategy") === "LOWEST_COST_WITH_BID_CAP";
+  }
+
+  /* Лимит адсета есть только при бюджете на кампании: Meta распределяет его
+     между адсетами сама, и лимит ограничивает каждый из них. Когда бюджет
+     задан на самом адсете, ограничивать нечего — там сумма и есть лимит. */
+  function adsetLimitHtml() {
+    if (bundleValue("budget_level") !== "campaign") return "";
+    var on = !!bundleValue("adset_limit_on");
+    return bLine("Лимит адсета", bSwitch("adset_limit_on", "Установить лимит адсета")) +
+      (on
+        ? bLine("",
+          '<div style="display:flex;align-items:center;gap:10px">' +
+          '<input class="meta-control" style="width:170px;padding:0 13px" type="number" ' +
+          'min="0" step="0.01" placeholder="сумма" data-b-field="adset_budget_limit" value="' +
+          escapeHtml(String(bundleValue("adset_budget_limit") || "")) + '">' +
+          '<span style="font-size:12px;color:#9B9292;font-weight:700">' +
+          escapeHtml(bundleValue("budget_currency") || "USD") + "</span></div>")
+        : "");
+  }
+
   function bLine(label, control) {
     return '<div class="meta-line"><span>' + escapeHtml(label) + "</span><div>" + control +
       "</div></div>";
@@ -4887,7 +5971,7 @@
     }).join("");
 
     var budgetRow = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-      '<input class="meta-control" style="flex:1;min-width:180px;padding:0 13px" type="number" ' +
+      '<input class="meta-control" style="flex:1;min-width:110px;padding:0 13px" type="number" ' +
       'min="0" step="0.01" data-b-field="budget" value="' +
       escapeHtml(String(bundleValue("budget") == null ? "" : bundleValue("budget"))) + '">' +
       '<select class="meta-control meta-select" style="width:104px" data-b-field="budget_currency">' +
@@ -4895,7 +5979,11 @@
         return '<option value="' + code + '"' +
           (code === bundleValue("budget_currency") ? " selected" : "") + ">" + code + "</option>";
       }).join("") + "</select>" +
-      bSwitch("budget_randomize", "Рандомизировать") + "</div>";
+      '<span class="meta-random">' + bSwitch("budget_randomize", "Рандомизировать") +
+      (bundleValue("budget_randomize")
+        ? randomizePctHtml('data-b-field="budget_randomize_pct"',
+          bundleValue("budget_randomize_pct"))
+        : "") + "</span></div>";
 
     return '<div class="meta-card"><div class="meta-card__title">Цель кампании</div>' +
       '<div class="meta-goals">' + byGroup + "</div></div>" +
@@ -4921,10 +6009,7 @@
       bLine("Уровень бюджета", bSeg("budget_level", [
         { value: "campaign", label: "Кампания" }, { value: "adset", label: "Адсет" }
       ])) +
-      bLine("Лимит адсета",
-        '<input class="meta-control" style="width:100%;padding:0 13px" type="number" min="0" ' +
-        'step="0.01" placeholder="без лимита" data-b-field="adset_budget_limit" value="' +
-        escapeHtml(String(bundleValue("adset_budget_limit") || "")) + '">') +
+      adsetLimitHtml() +
       '<div class="meta-note">Бюджет на кампании Meta распределяет между адсетами сама. ' +
       "Бюджет на адсете держит расход там, где вы его поставили.</div>" +
       "</div></div>" +
@@ -4947,8 +6032,16 @@
         bField("bid_amount",
           (reference.bid_amount_labels || {})[bundleValue("bid_strategy")] || "Ставка",
           'type="number" min="0" step="0.01"', "В валюте кабинета")) +
+      // Ускоренный показ Meta принимает только с предельной ставкой: без
+      // потолка ставки открученный за час бюджет некому ограничить, и на
+      // других стратегиях кампания просто не создастся.
       bSwitch("accelerated_delivery", "Ускоренный показ",
-        "Расходовать бюджет и получать результаты максимально быстро.") +
+        bidCapChosen()
+          ? "Расходовать бюджет и получать результаты максимально быстро."
+          : "Доступен только со стратегией «" +
+            ((reference.bid_strategies || {}).LOWEST_COST_WITH_BID_CAP ||
+              "Предельная ставка") + "».",
+        !bidCapChosen()) +
       "</div></div>" +
 
       '<div class="meta-card"><div class="meta-card__title">Особые категории рекламы</div>' +
@@ -4968,12 +6061,14 @@
       "</div>";
   }
 
-  /* Возраст выбирается из списка, а не набирается: границы у Meta жёсткие —
-     13 и 65, — а «65» означает «65 и старше», и в поле ввода этого не видно. */
+  /* Возраст выбирается из списка, а не набирается: границы жёсткие — 18 и 65,
+     — а «65» означает «65 и старше», и в поле ввода этого не видно. Ниже 18
+     не таргетируем: наши офферы совершеннолетние, и Meta такие объявления
+     всё равно отклоняет. */
   function agePicker(name) {
     var value = String(bundleValue(name));
     var options = [];
-    for (var age = 13; age <= 65; age += 1) {
+    for (var age = 18; age <= 65; age += 1) {
       options.push('<option value="' + age + '"' + (String(age) === value ? " selected" : "") +
         ">" + (age === 65 ? "65+" : age) + "</option>");
     }
@@ -5041,9 +6136,19 @@
       "</div></div>" +
 
       '<div class="meta-card"><div class="meta-card__title">Аудитория</div>' +
+      // Тот же шаг между строками, что и в соседних карточках: без сетки
+      // «Мин. возраст» прилипал к переключателю.
+      '<div style="display:grid;gap:14px">' +
       bLine("Advantage+ аудитория", bSwitch("advantage_audience", "Активировать",
         "Meta ищет шире заданного таргета. Вместе с ней ручное расширение не отправляется.")) +
-      "</div>" +
+      // С Advantage+ Meta соблюдает только нижнюю границу возраста, поэтому она
+      // вынесена сюда же отдельным полем. Демография при этом остаётся на
+      // экране: значения из неё видны и уходят в запрос, а расширять таргет
+      // поверх них — уже дело Meta.
+      (bundleValue("advantage_audience")
+        ? bLine("Мин. возраст", agePicker("age_min"))
+        : "") +
+      "</div></div>" +
 
       '<div class="meta-card"><div class="meta-card__title">Демография</div>' +
       '<div style="display:grid;gap:14px">' +
@@ -5100,13 +6205,13 @@
         "Обычно лучший вариант: Meta сама решает, где показывать.") +
       (bundleValue("auto_placements") ? "" :
         '<div class="meta-field"><span style="display:block;font-size:12.5px;font-weight:600;' +
-        'margin-bottom:6px">Плейсменты</span><div style="display:flex;flex-wrap:wrap;gap:8px">' +
+        'margin-bottom:6px">Платформы</span><div style="display:flex;flex-wrap:wrap;gap:8px">' +
         Object.keys((state.reference || {}).publisher_platforms || {}).map(function (key) {
           var on = (bundleValue("placements") || []).indexOf(key) >= 0;
           return '<button type="button" class="meta-macro" data-b-placement="' + escapeHtml(key) +
             '" style="' + (on ? "border-color:#B91414;color:#B91414;background:#FCF1F1" : "") +
             '">' + escapeHtml(state.reference.publisher_platforms[key]) + "</button>";
-        }).join("") + "</div></div>") +
+        }).join("") + "</div></div>" + placementGroupsHtml()) +
       bLine("Девайсы", '<div style="display:flex;flex-direction:column;gap:8px">' +
         bSeg("devices", [
           { value: "all", label: "Все" },
@@ -5131,25 +6236,208 @@
       "</div></div>";
   }
 
+  // Куда складывать позицию своей платформы — те же ключи, что читает сервер.
+  var PLACEMENT_KEYS = {
+    facebook: "facebook_positions",
+    instagram: "instagram_positions",
+    audience_network: "audience_network_positions",
+    messenger: "messenger_positions"
+  };
+
+  function placementsPayload(values) {
+    var payload = { publisher_platforms: values.placements };
+    (values.placement_positions || []).forEach(function (item) {
+      var parts = String(item).split(":");
+      var key = PLACEMENT_KEYS[parts[0]];
+      // Платформа не выбрана — её место не отправляем: Meta примет только то,
+      // что относится к выбранным платформам.
+      if (!key || values.placements.indexOf(parts[0]) < 0) return;
+      payload[key] = (payload[key] || []).concat(parts[1]);
+    });
+    return payload;
+  }
+
+  /* Места размещения внутри выбранных платформ. Группы приходят с сервера —
+     там же лежат коды, которые уходят в Meta.
+
+     Пустой выбор в группе означает «все её места»: Meta без списка позиций
+     показывает везде, где может, и отправлять полный перечень ради того же
+     результата незачем. Поэтому галочка группы — это «выбрано ли в ней
+     что-то», а не «отмечены ли все». */
+  function placementGroups() {
+    return ((state.reference || {}).placement_groups || []).map(function (group) {
+      var positions = (group.positions || []).filter(function (position) {
+        return (bundleValue("placements") || []).indexOf(position.platform) >= 0;
+      });
+      return { code: group.code, label: group.label, hint: group.hint, positions: positions };
+    }).filter(function (group) { return group.positions.length; });
+  }
+
+  /* Все места выбранной платформы — списком ключей «платформа:код». Долфин
+     при включении платформы отмечает их целиком, и это то, чего от кнопки
+     ждут: платформа без мест ничего не значит, а снимать лишнее проще, чем
+     проставлять полтора десятка галочек руками. */
+  function platformPositions(platform) {
+    var keys = [];
+    ((state.reference || {}).placement_groups || []).forEach(function (group) {
+      (group.positions || []).forEach(function (position) {
+        if (position.platform === platform) keys.push(platform + ":" + position.code);
+      });
+    });
+    return keys;
+  }
+
+  function placementPicked(position) {
+    var key = position.platform + ":" + position.code;
+    return (bundleValue("placement_positions") || []).indexOf(key) >= 0;
+  }
+
+  function placementGroupsHtml() {
+    var groups = placementGroups();
+    if (!groups.length) {
+      return '<div class="meta-note">Выберите платформу — под ней появятся места ' +
+        "размещения.</div>";
+    }
+    var opened = state.bundle.openedPlacements || {};
+    return '<div class="meta-field"><span style="display:block;font-size:12.5px;' +
+      'font-weight:600;margin-bottom:6px">Места размещения</span>' +
+      '<div style="display:grid;gap:2px">' +
+      groups.map(function (group) {
+        var picked = group.positions.filter(placementPicked).length;
+        var isOpen = !!opened[group.code];
+        return '<div>' +
+          '<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 4px">' +
+          '<button type="button" data-b-placement-open="' + escapeHtml(group.code) + '" ' +
+          'aria-label="Раскрыть группу" style="width:18px;height:18px;flex-shrink:0;border:0;' +
+          'background:transparent;color:#9B9292;cursor:pointer;line-height:1;font-size:11px;' +
+          'transform:rotate(' + (isOpen ? "90" : "0") + 'deg);transition:transform .15s">▶</button>' +
+          '<input type="checkbox" data-b-placement-group="' + escapeHtml(group.code) + '"' +
+          (picked ? " checked" : "") +
+          ' style="width:16px;height:16px;margin-top:1px;accent-color:#B91414;flex-shrink:0"' +
+          (picked && picked < group.positions.length ? ' data-partial="1"' : "") + ">" +
+          '<div style="min-width:0"><div style="font-size:12.5px;font-weight:700">' +
+          escapeHtml(group.label) +
+          (picked && picked < group.positions.length
+            ? '<span style="font-weight:600;color:#9B9292"> · ' + picked + " из " +
+              group.positions.length + "</span>"
+            : "") + "</div>" +
+          '<div style="font-size:11px;color:#9B9292;font-weight:600;margin-top:2px">' +
+          escapeHtml(group.hint) + "</div></div></div>" +
+          (isOpen
+            ? '<div style="display:grid;gap:6px;padding:2px 4px 10px 46px">' +
+              group.positions.map(function (position) {
+                return '<label style="display:flex;align-items:center;gap:9px;font-size:12px;' +
+                  'font-weight:600;color:#4D4343;cursor:pointer">' +
+                  '<input type="checkbox" data-b-placement-position="' +
+                  escapeHtml(position.platform + ":" + position.code) + '"' +
+                  (placementPicked(position) ? " checked" : "") +
+                  ' style="width:15px;height:15px;accent-color:#B91414">' +
+                  escapeHtml(position.label) + "</label>";
+              }).join("") + "</div>"
+            : "") + "</div>";
+      }).join("") + "</div></div>";
+  }
+
+  function bundleText(language, languageName, source) {
+    var from = source || {};
+    return {
+      language: language || "",
+      language_name: languageName || (language ? languageLabel(language) : ""),
+      headline: from.headline || "",
+      primary_text: from.primary_text || "",
+      description: from.description || ""
+    };
+  }
+
+  function langShort(code) {
+    return String(code || "").split(/[_-]/)[0].toUpperCase() || "—";
+  }
+
+  /* Мультиязычная связка: основной язык селектом, остальные — чипсами-вкладками.
+     Под активным языком — его заголовок, текст и описание. При заливе из такой
+     связки «Языки» включатся сами, и тексты подставятся. */
+  function bundleLanguagesHtml() {
+    var texts = bundleValue("ad_texts");
+    var active = Math.min(state.bundle.langTab || 0, texts.length - 1);
+    var current = texts[active];
+    var used = texts.map(function (text) { return text.language; });
+    var primaryOptions = LANGUAGE_PRESETS.slice();
+    if (texts[0].language && !primaryOptions.some(function (row) {
+      return row.code === texts[0].language;
+    })) {
+      primaryOptions.push({ code: texts[0].language, label: languageLabel(texts[0].language) });
+    }
+    var chips = texts.map(function (text, index) {
+      var on = index === active;
+      return '<span class="meta-tag" data-b-lang-tab="' + index + '" style="cursor:pointer;' +
+        (on ? "background:#B91414;color:#fff;" : "") + '" title="' +
+        escapeHtml(languageLabel(text.language)) + '">' + escapeHtml(langShort(text.language)) +
+        (texts.length > 1
+          ? '<button type="button" data-b-lang-drop="' + index + '" aria-label="Убрать язык" ' +
+            'style="margin-left:5px;' + (on ? "color:#fff" : "") + '">×</button>'
+          : "") + "</span>";
+    }).join("");
+    var addOptions = LANGUAGE_PRESETS.filter(function (row) {
+      return used.indexOf(row.code) < 0;
+    });
+    var code = langShort(current.language);
+    return '<div style="display:grid;gap:12px">' +
+      '<label class="meta-field"><span>Основной язык</span>' +
+      '<select class="meta-control meta-select" style="width:100%" data-b-lang-primary>' +
+      primaryOptions.map(function (row) {
+        return '<option value="' + escapeHtml(row.code) + '"' +
+          (row.code === texts[0].language ? " selected" : "") + ">" +
+          escapeHtml(row.label) + "</option>";
+      }).join("") + "</select></label>" +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' + chips +
+      (addOptions.length
+        ? '<select class="meta-control meta-select" style="width:auto;min-width:170px" ' +
+          'data-b-lang-add><option value="">+ Добавить язык</option>' +
+          addOptions.map(function (row) {
+            return '<option value="' + escapeHtml(row.code) + '">' +
+              escapeHtml(row.label) + "</option>";
+          }).join("") + "</select>"
+        : "") + "</div>" +
+      '<label class="meta-field"><span>Заголовок ' + escapeHtml(code) + "</span>" +
+      '<input class="meta-control" style="width:100%;padding:0 13px" maxlength="600" ' +
+      'data-b-lang-field="headline" data-b-lang-index="' + active + '" value="' +
+      escapeHtml(current.headline) + '"><span class="meta-hint">Доступен spintax</span></label>' +
+      '<label class="meta-field"><span>Текст объявления ' + escapeHtml(code) + "</span>" +
+      '<textarea class="meta-control" style="width:100%;min-height:86px;padding:11px 13px;' +
+      'line-height:1.5;resize:vertical" data-b-lang-field="primary_text" data-b-lang-index="' +
+      active + '">' + escapeHtml(current.primary_text) + '</textarea>' +
+      '<span class="meta-hint">Доступен spintax</span></label>' +
+      '<label class="meta-field"><span>Описание ' + escapeHtml(code) + "</span>" +
+      '<textarea class="meta-control" style="width:100%;min-height:86px;padding:11px 13px;' +
+      'line-height:1.5;resize:vertical" data-b-lang-field="description" data-b-lang-index="' +
+      active + '">' + escapeHtml(current.description) + '</textarea>' +
+      '<span class="meta-hint">Доступен spintax</span></label>' +
+      "</div>";
+  }
+
   function renderBundleStepThree() {
     var reference = state.reference || {};
     return '<div class="meta-card"><div class="meta-card__title">Основное</div>' +
       '<div style="display:grid;gap:16px">' +
       bNameField("ad_name", "Название объявления",
         "Выберите макросы для названия объявления") +
-      bField("headline", "Заголовок", 'maxlength="600"', "Доступен spintax: {Купи|Закажи}") +
-      bArea("primary_text", "Текст объявления", "Доступен spintax") +
-      bArea("description", "Описание", "Доступен spintax") +
-      bField("link_url", "Ссылка", 'placeholder="https://..."',
-        "Сюда подставится ID кампании, если в подключении задан sub_id") +
+      bSwitch("multilingual", "Мультиязычная связка",
+        "Свой заголовок, текст и описание на каждый язык — при заливе «Языки» включатся сами") +
+      (bundleValue("multilingual")
+        ? bundleLanguagesHtml()
+        : bField("headline", "Заголовок", 'maxlength="600"', "Доступен spintax: {Купи|Закажи}") +
+          bArea("primary_text", "Текст объявления", "Доступен spintax") +
+          bArea("description", "Описание", "Доступен spintax")) +
+      // Ссылки и страницы в связке нет: и то, и другое задаётся на кабинет при
+      // заливе — на шаге «Кабинеты». Одна ссылка на всю пачку означала бы, что
+      // все кабинеты ведут в один трекер, а страница — что они постят от чужого
+      // имени. Сохранённые значения старых связок остаются нетронутыми.
       bSwitch("multi_advertiser",
         "Объявления в рекламном блоке с несколькими рекламодателями") +
       bSwitch("advantage_creative", "Включить оптимизации Advantage+ для креативов",
         "Meta может подправить яркость, обрезку и порядок текста.") +
       bSelect("call_to_action", "Призыв к действию",
         dictList(reference.call_to_actions)) +
-      bField("page_id", "ID страницы Facebook", 'maxlength="60"',
-        "Без страницы Meta не примет объявление") +
       "</div></div>";
   }
 
@@ -5193,7 +6481,7 @@
       }).filter(function (id) { return !!id; }),
       interests: values.interests.map(tagObject),
       placements: values.placements.length
-        ? { publisher_platforms: values.placements }
+        ? placementsPayload(values)
         : {},
       daily_budget: numeric(values.budget),
       bid_strategy: values.bid_strategy,
@@ -5211,9 +6499,18 @@
           budget_level: values.budget_level,
           budget_currency: values.budget_currency,
           budget_randomize: values.budget_randomize,
-          adset_budget_limit: numeric(values.adset_budget_limit),
+          budget_randomize_pct: randomizePct(values.budget_randomize_pct),
+          // Выключенный тумблер и бюджет на адсете означают «без лимита»:
+          // иначе в связке осталось бы число, которого нет в форме.
+          adset_budget_limit: values.budget_level === "campaign" && values.adset_limit_on
+            ? numeric(values.adset_budget_limit)
+            : null,
           bid_amount: numeric(values.bid_amount),
-          accelerated_delivery: values.accelerated_delivery,
+          // На стратегии без потолка ставки тумблер заблокирован, и включённым
+          // он мог остаться только от прежней настройки связки.
+          accelerated_delivery: values.bid_strategy === "LOWEST_COST_WITH_BID_CAP"
+            ? values.accelerated_delivery
+            : false,
           special_ad_categories: values.special_ad_categories
         },
         adset: {
@@ -5249,6 +6546,7 @@
         ad: {
           ad_name: values.ad_name,
           multilingual: values.multilingual,
+          texts: values.multilingual ? bundleTextsPayload(values) : [],
           headline: values.headline || null,
           primary_text: values.primary_text || null,
           description: values.description || null,
@@ -5258,6 +6556,24 @@
         }
       }
     };
+  }
+
+  function bundleTextsPayload(values) {
+    var texts = (values.ad_texts || []).filter(function (text) { return text.language; });
+    if (!texts.length) throw new Error("Мультиязычной связке нужен хотя бы один язык");
+    var codes = texts.map(function (text) { return text.language; });
+    if (codes.some(function (code, index) { return codes.indexOf(code) !== index; })) {
+      throw new Error("Языки в связке не должны повторяться");
+    }
+    return texts.map(function (text) {
+      return {
+        language: text.language,
+        language_name: text.language_name || languageLabel(text.language),
+        headline: text.headline || null,
+        primary_text: text.primary_text || null,
+        description: text.description || null
+      };
+    });
   }
 
   function tagObject(item) {
@@ -5282,7 +6598,13 @@
       wizard.step = 3;
       return renderBundleWizard();
     }
-    var payload = bundlePayload();
+    var payload;
+    try {
+      payload = bundlePayload();
+    } catch (problem) {
+      // Проверки связки (языки и т.п.) показываем в самом окне.
+      return bundleError(problem && problem.message ? problem.message : "Проверьте связку");
+    }
     var button = byId("metaBundleNext");
     button.disabled = true;
     try {
@@ -5379,6 +6701,12 @@
       }, COMBO_SOURCES[name] === "country" ? 0 : 320);
       return;
     }
+    var langField = event.target.closest ? event.target.closest("[data-b-lang-field]") : null;
+    if (langField) {
+      var langText = state.bundle.values.ad_texts[Number(langField.getAttribute("data-b-lang-index"))];
+      if (langText) langText[langField.getAttribute("data-b-lang-field")] = langField.value;
+      return;
+    }
     var field = event.target.closest ? event.target.closest("[data-b-field]") : null;
     if (field && field.type !== "checkbox") {
       // Пишем в state без перерисовки: перерисовка на каждом символе уводила бы
@@ -5388,6 +6716,35 @@
   }
 
   function onBundleChange(event) {
+    var position = event.target.closest
+      ? event.target.closest("[data-b-placement-position]") : null;
+    if (position) {
+      var key = position.getAttribute("data-b-placement-position");
+      var picked = (state.bundle.values.placement_positions || []).filter(function (item) {
+        return item !== key;
+      });
+      if (position.checked) picked.push(key);
+      state.bundle.values.placement_positions = picked;
+      return renderBundleWizard();
+    }
+    var groupBox = event.target.closest
+      ? event.target.closest("[data-b-placement-group]") : null;
+    if (groupBox) {
+      // Галочка группы — это «все её места» или «ни одного»: половину человек
+      // набирает сам, раскрыв список.
+      var code = groupBox.getAttribute("data-b-placement-group");
+      var group = placementGroups().filter(function (item) { return item.code === code; })[0];
+      var keys = (group ? group.positions : []).map(function (item) {
+        return item.platform + ":" + item.code;
+      });
+      var rest = (state.bundle.values.placement_positions || []).filter(function (item) {
+        return keys.indexOf(item) < 0;
+      });
+      state.bundle.values.placement_positions = groupBox.checked ? rest.concat(keys) : rest;
+      state.bundle.openedPlacements = state.bundle.openedPlacements || {};
+      if (groupBox.checked) state.bundle.openedPlacements[code] = true;
+      return renderBundleWizard();
+    }
     var radio = event.target.closest ? event.target.closest("[data-b-radio]") : null;
     if (radio) {
       state.bundle.values[radio.getAttribute("data-b-radio")] =
@@ -5404,13 +6761,33 @@
       state.bundle.values.special_ad_categories = list;
       return;
     }
+    var primary = event.target.closest ? event.target.closest("[data-b-lang-primary]") : null;
+    if (primary) {
+      var first = state.bundle.values.ad_texts[0];
+      first.language = primary.value;
+      first.language_name = languageLabel(primary.value);
+      return renderBundleWizard();
+    }
+    var addLang = event.target.closest ? event.target.closest("[data-b-lang-add]") : null;
+    if (addLang) {
+      if (!addLang.value) return;
+      state.bundle.values.ad_texts.push(bundleText(addLang.value));
+      state.bundle.langTab = state.bundle.values.ad_texts.length - 1;
+      return renderBundleWizard();
+    }
     var field = event.target.closest ? event.target.closest("[data-b-field]") : null;
     if (!field) return;
     var name = field.getAttribute("data-b-field");
     state.bundle.values[name] = field.type === "checkbox" ? field.checked : field.value;
+    if (name === "multilingual" && field.checked && !state.bundle.values.ad_texts.length) {
+      // Первый язык забирает то, что уже набрали в обычных полях.
+      state.bundle.values.ad_texts = [bundleText("en_GB", "", state.bundle.values)];
+      state.bundle.langTab = 0;
+    }
     // Перерисовываем только то, от чего зависит состав формы.
     if (["auto_placements", "devices", "bid_strategy", "advantage_audience",
-      "age_randomize"].indexOf(name) >= 0) {
+      "age_randomize", "adset_limit_on", "multilingual", "budget_randomize"]
+      .indexOf(name) >= 0) {
       renderBundleWizard();
     }
   }
@@ -5420,6 +6797,19 @@
     var closest = function (selector) {
       return target.closest ? target.closest(selector) : null;
     };
+    var langTab = closest("[data-b-lang-tab]");
+    var langDrop = closest("[data-b-lang-drop]");
+    if (langDrop) {
+      var dropIndex = Number(langDrop.getAttribute("data-b-lang-drop"));
+      state.bundle.values.ad_texts.splice(dropIndex, 1);
+      state.bundle.langTab = Math.max(0, Math.min(state.bundle.langTab || 0,
+        state.bundle.values.ad_texts.length - 1));
+      return renderBundleWizard();
+    }
+    if (langTab) {
+      state.bundle.langTab = Number(langTab.getAttribute("data-b-lang-tab"));
+      return renderBundleWizard();
+    }
     var macro = closest("[data-b-macro-open]");
     if (macro) {
       return openMacroModal(
@@ -5468,14 +6858,34 @@
         macro.getAttribute("data-b-macro-code");
       return renderBundleWizard();
     }
+    var opener = closest("[data-b-placement-open]");
+    if (opener) {
+      var group = opener.getAttribute("data-b-placement-open");
+      state.bundle.openedPlacements = state.bundle.openedPlacements || {};
+      state.bundle.openedPlacements[group] = !state.bundle.openedPlacements[group];
+      return renderBundleWizard();
+    }
     var placement = closest("[data-b-placement]");
     if (placement) {
       var key = placement.getAttribute("data-b-placement");
       var list = (state.bundle.values.placements || []).filter(function (item) {
         return item !== key;
       });
-      if (list.length === (state.bundle.values.placements || []).length) list.push(key);
+      // Длина не изменилась — платформы в списке не было, значит её включают.
+      var added = list.length === (state.bundle.values.placements || []).length;
+      if (added) list.push(key);
       state.bundle.values.placements = list;
+      // Платформу сняли — её места уходят вместе с ней: иначе в связке остался
+      // бы код, который Meta отобьёт ошибкой при заливе.
+      var kept = (state.bundle.values.placement_positions || []).filter(function (item) {
+        return list.indexOf(String(item).split(":")[0]) >= 0;
+      });
+      // Включили — наоборот, отмечаем все её места сразу.
+      state.bundle.values.placement_positions = added
+        ? kept.concat(platformPositions(key).filter(function (item) {
+          return kept.indexOf(item) < 0;
+        }))
+        : kept;
       return renderBundleWizard();
     }
     var add = closest("[data-b-tag-add]");
@@ -5522,7 +6932,12 @@
   state.groupSearch = "";
   state.groupPicked = {};
   state.groups = [];
-  state.campaigns = [];
+  // Не смешиваем справочник автоправил с `state.campaigns` из обзора Meta.
+  // Обзор содержит только текущий срез (например, выбранный кабинет), поэтому
+  // переиспользование этого массива обрезало список в форме до 1–2 кампаний.
+  state.ruleCampaigns = [];
+  state.ruleCampaignsLoaded = false;
+  state.ruleCampaignsLoading = false;
   state.ruleForm = null;
   state.groupForm = null;
   /* idle | loading | ready | error — вкладка рисует себя в любом из них, и
@@ -5574,17 +6989,20 @@
     renderEvents();
   }
 
-  /* Кампании нужны, только когда правило привязано к одной кампании: список
-     тяжёлый, поэтому грузим его по требованию и один раз. */
-  function ensureCampaigns() {
-    if (state.campaigns.length || state.campaignsLoading) return;
-    state.campaignsLoading = true;
+  /* Кампании нужны, только когда правило привязано к одной кампании. Загружаем
+     их по требованию и обновляем при новом открытии формы: за это время могла
+     завершиться Meta-синхронизация и добавить новые кампании. */
+  function ensureCampaigns(force) {
+    if (state.ruleCampaignsLoading || (state.ruleCampaignsLoaded && !force)) return;
+    state.ruleCampaignsLoading = true;
     api.get("/meta/entities/campaigns").then(function (items) {
-      state.campaigns = items || [];
+      state.ruleCampaigns = items || [];
+      state.ruleCampaignsLoaded = true;
     }).catch(function () {
-      state.campaigns = [];
+      state.ruleCampaigns = [];
+      state.ruleCampaignsLoaded = false;
     }).then(function () {
-      state.campaignsLoading = false;
+      state.ruleCampaignsLoading = false;
       renderRuleForm();
     });
   }
@@ -5607,7 +7025,7 @@
 
   function campaignName(externalId) {
     if (!externalId) return "";
-    var row = (state.campaigns || []).filter(function (item) {
+    var row = (state.ruleCampaigns || []).filter(function (item) {
       return item.external_id === externalId;
     })[0];
     return row ? row.name : "";
@@ -5644,8 +7062,7 @@
       ["spend", "Расход"], ["spend_total", "Потрачено за все время"],
       ["results", "Результаты"], ["cpa", "Цена за результат"],
       ["roi", "ROAS для покупок на веб-сайте"], ["roi", "Окупаемость затрат"],
-      ["spend_day_pct", "% расходов за день"], ["spend_total_pct", "% расходов за все время"],
-      ["reach_pct", "Охваченная аудитория, %"]
+      ["spend_day_pct", "% расходов за день"], ["spend_total_pct", "% расходов за все время"]
     ]],
     ["Настройки", [
       ["campaign_name", "Название кампании"], ["entity_name", "Название адсета"],
@@ -5928,10 +7345,11 @@
               : "")) +
         "</div></td></tr>") +
       "</tbody></table></div>" +
+      // Про «наши числа» уже сказано подзаголовком раздела — в подвале это
+      // была вторая копия той же фразы.
       '<div class="rule-foot"><span>Правил: ' + rows.length +
       (rows.length === (state.rules || []).length ? "" : " из " + (state.rules || []).length) +
-      "</span>" +
-      '<span>Считаются по нашим числам: расход из Meta, доход из Keitaro</span></div>';
+      "</span></div>";
   }
 
   /* Выключить правило, не удаляя его, — самый частый способ «поставить на
@@ -6015,7 +7433,10 @@
       entity_status: "active", window: "today",
       action: "pause", action_sign: "plus", action_mode: "pct",
       budget_kind: "daily", action_value: "", action_max: "",
-      conditions: [{ metric: "spend", operator: "lt", value: "" }]
+      // Для стоп-правила безопасный ожидаемый сценарий — остановить объект,
+      // когда расход ДОСТИГ порога. Прежний оператор «меньше» создавал правило,
+      // которое переставало совпадать ровно тогда, когда бюджет был потрачен.
+      conditions: [{ metric: "spend", operator: "gte", value: "" }]
     };
   }
 
@@ -6172,7 +7593,7 @@
     state.ruleFormError = "";
     state.ruleFormSaving = false;
     state.ruleFormFresh = true;
-    if (state.ruleForm.scope_kind === "campaign") ensureCampaigns();
+    if (state.ruleForm.scope_kind === "campaign") ensureCampaigns(true);
     renderRuleForm();
   }
 
@@ -6235,7 +7656,7 @@
     if (closest("[data-rules-save]")) return saveRuleForm();
     if (closest("[data-rules-close]")) return closeRuleEditor();
     if (closest("[data-rule-cond-add]")) {
-      state.ruleForm.conditions.push({ metric: "spend", operator: "gt", value: "" });
+      state.ruleForm.conditions.push({ metric: "spend", operator: "gte", value: "" });
       return renderRuleForm();
     }
     if (closest("[data-rule-cond-empty]")) {
@@ -6423,7 +7844,7 @@
         var pair = String(form.value).split(":");
         state.ruleForm.scope_kind = pair[0];
         state.ruleForm.level = pair[1];
-        if (pair[0] === "campaign") ensureCampaigns();
+        if (pair[0] === "campaign") ensureCampaigns(true);
         else state.ruleForm.campaign_external_id = "";
         return renderRuleForm();
       }
@@ -6692,8 +8113,8 @@
       campaigns = '<label class="meta-field rule-grid--wide"><span>Кампания</span>' +
         '<select class="meta-control meta-select" data-rule-form="campaign_external_id">' +
         '<option value="">' +
-        (state.campaignsLoading ? "Загружаем кампании…" : "Выберите кампанию") + "</option>" +
-        (state.campaigns || []).map(function (item) {
+        (state.ruleCampaignsLoading ? "Загружаем кампании…" : "Выберите кампанию") + "</option>" +
+        (state.ruleCampaigns || []).map(function (item) {
           return '<option value="' + escapeHtml(item.external_id) + '"' +
             (item.external_id === f.campaign_external_id ? " selected" : "") + ">" +
             escapeHtml(item.name + (item.account_name ? " · " + item.account_name : "")) +
@@ -6763,7 +8184,34 @@
         return '<option value="' + row[0] + '"' +
           (row[0] === f.schedule_kind ? " selected" : "") + ">" + escapeHtml(row[1]) +
           "</option>";
-      }).join("") + "</select></label></div>" + block + "</div>";
+      }).join("") + "</select></label></div>" +
+      '<div class="meta-note" style="margin-top:10px">' + escapeHtml(ruleCadenceText()) +
+      "</div>" + block + "</div>";
+  }
+
+  /* Частота в форме — это «когда правилу можно срабатывать», а сами проверки
+     идут общим прогоном сервера. Без подписи «постоянно» читалось как
+     «ежеминутно», и в полночь ждали срабатывания точно в 00:00. */
+  function ruleCadenceText() {
+    var reference = state.reference || {};
+    if (reference.rules_enabled === false) {
+      return "Автоматическая проверка правил на сервере выключена — сейчас работает " +
+        "только ручной прогон.";
+    }
+    var step = Number(reference.rules_step_minutes) || 30;
+    var when = step < 60
+      ? "каждые " + step + " мин (" + ruleCadenceMarks(step) + ")"
+      : step === 60 ? "каждый час, в :00" : "каждые " + (step / 60) + " ч, в :00";
+    return "Сервер проверяет правила " + when + " по статистике последней синхронизации. " +
+      "Время — по Москве.";
+  }
+
+  function ruleCadenceMarks(step) {
+    var marks = [];
+    for (var minute = 0; minute < 60; minute += step) {
+      marks.push(":" + (minute < 10 ? "0" + minute : minute));
+    }
+    return marks.join(", ");
   }
 
   function ruleIntervalHtml(item, index) {
@@ -7444,9 +8892,11 @@
     var shown = state.comments.length;
     host.innerHTML = "<span>Показано: " + shown +
       (state.commentsTotal > shown ? " из " + state.commentsTotal : "") + "</span>" +
+      // Про сохранение удалённых сказано в самой карточке комментария —
+      // повторять это в подвале на каждом экране незачем.
       (state.commentsTotal > shown
         ? "<span>Сузьте фильтры, чтобы увидеть остальные</span>"
-        : '<span>Удалённые остаются в CRM вместе с текстом — их видно в статусе «Удалённые»</span>');
+        : "");
   }
 
   /* --- действия --- */
@@ -7726,14 +9176,23 @@
     error: "Ошибка"
   };
 
+  /* В мастере состояние сессии пишется в ту же строку у «Далее», что и проверка
+     токена: браузер поднимает сама кнопка, и ответ на «что сейчас происходит»
+     должен быть в одном месте, а не в блоке с прокси. */
+  function sessionStatusHost(scope) {
+    if (scope !== "wizard") return byId("metaModalSessionStatus");
+    // Строку заняла сессия — «Далее» больше не считает её своей и не сотрёт.
+    state.wizardStatusOwned = false;
+    return byId("metaWizStatus");
+  }
+
   function sessionStatus(scope, text) {
-    var host = scope === "wizard" ? byId("metaWizSessionStatus") : byId("metaModalSessionStatus");
-    host.innerHTML = text;
+    sessionStatusHost(scope).innerHTML = text;
   }
 
   function sessionError(scope, text) {
-    var host = scope === "wizard" ? byId("metaWizSessionStatus") : byId("metaModalSessionStatus");
-    host.innerHTML = '<span style="color:#B91414">' + escapeHtml(text) + "</span>";
+    sessionStatusHost(scope).innerHTML =
+      '<span style="color:#B91414">' + escapeHtml(text) + "</span>";
   }
 
   var SPINNER = '<span class="meta-spin" aria-hidden="true"></span>';
@@ -7779,11 +9238,11 @@
   }
 
   function setSessionButtons(scope, running) {
-    // В мастере отдельной кнопки запуска нет — браузер поднимает «Далее».
-    var start = scope === "wizard" ? null : byId("metaModalSessionStart");
+    /* Отдельной кнопки запуска нет нигде: в мастере браузер поднимает «Далее»,
+       в карточке — «Сохранить», и только если доступы изменились. Остаётся
+       аварийное закрытие уже запущенного. */
     var close = scope === "wizard" ? byId("metaWizSessionClose") : byId("metaModalSessionClose");
     var cookies = scope === "wizard" ? byId("metaWizCookies") : byId("metaModalCookies");
-    if (start) start.style.display = running ? "none" : "";
     close.style.display = running ? "" : "none";
     cookies.disabled = !!running;
   }
@@ -7841,6 +9300,29 @@
         ", пинг " + (result.latency_ms || "—") + " мс");
     } catch (error) {
       sessionError("wizard", error && error.message ? error.message : "Прокси не работает");
+    }
+  }
+
+  /* Та же проверка в сохранённом подключении. Прокси протухает молча, и без
+     кнопки об этом узнавали только по неудачному запуску браузера. */
+  async function modalCheckProxy() {
+    var status = byId("metaModalProxyStatus");
+    var proxy = byId("metaFieldProxy").value.trim();
+    if (!proxy) {
+      status.textContent = "Укажите прокси";
+      status.style.color = "#B91414";
+      return;
+    }
+    status.textContent = "Проверяем прокси…";
+    status.style.color = "#6A6161";
+    try {
+      var result = await api.post("/meta/proxy/check", { proxy_url: proxy });
+      status.textContent = "Прокси работает: IP " + (result.ip || "—") +
+        ", пинг " + (result.latency_ms || "—") + " мс";
+      status.style.color = "#0E7350";
+    } catch (error) {
+      status.textContent = error && error.message ? error.message : "Прокси не работает";
+      status.style.color = "#B91414";
     }
   }
 
@@ -8126,9 +9608,18 @@
 
   /* Кнопка «Далее» на время ожидания гаснет, а рядом крутится кружок: браузер
      Meta поднимается десятками секунд, и молчащий экран читается как зависший. */
+  /* Без текста — только блокировка кнопки: строку в этот момент ведёт сессия
+     браузера, и своя крутилка показывала бы то же самое дважды. Гасим строку
+     только свою: чужую (сессия, прокси, полученный токен) не стираем. */
   function wizardWaiting(on, text) {
     byId("metaWizNext").disabled = !!on;
-    byId("metaWizStatus").innerHTML = on ? SPINNER + escapeHtml(text || "") : "";
+    if (on && text) {
+      state.wizardStatusOwned = true;
+      byId("metaWizStatus").innerHTML = SPINNER + escapeHtml(text);
+    } else if (!on && state.wizardStatusOwned) {
+      state.wizardStatusOwned = false;
+      byId("metaWizStatus").innerHTML = "";
+    }
   }
 
   function renderWizard() {
@@ -8181,12 +9672,18 @@
           // «Далее» поднимает браузер сама. Если человек уже нажал её сам, ждём
           // тот же браузер, а не поднимаем второй.
           var running = state.session && state.session.sessionId && !state.session.settled;
-          wizardWaiting(true, running ? "Ждём токен из браузера…" : "Запускаем браузер…");
+          // Что происходит с браузером, пишет блок «Браузер Facebook»: здесь
+          // достаточно закрыть кнопку от повторного нажатия.
+          wizardWaiting(true, null);
+          if (running) sessionBusy("wizard", "Ждём токен из браузера…");
           try {
             wizard.sessionToken = running ? await sessionWait() : await sessionStart("wizard");
           } catch (error) {
-            return wizardError(error && error.message
-              ? error.message : "Не удалось получить токен сессии");
+            // `sessionStart` и `sessionPoll` уже показывают эту ошибку в строке
+            // состояния браузера. Не копируем тот же текст ещё и в общий блок
+            // ошибок мастера — иначе одно падение рисуется в двух местах.
+            wizardError("");
+            return;
           } finally {
             wizardWaiting(false);
           }
@@ -8260,7 +9757,6 @@
 
   function wizardCheckHtml(accounts, summary, payload) {
     var totals = summary || {};
-    var token = (payload && payload.access_token) || "";
     // Права у токенов разные: без business_management БМы и страницы не
     // отдаются вовсе, и прочерк здесь честнее нуля.
     function count(value) {
@@ -8271,13 +9767,9 @@
       : (totals.active_campaigns ? "активных: " + num(totals.active_campaigns) : "");
     return notice("#E4F7F0", "#16B57F",
       payload && payload.auth_method === "session" ? "EAAB-токен получен" : "Токен принят",
-      "Так выглядит аккаунт, который подключается.") +
-      // Целиком токен не показываем: это ключ от аккаунта, а для «получилось»
-      // хватает начала и длины.
-      (token
-        ? '<div style="margin-top:12px;font-size:11.5px;color:#6A6161;font-weight:600">' +
-          "Токен: " + sessionTokenPreview(token) + "</div>"
-        : "") +
+      "") +
+      // Ни куска токена, ни его длины: для «получилось» хватает зелёной плашки,
+      // а ключ от аккаунта на экране незачем.
       '<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;' +
       'margin-top:14px">' +
       summaryTile("Кабинеты", count(totals.ad_accounts),
@@ -8285,13 +9777,7 @@
       summaryTile("БМы", count(totals.businesses), "") +
       summaryTile("Фан-пейджи", count(totals.pages), "") +
       summaryTile("Кампании", count(totals.campaigns), campaignHint) +
-      "</div>" +
-      ((totals.currencies || []).length > 1
-        ? '<div class="meta-note meta-note--warn" style="margin-top:14px">Кабинеты в разных ' +
-          "валютах (" + escapeHtml((totals.currencies || []).join(", ")) +
-          "). Meta считает день по таймзоне кабинета, а Keitaro — по своей: за «вчера» " +
-          "расход и доход могут не сойтись.</div>"
-        : "");
+      "</div>";
   }
 
   async function wizardConnect() {
@@ -8321,13 +9807,14 @@
         "Импортировано кабинетов: " + wizard.accounts.length +
         ". Запущена загрузка статистики за 90 дней — она идёт в фоне, страницу можно " +
         "закрыть.") +
+        // Без sub_id ничего не пишем: подключение состоялось, а привязку дохода
+        // добирают в настройках, и предупреждение на финальном шаге только
+        // портило вид готового результата.
         (wizard.payload.attribution_sub_id
           ? '<div class="meta-note" style="margin-top:14px">Не забудьте добавить в ссылку ' +
             "трекера <b>sub_id_" + wizard.payload.attribution_sub_id +
             "={{campaign.id}}</b> — без этого параметра дохода и ROI по кампаниям не будет.</div>"
-          : '<div class="meta-note meta-note--warn" style="margin-top:14px">sub_id с ID ' +
-            "кампании не указан, поэтому доход и ROI считаться не будут. Его можно " +
-            "добавить позже в настройках подключения.</div>");
+          : "");
       wizard.step = WIZARD_STEPS.length;
       renderWizard();
       state.reference = null;
@@ -8342,17 +9829,26 @@
   }
 
   function bind() {
-    byId("metaPeriod").addEventListener("change", function (event) {
-      state.period = event.target.value;
-      load().catch(showFailure);
-    });
+    // Календарь пишет обе даты подряд и шлёт change на каждую — перечитываем
+    // по второй, иначе каждый выбор периода грузил бы данные дважды.
+    var dateTo = byId("metaDateTo");
+    if (dateTo) {
+      dateTo.addEventListener("change", function () {
+        clampPeriod();
+        savePeriod();
+        load().catch(showFailure);
+      });
+    } else {
+      // Защита от краткого рассинхрона при выкладке: старая страница ещё могла
+      // содержать селект периода, когда новый скрипт уже попал в браузер.
+      var legacyPeriod = byId("metaPeriod");
+      if (legacyPeriod) legacyPeriod.addEventListener("change", function (event) {
+        state.period = event.target.value || "7";
+        load().catch(showFailure);
+      });
+    }
     byId("metaAccountFilter").addEventListener("change", function (event) {
       state.accountId = event.target.value;
-      resetLevelFilters();
-      load().catch(showFailure);
-    });
-    byId("metaOwnerFilter").addEventListener("change", function (event) {
-      state.ownerId = event.target.value;
       resetLevelFilters();
       load().catch(showFailure);
     });
@@ -8374,6 +9870,8 @@
     });
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape") return;
+      if (byId("metaColumnsModal").style.display === "flex") return closeColumnsModal();
+      if (byId("metaEntityModal").style.display === "flex") return closeEntityModal();
       if (byId("metaSpendModal").style.display === "flex") return closeSpendModal();
       if (byId("metaHourModal").style.display === "flex") return closeHourModal();
       if (byId("metaFormModal").style.display === "flex") return closeForm();
@@ -8385,9 +9883,10 @@
         var next = button.getAttribute("data-level");
         if (next === state.level) return;
         state.level = next;
-        // Уходим с кампаний — отметки теряют смысл: относить на оффер можно
-        // только кампанию, и на другом уровне этих строк уже нет.
+        // Сменили уровень — отметки теряют смысл: на другом уровне этих строк
+        // уже нет, а смешивать кабинеты с кампаниями в одном окне нельзя.
         state.spendPick = {};
+        state.spendPickLevel = null;
         renderLevelTabs();
         loadLevel().catch(showFailure);
       });
@@ -8443,6 +9942,8 @@
       if (window.scrollY !== saved) window.scrollTo(0, saved);
     });
     byId("metaUpBody").addEventListener("click", onUploadClick);
+    bindEntityBar();
+    bindColumnsModal();
     byId("metaTableBody").addEventListener("click", function (event) {
       // Селект ответственного живёт в той же строке — клик по нему окно не открывает.
       if (event.target.closest && event.target.closest("select,button,input,a")) return;
@@ -8511,16 +10012,7 @@
           ? error.message : "Не удалось обновить";
       });
     });
-    byId("metaQueueStatus").addEventListener("change", function () {
-      loadQueue().catch(showFailure);
-    });
-    byId("metaQueueRefresh").addEventListener("click", function () {
-      loadQueue().catch(showFailure);
-    });
-    byId("metaQueueBody").addEventListener("click", function (event) {
-      var retry = event.target.closest ? event.target.closest("[data-queue-retry]") : null;
-      if (retry) retryQueue(retry.getAttribute("data-queue-retry"));
-    });
+
     var levelSearch = byId("metaLevelSearch");
     var searchTimer = null;
     levelSearch.addEventListener("input", function (event) {
@@ -8531,11 +10023,6 @@
         loadLevel().catch(showFailure);
       }, 250);
     });
-    document.addEventListener("change", function (event) {
-      var select = event.target.closest ? event.target.closest("[data-meta-owner]") : null;
-      if (select) assignOwner(select.getAttribute("data-meta-owner"), select.value);
-    });
-
     Array.prototype.forEach.call(document.querySelectorAll(".meta-tab"), function (button) {
       button.addEventListener("click", function () {
         setTab(button.getAttribute("data-tab"));
@@ -8557,14 +10044,15 @@
     byId("metaWizProxyCheck").addEventListener("click", function () {
       wizardCheckProxy().catch(showFailure);
     });
+    var modalProxyCheck = byId("metaModalProxyCheck");
+    if (modalProxyCheck) {
+      modalProxyCheck.addEventListener("click", function () {
+        modalCheckProxy().catch(showFailure);
+      });
+    }
     byId("metaWizSessionClose").addEventListener("click", function () {
       sessionStop();
       sessionResetUi("wizard");
-    });
-    byId("metaModalSessionStart").addEventListener("click", function () {
-      // Причина отказа уже видна в строке статуса — тоста здесь не нужно,
-      // иначе закрытие браузера самим человеком читалось бы как ошибка.
-      sessionStart("modal").catch(function () {});
     });
     byId("metaModalSessionClose").addEventListener("click", function () {
       sessionStop();
@@ -8766,6 +10254,14 @@
     // Подключение персональное: любой пользователь с доступом к Meta Ads может
     // создать несколько своих подключений, даже без административного права.
     byId("metaConnect").style.display = "";
+    // Календарь открывается на сохранённом периоде, а в первый раз — на сегодня.
+    await restorePeriod();
+    var initial = periodRange(state.period || "today");
+    var dateFrom = byId("metaDateFrom");
+    var dateTo = byId("metaDateTo");
+    if (dateFrom && !dateFrom.value) dateFrom.value = initial.from;
+    if (dateTo && !dateTo.value) dateTo.value = initial.to;
+    if (window.CelestialDateRange) window.CelestialDateRange.refresh();
     bind();
     if (state.canManage || state.canLaunch || state.canFixSpend) {
       try {
@@ -8777,6 +10273,7 @@
     }
     // Вкладку восстанавливаем до загрузки данных: её содержимое рисует себя
     // скелетом и наполняется по мере ответов, а не появляется целиком в конце.
+    await loadColumnPreference();
     restoreTab();
     await loadConnections();
     await load();

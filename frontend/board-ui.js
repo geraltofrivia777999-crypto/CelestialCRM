@@ -133,19 +133,22 @@
       "outline:none;text-overflow:ellipsis;transition:border-color .18s,box-shadow .18s}" +
       ".board-edit-overlay--media .board-edit-input:focus,.board-edit-overlay--media .board-edit-select:focus{" +
       "border-color:#D06060!important;box-shadow:0 0 0 3px rgba(185,20,20,.09)}" +
-      // Safari ставит значение даты по центру поля, и «01.09.2026» висело
-      // отдельно от подписи и от соседних полей.
-      '.board-edit-overlay--media .board-edit-input[type="date"]{text-align:left}' +
+      // У Safari значение даты — отдельный внутренний блок. Выравниваем его
+      // по высоте поля (42px минус рамки), сохраняя текст у левого края.
+      '.board-edit-overlay--media .board-edit-input[type="date"]{text-align:left;line-height:40px!important}' +
       '.board-edit-overlay--media .board-edit-input[type="date"]::-webkit-datetime-edit{padding:0;' +
       "text-align:left}" +
       '.board-edit-overlay--media .board-edit-input[type="date"]::-webkit-date-and-time-value{' +
-      "margin:0;text-align:left}" +
+      "margin:0;text-align:left;line-height:40px}" +
       '.board-edit-overlay--media .board-edit-input[type="date"]::-webkit-calendar-picker-indicator{' +
       "margin-left:auto;opacity:.5;cursor:pointer}" +
       // Агенты добавляются строками, поэтому у секции своя раскладка.
       ".board-edit-overlay--media .board-edit-agents{display:grid;gap:9px}" +
-      ".board-edit-overlay--media .board-edit-agent{display:grid;align-items:end;gap:10px;" +
-      "grid-template-columns:minmax(0,1fr) 190px 38px}" +
+      ".board-edit-overlay--media .board-edit-agent{display:grid;align-items:end;" +
+      "column-gap:10px;row-gap:4px;grid-template-columns:minmax(0,1fr) 190px 38px}" +
+      ".board-edit-overlay--media .board-edit-agent-hint{grid-column:2/3;" +
+      "font:600 10.5px 'Inter',sans-serif;color:#9B9292;min-height:13px}" +
+      ".board-edit-overlay--media .board-edit-agent-hint:empty{min-height:0}" +
       ".board-edit-overlay--media .board-edit-agent-drop{display:flex;align-items:center;" +
       "justify-content:center;width:38px;height:42px;border:1px solid #EBE6E6;border-radius:10px;" +
       "background:#fff;color:#9B9292;cursor:pointer;transition:border-color .18s,background .18s,color .18s}" +
@@ -162,6 +165,10 @@
       "background:#FBF9F9;color:#9B9292;cursor:default}" +
       ".board-edit-overlay--media .board-edit-section{margin-top:0;padding:14px;" +
       "border:1px solid #EBE6E6;border-radius:14px;background:#fff}" +
+      // Блоки без подписи иначе стоят вплотную: отступ между ними даёт
+      // подпись, а у блока агентов её нет.
+      ".board-edit-overlay--media .board-edit-context + .board-edit-section," +
+      ".board-edit-overlay--media .board-edit-section + .board-edit-section{margin-top:14px}" +
       // Подпись блока стоит над рамкой и выглядит как подписи полей рядом:
       // внутри рамки она читалась как часть содержимого, а не как её название.
       ".board-edit-overlay--media .board-edit-section-label{margin:16px 0 7px;" +
@@ -169,10 +176,51 @@
       "color:#857D7D}" +
       ".board-edit-overlay--media .board-edit-grid{display:grid!important;" +
       "grid-template-columns:repeat(auto-fit,minmax(145px,1fr))!important;gap:10px!important}" +
+      // Блок ввода: в окне их может быть несколько, и между ними нужна не
+      // просто щель, а видимая граница — иначе поля соседних дней сливаются
+      // в одну простыню.
+      // Закреплённая шапка: те же подписи, что у полей, но значения текстом —
+      // менять их в этом окне нельзя, и поле только обещало бы обратное.
+      ".board-edit-overlay--media .board-edit-locked{display:grid;" +
+      "grid-template-columns:150px 190px minmax(0,1fr);gap:12px}" +
+      ".board-edit-overlay--media .board-edit-locked__item{display:flex;flex-direction:column;" +
+      "gap:6px;min-width:0}" +
+      ".board-edit-overlay--media .board-edit-locked__item b{display:block;min-height:42px;" +
+      "padding:11px 12px;border:1px solid #EBE6E6;border-radius:10px;background:#fff;" +
+      "font:600 12.5px 'Inter',sans-serif;color:#2A2020;overflow:hidden;text-overflow:ellipsis;" +
+      "white-space:nowrap}" +
+      // Окно тира: в выбранный календарём день у тира может не быть офферов.
+      ".board-edit-overlay--media .board-edit-day-hint{margin-top:8px;font:600 11px 'Inter',sans-serif;" +
+      "color:#B91414}" +
+      ".board-edit-overlay--media .board-edit-day-hint[hidden]{display:none}" +
+      "@media(max-width:760px){" +
+      ".board-edit-overlay--media .board-edit-locked{grid-template-columns:1fr 1fr}" +
+      ".board-edit-overlay--media .board-edit-locked__item:last-child{grid-column:1/-1}" +
+      "}" +
+      ".board-edit-overlay--media .board-edit-blocks{display:grid;gap:14px}" +
+      ".board-edit-overlay--media .board-edit-block{padding:0;border:0;background:none}" +
+      ".board-edit-overlay--media .board-edit-blocks .board-edit-block + .board-edit-block{" +
+      "padding-top:14px;border-top:1px dashed #E5DFDF}" +
+      ".board-edit-overlay--media .board-edit-block__head{display:flex;align-items:center;" +
+      "justify-content:space-between;gap:10px;margin-bottom:9px;font:700 11px 'Inter',sans-serif;" +
+      "letter-spacing:.6px;text-transform:uppercase;color:#857D7D}" +
+      ".board-edit-overlay--media .board-edit-block__drop{border:0;background:none;cursor:pointer;" +
+      "font:700 11px 'Inter',sans-serif;letter-spacing:.4px;text-transform:uppercase;color:#B91414}" +
+      ".board-edit-overlay--media .board-edit-block__drop[hidden]{display:none}" +
+      // Кнопка следующего блока — полосой во всю ширину под последним блоком:
+      // так она читается как «здесь появится ещё один», а не как действие в
+      // ряду с полями.
+      ".board-edit-overlay--media .board-edit-block-add{display:flex;align-items:center;" +
+      "justify-content:center;gap:7px;width:100%;margin-top:14px;height:42px;padding:0 14px;" +
+      "border:1px dashed #E0D8D8;border-radius:12px;background:#FBF9F9;" +
+      "font:700 12px 'Inter',sans-serif;color:#6A6161;cursor:pointer;" +
+      "transition:border-color .18s,background .18s,color .18s}" +
+      ".board-edit-overlay--media .board-edit-block-add:hover{border-color:#D06060;" +
+      "background:#FCF7F7;color:#B91414}" +
       ".board-edit-overlay--media .board-edit-footer{display:flex;align-items:center;" +
       "justify-content:flex-end;gap:10px;margin:0!important;padding:15px 24px 18px!important;" +
       "border-top:1px solid #EBE6E6;background:#fff;flex-shrink:0}" +
-      ".board-edit-overlay--media .board-edit-button{height:42px;padding:0 18px!important;" +
+      ".board-edit-overlay--media .board-edit-button{height:40px;padding:0 16px!important;" +
       "border-radius:10px!important;font-family:'Inter',sans-serif!important;font-size:12px!important}" +
       ".board-edit-overlay--media .board-edit-save:disabled{cursor:wait;opacity:.68}" +
       "@media(max-width:760px){" +
@@ -189,6 +237,7 @@
       ".board-edit-overlay--media .board-edit-agent{grid-template-columns:minmax(0,1fr) 38px}" +
       ".board-edit-overlay--media .board-edit-agent > label:first-child{grid-area:1/1}" +
       ".board-edit-overlay--media .board-edit-agent > label:nth-child(2){grid-area:2/1}" +
+      ".board-edit-overlay--media .board-edit-agent-hint{grid-area:3/1}" +
       ".board-edit-overlay--media .board-edit-agent-drop{grid-area:1/2/3/3;height:100%}" +
       "}" +
       "@media(max-width:480px){" +
@@ -272,10 +321,6 @@
     '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
     '<path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="3.4" ' +
     'stroke-linecap="round"/></svg>';
-  var MF_TICK =
-    '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
-    '<path d="m5 12.5 5 5 9-11" stroke="currentColor" stroke-width="3" stroke-linecap="round" ' +
-    'stroke-linejoin="round"/></svg>';
 
   var openFilter = null;
 
@@ -343,17 +388,20 @@
       host.setAttribute("aria-expanded", panel ? "true" : "false");
     }
 
+    /* Панель — как поле офферов в CapAlert: выбранное плашками над поиском,
+       в списке только невыбранное и без флажков. С флажками отмеченный вариант
+       терялся среди сотни строк, и понять, что уже выбрано, можно было только
+       пролистав весь список. */
     function rowsHtml() {
       if (!items.length) {
         return '<div class="csel-empty">Нет вариантов</div>';
       }
       return items.map(function (item) {
         var on = chosen.indexOf(String(item.value)) >= 0;
-        return '<button type="button" role="option" aria-selected="' + (on ? "true" : "false") +
-          '" class="csel-option cmf-option' + (on ? " csel-option--on" : "") +
-          '" data-value="' + escapeHtml(item.value) +
-          '" data-search="' + escapeHtml((item.label + " " + (item.hint || "")).toLowerCase()) + '">' +
-          '<span class="cmf-box">' + (on ? MF_TICK : "") + "</span>" +
+        return '<button type="button" role="option" aria-selected="false" ' +
+          'class="csel-option cmf-option" data-value="' + escapeHtml(item.value) +
+          '" data-search="' + escapeHtml((item.label + " " + (item.hint || "")).toLowerCase()) + '"' +
+          (on ? " hidden" : "") + ">" +
           '<span class="csel-option-text">' + escapeHtml(item.label) +
           (item.hint ? '<span class="csel-option-hint">' + escapeHtml(item.hint) + "</span>" : "") +
           "</span></button>";
@@ -385,13 +433,55 @@
       if (!panel) return;
       var needle = query.trim().toLowerCase();
       var shown = 0;
+      var first = null;
       Array.prototype.forEach.call(panel.querySelectorAll(".cmf-option"), function (node) {
-        var hit = !needle || node.getAttribute("data-search").indexOf(needle) >= 0;
+        var hit = chosen.indexOf(node.getAttribute("data-value")) < 0 &&
+          (!needle || node.getAttribute("data-search").indexOf(needle) >= 0);
         node.hidden = !hit;
-        if (hit) shown += 1;
+        if (!hit) node.classList.remove("csel-option--active");
+        if (hit) {
+          shown += 1;
+          if (!first) first = node;
+        }
       });
       var empty = panel.querySelector(".cmf-none");
-      if (empty) empty.hidden = shown > 0;
+      if (empty) {
+        empty.hidden = shown > 0 || !items.length;
+        empty.textContent = !needle && chosen.length === items.length
+          ? "Все варианты выбраны" : "Ничего не найдено";
+      }
+      // Ищут, чтобы выбрать: первое совпадение сразу под Enter.
+      if (needle && first && !panel.querySelector(".cmf-option.csel-option--active")) {
+        first.classList.add("csel-option--active");
+      }
+    }
+
+    function moveActive(step) {
+      if (!panel) return;
+      var options = Array.prototype.filter.call(
+        panel.querySelectorAll(".cmf-option"),
+        function (node) { return !node.hidden; }
+      );
+      if (!options.length) return;
+      var current = panel.querySelector(".cmf-option.csel-option--active");
+      var index = options.indexOf(current);
+      var next = index < 0
+        ? options[step > 0 ? 0 : options.length - 1]
+        : options[(index + step + options.length) % options.length];
+      if (current) current.classList.remove("csel-option--active");
+      next.classList.add("csel-option--active");
+      if (next.scrollIntoView) next.scrollIntoView({ block: "nearest" });
+    }
+
+    /* Поиск после выбора не сбрасывается: в фильтре часто берут подряд
+       несколько похожих значений — все офферы «1Win EVS», — и набирать запрос
+       заново после каждого было бы мучением. */
+    function refreshPanel() {
+      if (!panel) return;
+      var search = panel.querySelector(".csel-input");
+      applySearch(search.value);
+      place();
+      search.focus();
     }
 
     function close() {
@@ -405,16 +495,7 @@
       if (index >= 0) chosen.splice(index, 1);
       else chosen.push(String(value));
       renderField();
-      if (panel) {
-        var list = panel.querySelector(".csel-list");
-        var search = panel.querySelector(".csel-input");
-        var scrolled = list ? list.scrollTop : 0;
-        if (list) list.innerHTML = rowsHtml() +
-          '<div class="csel-empty cmf-none" hidden>Ничего не найдено</div>';
-        if (search) applySearch(search.value);
-        if (list) list.scrollTop = scrolled;
-        place();
-      }
+      refreshPanel();
       if (onChange) onChange();
     }
 
@@ -425,25 +506,47 @@
       panel.className = "csel-panel cmf-panel";
       // Поиск есть во всех фильтрах, даже коротких: человек ищет одинаково во
       // всех, и «здесь ищется, а здесь нет» само по себе сбивает.
+      // Выбранное видно чипами в самом поле фильтра — дублировать его в
+      // панели незачем: там только поиск и то, что ещё можно выбрать.
       panel.innerHTML =
         '<div class="csel-search"><input type="text" class="csel-input" ' +
         'placeholder="Поиск" autocomplete="off"></div>' +
         '<div class="csel-list" role="listbox" aria-multiselectable="true">' + rowsHtml() +
         '<div class="csel-empty cmf-none" hidden>Ничего не найдено</div></div>';
       document.body.appendChild(panel);
-      place();
       openFilter = { close: close, owns: owns };
       renderField();
       var search = panel.querySelector(".csel-input");
-      if (search) search.focus();
+      applySearch("");
+      place();
+      search.focus();
+      // Клик по варианту и крестикам не уводит фокус из поиска.
+      panel.addEventListener("mousedown", function (event) {
+        if (event.target.closest(".cmf-option")) event.preventDefault();
+      });
       panel.addEventListener("click", function (event) {
         var option = event.target.closest(".cmf-option");
-        if (!option) return;
-        toggle(option.getAttribute("data-value"));
+        if (option) toggle(option.getAttribute("data-value"));
       });
-      if (search) {
-        search.addEventListener("input", function () { applySearch(search.value); });
-      }
+      search.addEventListener("input", function () { applySearch(search.value); });
+      search.addEventListener("keydown", function (event) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          moveActive(event.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
+        if (event.key === "Enter") {
+          var active = panel.querySelector(".cmf-option.csel-option--active");
+          if (active && !active.hidden) {
+            event.preventDefault();
+            toggle(active.getAttribute("data-value"));
+          }
+          return;
+        }
+        if (event.key === "Backspace" && !search.value && chosen.length) {
+          toggle(chosen[chosen.length - 1]);
+        }
+      });
     }
 
     function owns(node) {
@@ -511,6 +614,15 @@
       value: function (r) { return r.geo; },
       matches: function (r, value) { return (r.geo || null) === (value || null); }
     },
+    tier: {
+      /* Тир приходит с сервера посчитанным по справочнику «Тиры стран»: сам
+         тир не фильтруется отдельным полем — он производная от GEO. */
+      label: "Тир", filter: null,
+      key: function (r) { return r.tier || "unassigned"; },
+      name: function (r) { return TIER_NAMES[r.tier] || "Без тира"; },
+      value: function (r) { return r.tier || null; },
+      matches: function (r, value) { return (r.tier || null) === (value || null); }
+    },
     partner: {
       label: "Партнёрка", filter: "partner_id",
       key: function (r) { return r.partner || "—"; },
@@ -524,8 +636,45 @@
       name: function (r) { return r.offer; },
       value: function (r) { return r.offer_id; },
       matches: function (r, value) { return r.offer_id === value; }
+    },
+    agent: {
+      /* Агент — разрез по тому, через кого внесён спенд. Строки для него
+         раскладывает доска (agentRows): у одной записи агентов бывает
+         несколько, а воронка и доход к агенту не привязаны — они остаются в
+         строке «Без агента» и видны на уровнях выше. */
+      label: "Агент", filter: null,
+      key: function (r) { return r.agent_key || "none"; },
+      name: function (r) { return r.agent_name || "Без агента"; },
+      value: function (r) { return r.agent_key || "none"; },
+      matches: function (r, value) {
+        var ids = Object.keys(r.providers || {});
+        return value === "none" ? !ids.length : ids.indexOf(value) >= 0;
+      }
+    },
+    date: {
+      /* День приходит в строках только когда уровень включён (by_date): в
+         остальное время сервер суммирует период целиком. Своим параметром
+         фильтра день не сужается — сужают границы периода, поэтому у уровня
+         собственный `narrow`. */
+      label: "Дата", filter: null, byDate: true,
+      key: function (r) { return r.date || "—"; },
+      name: function (r) { return dayLabel(r.date); },
+      value: function (r) { return r.date || null; },
+      narrow: function (params, value) {
+        params.date_from = value;
+        params.date_to = value;
+      },
+      matches: function (r, value) { return (r.record_date || null) === (value || null); }
     }
   };
+
+  /* ISO-день в привычный вид: 2026-09-05 → 05.09.2026. */
+  function dayLabel(day) {
+    var parts = String(day || "").split("-");
+    return parts.length === 3 ? parts[2] + "." + parts[1] + "." + parts[0] : "Без даты";
+  }
+
+  var TIER_NAMES = { T1: "Tier1", T23: "Tier2/3", unassigned: "Без тира" };
 
   function subTh(label, extra, background, color, drag) {
     return '<th title="' + escapeHtml(label) + '" draggable="true"' +
@@ -555,7 +704,9 @@
   function td(content, opts) {
     opts = opts || {};
     return "<td" + (opts.title ? ' title="' + escapeHtml(opts.title) + '"' : "") +
-      ' class="cs-cell" style="text-align:right;padding:12px;font-family:Inter;font-size:12.5px;' +
+      (opts.attrs || "") +
+      ' class="cs-cell' + (opts.cls || "") +
+      '" style="text-align:right;padding:12px;font-family:Inter;font-size:12.5px;' +
       "font-weight:" + (opts.bold ? "800" : "600") + ";border-bottom:1px solid #F2EEEE;white-space:nowrap;" +
       (opts.color ? "color:" + opts.color + ";" : "") + (opts.extra || "") + '">' + content + "</td>";
   }
@@ -595,9 +746,9 @@
     },
     {
       key: "result", label: "Результат",
-      background: "#E6FAF1", subBackground: "#F1FCF7",
-      cellBackground: "#F9FDFB", rootBackground: "#E9F8F1",
-      color: "#25835E", border: "#D1EDDF", divider: "#84CBAA"
+      background: "#E7EFE8", subBackground: "#F4F8F4",
+      cellBackground: "#FAFCFA", rootBackground: "#EDF3EE",
+      color: "#25835E", border: "#D6E2D8", divider: "#A8C0AE"
     }
   ];
 
@@ -612,8 +763,11 @@
     };
   }
 
+  /* Знак — цветами своих блоков: плюс как заголовки «Результата», минус как
+     «Затраты». Чистые #16B57F и #FF0000 выбивались из палитры таблицы и тянули
+     взгляд сильнее самих цифр. */
   function signTone(value) {
-    return value >= 0 ? "#16B57F" : "#FF0000";
+    return value >= 0 ? "#25835E" : "#C3536E";
   }
 
   function amount(value) {
@@ -670,7 +824,16 @@
       // A rule per cell pair, so the divider follows the columns however the
       // catalog and the visible groups change.
       ".cs-table--dividers thead th + th{border-left:1px solid #E4DDDD}" +
-      ".cs-table--dividers tbody td + td{border-left:1px solid #EFE9E9}";
+      ".cs-table--dividers tbody td + td{border-left:1px solid #EFE9E9}" +
+      // Итоговая строка не сворачивается вместе с ветками и держится внизу,
+      // пока таблицу листают.
+      ".cs-total{position:sticky;bottom:0;z-index:3}" +
+      ".cs-total > td{background:#F8F5F5;border-top:2px solid #E8E2E2;" +
+      "font:800 12.5px Inter,sans-serif;color:#070505}" +
+      // Расход дня правится по клику. Никакой рамки: ячейка стоит в ряду
+      // чисел, и обводка под курсором делала из неё поле ввода. Что строка
+      // кликабельна, видно по курсору и подсказке.
+      ".cs-cell--day{cursor:pointer}";
     document.head.appendChild(style);
   }
 
@@ -690,9 +853,13 @@
       leaves: {},
       leavesOpen: {},
       structure: null,
+      // Пришли ли строки разрезанными по дням — от этого зависит, хватит ли
+      // их для той структуры, которую человек только что собрал.
+      groupsByDate: false,
       display: defaultDisplay(),
       collapsed: {},
-      canManage: false
+      canManage: false,
+      lastKeitaroRefreshAt: null
     };
 
     var p = config.prefix; // "media" | "finance"
@@ -702,10 +869,26 @@
     function defaultStructure() {
       return { items: [
         { key: "buyer", on: true },
+        { key: "tier", on: false },
         { key: "geo", on: true },
         { key: "partner", on: true },
-        { key: "offer", on: true }
+        { key: "offer", on: true },
+        { key: "date", on: false },
+        { key: "agent", on: false }
       ] };
+    }
+
+    /* Уровни, добавленные после того, как человек сохранил свой порядок,
+       дописываются в конец выключенными: иначе новый уровень увидели бы только
+       те, кто структуру ни разу не трогал. */
+    function withNewLevels(preference) {
+      var known = {};
+      preference.items.forEach(function (item) { known[item.key] = true; });
+      var items = preference.items.filter(function (item) { return LEVELS[item.key]; });
+      defaultStructure().items.forEach(function (item) {
+        if (!known[item.key]) items.push({ key: item.key, on: false });
+      });
+      return { items: items };
     }
 
     function activeLevels() {
@@ -781,6 +964,66 @@
       });
     }
 
+    /* Фильтры живут дольше визита: раздел открывают по десять раз на дню, и
+       каждый раз заново выставлять период и баера — работа впустую. Хранятся
+       там же, где структура и вид, — в настройках пользователя, поэтому
+       переносятся на другую машину вместе с ним. */
+    var filtersRestored = false;
+
+    async function restoreFilters() {
+      if (!config.filtersPreferenceKey) return;
+      var saved = null;
+      try {
+        var stored = await api.get("/me/preferences/" + config.filtersPreferenceKey);
+        // Ненайденная настройка приходит пустым объектом, а не null: пустой
+        // здесь означает «человек ещё ничего не выбирал».
+        var value = stored && stored.value;
+        saved = value && Object.keys(value).length ? value : null;
+      } catch (error) {
+        // Не сохранились настройки — не повод не открыть раздел.
+        saved = null;
+      }
+      var from = el("FilterDateFrom");
+      var to = el("FilterDateTo");
+      if (saved) {
+        // Пустые даты у сохранённых настроек — это осознанное «за всё время»,
+        // и подставлять поверх них сегодняшний день нельзя.
+        if (from) from.value = saved.date_from || "";
+        if (to) to.value = saved.date_to || "";
+        LIST_FILTERS.forEach(function (item) {
+          var values = saved[item.param];
+          if (values && values.length && filters[item.id]) {
+            filters[item.id].setValues(values);
+          }
+        });
+      } else {
+        // Первый заход: показываем текущий день, а не всю историю доски.
+        var today = window.CelestialTime.todayISO();
+        if (from) from.value = today;
+        if (to) to.value = today;
+      }
+      // Плашка периода читает скрытые поля и сама о правке не узнает.
+      if (window.CelestialDateRange) window.CelestialDateRange.refresh();
+      filtersRestored = true;
+    }
+
+    function persistFilters() {
+      if (!config.filtersPreferenceKey || !filtersRestored) return;
+      var from = el("FilterDateFrom");
+      var to = el("FilterDateTo");
+      var value = {
+        date_from: from ? from.value : "",
+        date_to: to ? to.value : ""
+      };
+      LIST_FILTERS.forEach(function (item) {
+        value[item.param] = filterValues(item.id);
+      });
+      // Молча: настройка вспомогательная, а ругаться тостом на каждый щелчок
+      // по плашке — шум поверх работы.
+      api.put("/me/preferences/" + config.filtersPreferenceKey, { value: value })
+        .catch(function () { /* в следующий раз откроется с прежними */ });
+    }
+
     // Плашки снимают и добавляют пачками, по одному клику на значение. Без
     // паузы каждый клик уходил бы отдельным запросом за той же таблицей.
     var reloadTimer = null;
@@ -789,6 +1032,7 @@
       if (reloadTimer) window.clearTimeout(reloadTimer);
       reloadTimer = window.setTimeout(function () {
         reloadTimer = null;
+        persistFilters();
         loadRecords().catch(fail);
       }, 220);
     }
@@ -1019,7 +1263,7 @@
         });
         // Deliberately not re-rendering the bar: the landing animation is still running.
         resetLeafState();
-        renderTable();
+        if (!reloadIfByDateChanged()) renderTable();
         persistStructure();
       }
     }
@@ -1033,6 +1277,30 @@
     function resetLeafState() {
       state.leaves = {};
       state.leavesOpen = {};
+      // Свёртки адресуются теми же путями: после смены структуры они указывают
+      // в никуда, и держать их — значит однажды свернуть чужую ветку.
+      state.collapsed = {};
+      persistFolds();
+    }
+
+    /* Свёрнутые ветки переживают уход из раздела: человек сворачивает доску
+       под себя, и разворачивать её заново на каждом заходе — работа впустую.
+       Хранятся списком путей: словарь с `false` рос бы от каждого щелчка. */
+    var foldsTimer = null;
+
+    function persistFolds() {
+      if (!config.foldsPreferenceKey) return;
+      if (foldsTimer) window.clearTimeout(foldsTimer);
+      foldsTimer = window.setTimeout(function () {
+        foldsTimer = null;
+        var paths = Object.keys(state.collapsed).filter(function (path) {
+          return state.collapsed[path];
+        });
+        // Молча: свёртка — вспомогательная настройка, а тост на каждый щелчок
+        // по стрелке был бы шумом поверх работы.
+        api.put("/me/preferences/" + config.foldsPreferenceKey, { value: { paths: paths } })
+          .catch(function () { /* в следующий раз откроется развёрнутой */ });
+      }, 400);
     }
 
     function saveStructure(focusKey) {
@@ -1044,7 +1312,7 @@
         // Re-rendering drops focus, which would strand a keyboard user mid-reorder.
         if (slot && bar.contains(document.activeElement) === false) slot.focus();
       }
-      renderTable();
+      if (!reloadIfByDateChanged()) renderTable();
       persistStructure();
     }
 
@@ -1095,6 +1363,35 @@
         ], state.display.dense ? "1" : "0") + "</div>" +
         '<div class="cs-view-row cs-view-row--stack"><span class="cs-view-label">Колонки</span>' +
         '<div class="cs-view-groups">' + groups + "</div></div>";
+    }
+
+    /* Выгрузка идёт с сервера, а не собирается в браузере: числа те же, что в
+       таблице, а Excel-файл руками из JS не собрать без сторонней библиотеки. */
+    function bindExport() {
+      var button = el("Export");
+      var menu = el("ExportMenu");
+      if (!button || !menu || button.dataset.boardBound) return;
+      button.dataset.boardBound = "1";
+      button.addEventListener("click", function (event) {
+        event.stopPropagation();
+        menu.hidden = !menu.hidden;
+      });
+      menu.addEventListener("click", function (event) {
+        var pick = event.target.closest("[data-export]");
+        if (!pick) return;
+        menu.hidden = true;
+        var params = filterParams();
+        params.format = pick.getAttribute("data-export");
+        // Выгрузка повторяет структуру доски: те же уровни в том же порядке.
+        params.levels = activeLevels().join(",");
+        // Скачивание — переход по адресу: сессия уезжает cookie, и лишний
+        // запрос через fetch с ручным Blob здесь ничего не добавляет.
+        window.location.href = config.exportEndpoint + "?" + queryString(params);
+      });
+      document.addEventListener("click", function (event) {
+        if (menu.hidden) return;
+        if (!event.target.closest(".board-export")) menu.hidden = true;
+      });
     }
 
     function bindViewControls() {
@@ -1434,6 +1731,37 @@
       });
     }
 
+    /* Уровень «Агент»: строка «баер × оффер» раскладывается на строку каждого
+       агента с его спендом и строку «Без агента» — с воронкой, доходом и
+       спендом, внесённым не через агентов. Суммы выше по дереву от этого не
+       меняются: строки агентов несут только спенд. */
+    function rowsByAgent(groups) {
+      if (activeLevels().indexOf("agent") < 0) return groups;
+      var names = {};
+      state.providers.forEach(function (provider) { names[provider.id] = provider.name; });
+      var rows = [];
+      groups.forEach(function (row) {
+        var providers = row.providers || {};
+        var attributed = 0;
+        Object.keys(providers).forEach(function (id) {
+          var amount = Number((providers[id] || {}).amount || 0);
+          attributed += amount;
+          var own = {};
+          own[id] = providers[id];
+          rows.push(Object.assign({}, row, {
+            agent_key: id, agent_name: names[id] || "Агент",
+            spend: amount, installs: 0, registrations: 0, ftd: 0, revenue: 0,
+            rent: 0, records: 0, services: {}, providers: own
+          }));
+        });
+        rows.push(Object.assign({}, row, {
+          agent_key: "none", agent_name: "Без агента",
+          spend: Number(row.spend || 0) - attributed, providers: {}
+        }));
+      });
+      return rows;
+    }
+
     function groupRecords(records, levels) {
       var root = {
         children: {}, order: [], aggregate: newAggregate(), records: [], scope: {}
@@ -1476,12 +1804,37 @@
             : column.bucket
               ? source[column.bucket][column.id]
               : column.get(source.sums);
-          var formatted = formatCell(column.kind, value, compact);
-          var numeric = value == null ? null : Number(value);
+          // Под агентом воронка и доход не делятся: они относятся к офферу,
+          // и цифра у агента была бы выдумкой.
+          var blanked = opts.agentScoped &&
+            (column.group === "funnel" || column.group === "result");
+          var formatted = blanked
+            ? { text: "—", title: "Не делится по агентам — относится к офферу" }
+            : formatCell(column.kind, value, compact);
+          var numeric = blanked || value == null ? null : Number(value);
+          /* Расход на строке дня правится прямо в таблице: баер вводит день
+             целиком, а сервер раскладывает сумму по офферам этого дня. */
+          var editable = !blanked && opts.daySpend && column.editKey === "spend";
           cells += td(formatted.text, {
             bold: opts.bold || column.bold,
-            title: formatted.title,
+            title: editable
+              ? opts.daySpend.span
+                ? "Расход тира за день — откроется окно, сумма разделится по офферам " +
+                  TIER_NAMES[opts.daySpend.tier]
+                : "Расход за день — откроется окно, сумма разделится по офферам" +
+                  (opts.daySpend.tier ? " " + TIER_NAMES[opts.daySpend.tier] : "")
+              : formatted.title,
             color: column.tone && numeric != null ? column.tone(numeric) : undefined,
+            attrs: editable
+              ? ' data-day-spend="' + escapeHtml(opts.daySpend.buyer) +
+                '" data-day-date="' + escapeHtml(opts.daySpend.date) +
+                '" data-day-tier="' + escapeHtml(opts.daySpend.tier || "") + '"' +
+                (opts.daySpend.span ? ' data-day-span="1"' : "")
+              : "",
+            // Ячейка дня остаётся обычной ячейкой: рамка появляется только под
+            // курсором. Постоянная обводка делала из неё поле ввода, которое
+            // и по размеру, и по виду выбивалось из ряда соседних чисел.
+            cls: editable ? " cs-cell--day" : "",
             extra: "background:" +
               (opts.root ? group.rootBackground : group.cellBackground) + ";" +
               columnOpener(group, groupIndex, index)
@@ -1500,7 +1853,174 @@
         'font-weight:700;color:#857D7D">' + content + "</td></tr>";
     }
 
+    /* День одного баера — единственная строка, в которую можно вписать расход:
+       сумма делится между офферами этого дня, а значит день должен быть один,
+       баер один, и оффер ещё не выбран. Строка «Баер → Оффер → Дата» под это
+       не подходит: там расход относится к одному офферу, а не ко дню. */
+    function daySpendScope(node) {
+      if (!config.dayLevelSpend || !state.canManage) return null;
+      var scope = node.scope || {};
+      // Под агентом строка показывает долю одного агента — вписывать туда
+      // расход всего дня нельзя.
+      if (scope.agent !== undefined) return null;
+      /* Строка тира баера — расход тира за один день. Строка объединяет весь
+         период фильтра, поэтому день выбирают в окне календарём (стоит день
+         выше по дереву — он и подставится). Оффер выше тира делает строку
+         расходом одного оффера, а «Без тира» отнести не к чему. */
+      if (node.level === "tier") {
+        if (!scope.buyer || scope.offer) return null;
+        if (scope.tier !== "T1" && scope.tier !== "T23") return null;
+        return {
+          buyer: String(scope.buyer),
+          date: scope.date ? String(scope.date) : "",
+          tier: String(scope.tier),
+          span: true
+        };
+      }
+      if (node.level !== "date") return null;
+      if (!scope.buyer || scope.offer || !scope.date) return null;
+      /* Тир из ветки едет вместе с днём: в финансах у баера книга на каждый
+         тир, и расход дня, размазанный по офферам обоих, приезжал бы туда не
+         тем, чем был. День внутри ветки «Tier1» правит только её офферы. */
+      return {
+        buyer: String(scope.buyer),
+        date: String(scope.date),
+        tier: scope.tier ? String(scope.tier) : ""
+      };
+    }
+
+    /* Клик по расходу на строке дня открывает то же окно, что и кнопка
+       «Изменить данные», но с закреплённой шапкой: день и баер берутся из
+       строки, оффер — «весь день». Правка прямо в ячейке этого не давала:
+       агенты у расхода свои, а в ячейку помещается только итог.
+
+       Суммы агентов за день собираем из записей этого дня: раскладка ровная,
+       поэтому сумма долей и есть то, что человек вводил. */
+    async function openDaySpend(cell) {
+      if (cell.getAttribute("data-day-span")) return openTierSpend(cell);
+      var buyerId = cell.getAttribute("data-day-spend");
+      var day = cell.getAttribute("data-day-date");
+      var tier = cell.getAttribute("data-day-tier") || "";
+      var buyer = state.buyers.filter(function (row) { return row.id === buyerId; })[0];
+      var loaded = await dayAgents(buyerId, day, tier);
+      openEditModal(null, {
+        record_date: day,
+        buyer_id: buyerId,
+        buyer: buyer ? buyer.name : "",
+        offer_id: "",
+        tier: tier,
+        // Строка дня внутри ветки тира правит расход только этого тира.
+        offer: tier ? "Весь день · " + TIER_NAMES[tier] : "",
+        providers: loaded.providers
+      });
+    }
+
+    /* Суммы агентов за день — из записей этого дня: раскладка ровная, поэтому
+       сумма долей и есть то, что человек вводил. `offers` — сколько записей
+       нашлось: ноль значит, что делить расход в этот день не по чему. */
+    async function dayAgents(buyerId, day, tier) {
+      var providers = {};
+      var offers = 0;
+      try {
+        var page = await api.get("/media-records?limit=1000&date_from=" +
+          encodeURIComponent(day) + "&date_to=" + encodeURIComponent(day) +
+          "&buyer_id=" + encodeURIComponent(buyerId));
+        /* Складываем доли без промежуточного округления и округляем один раз в
+           конце. День делится между офферами до сотых долей цента, и копейка,
+           отброшенная на каждой из трёх десятков записей, превращала введённые
+           1200 в 1199.86 — и сумма уползала при каждом открытии окна. */
+        (page.items || []).forEach(function (item) {
+          // Записи чужого тира к этому окну не относятся: их суммы правят из
+          // строки своей ветки.
+          if (tier && item.tier !== tier) return;
+          offers += 1;
+          Object.keys(item.providers || {}).forEach(function (providerId) {
+            var base = Number((item.providers[providerId] || {}).base_amount || 0);
+            if (!isFinite(base) || base <= 0) return;
+            var known = providers[providerId] || { base_amount: 0 };
+            known.base_amount = Number(known.base_amount) + base;
+            providers[providerId] = known;
+          });
+        });
+        Object.keys(providers).forEach(function (providerId) {
+          providers[providerId].base_amount = roundMoney(providers[providerId].base_amount);
+        });
+        return { providers: providers, offers: offers };
+      } catch (error) {
+        // Не смогли поднять текущие суммы — окно всё равно откроем пустым:
+        // ввести день заново дешевле, чем разбираться, почему не открылось.
+        return { providers: {}, offers: null };
+      }
+    }
+
+    /* Клик по расходу на строке тира: то же окно, что у строки дня, но день
+       выбирают календарём в самом окне. Строка тира объединяет весь период
+       фильтра, а расход вносят ровно за один день — сервер делит его поровну
+       между офферами этого тира в выбранный день. */
+    async function openTierSpend(cell) {
+      var buyerId = cell.getAttribute("data-day-spend");
+      var tier = cell.getAttribute("data-day-tier");
+      var day = cell.getAttribute("data-day-date") || tierDefaultDay();
+      var buyer = state.buyers.filter(function (row) { return row.id === buyerId; })[0];
+      var loaded = await dayAgents(buyerId, day, tier);
+      openEditModal(null, {
+        record_date: day,
+        pickDate: true,
+        dayOffers: loaded.offers,
+        buyer_id: buyerId,
+        buyer: buyer ? buyer.name : "",
+        offer_id: "",
+        tier: tier,
+        offer: "Все офферы · " + TIER_NAMES[tier],
+        providers: loaded.providers
+      });
+    }
+
+    /* День по умолчанию — последний день периода в фильтре, но не позже
+       сегодняшнего: расход вносят за вчера или за сегодня, а не за будущее. */
+    function tierDefaultDay() {
+      var period = filterParams();
+      var today = window.CelestialTime.todayISO();
+      if (period.date_to && period.date_to < today) return period.date_to;
+      if (period.date_from && period.date_from > today) return period.date_from;
+      return today;
+    }
+
+    function dayHintText(offers, tier) {
+      return offers === 0
+        ? "В этот день у " + (TIER_NAMES[tier] || "баера") + " нет офферов — делить расход не по чему"
+        : "";
+    }
+
+    function paintDayHint(block, offers, tier) {
+      var hint = block.querySelector("[data-day-hint]");
+      if (!hint) return;
+      hint.textContent = dayHintText(offers, tier);
+      hint.hidden = !hint.textContent;
+    }
+
+    /* Сменили день в окне тира — суммы агентов подтягиваются за новый день.
+       Иначе в него молча записались бы суммы того дня, с которого окно
+       открыли. Пока суммы грузятся, сохранить нельзя — по той же причине. */
+    async function reloadDayAgents(block, day) {
+      var token = String(Math.random());
+      block.setAttribute("data-day-loading", token);
+      var tier = block.getAttribute("data-locked-tier") || "";
+      var loaded = day
+        ? await dayAgents(block.getAttribute("data-locked-buyer"), day, tier)
+        : { providers: {}, offers: null };
+      if (block.getAttribute("data-day-loading") !== token || !block.isConnected) return;
+      block.removeAttribute("data-day-loading");
+      agentRows(block).forEach(function (row) { row.remove(); });
+      fillAgentRows(block, { providers: loaded.providers });
+      paintDayHint(block, loaded.offers, tier);
+    }
+
     function renderNodeRows(node, depth, path, output) {
+      // «Без агента» без спенда — служебная строка с воронкой: её цифры уже
+      // видны уровнем выше, а пустой узел только путал бы.
+      if (node.level === "agent" && node.key === "none" &&
+        Math.abs(Number(node.aggregate.sums.spend || 0)) < 0.005) return;
       var isLeafLevel = !node.order.length;
       // A leaf-level node hides raw records that are not loaded yet, so its arrow tracks
       // a separate flag: group nodes default to open, record lists default to closed.
@@ -1526,7 +2046,10 @@
           providers: node.aggregate.providers,
           providersTotal: node.aggregate.providersTotal,
           sums: node.aggregate.sums
-        }, { bold: depth === 0, root: depth === 0 }) +
+        }, {
+          bold: depth === 0, root: depth === 0, daySpend: daySpendScope(node),
+          agentScoped: (node.scope || {}).agent !== undefined
+        }) +
         (hasActionColumn() ? td("", {}) : "") +
         "</tr>");
       // Descendants are always emitted — collapsing hides them, so reopening a branch
@@ -1553,7 +2076,7 @@
         return;
       }
       leaf.items.forEach(function (record) {
-        output.push(renderLeafRow(record, depth, path));
+        output.push(renderLeafRow(record, depth, path, (node.scope || {}).agent));
       });
       if (leaf.loading) {
         output.push(noticeRow(depth, path, "Загружаю записи…"));
@@ -1570,7 +2093,7 @@
       }
     }
 
-    function renderLeafRow(record, depth, owner) {
+    function renderLeafRow(record, depth, owner, agentKey) {
       var recordServices = {};
       var recordProviders = {};
       state.services.forEach(function (service) {
@@ -1585,6 +2108,18 @@
       config.sumFields.forEach(function (field) {
         sums[field] = record[field] == null ? null : Number(record[field]);
       });
+      // Запись под агентом — это доля агента: спенд, внесённый через него.
+      var agentScoped = agentKey !== undefined;
+      if (agentScoped) {
+        var shares = record.providers || {};
+        var attributed = 0;
+        Object.keys(shares).forEach(function (id) {
+          attributed += Number((shares[id] || {}).amount || 0);
+        });
+        sums.spend = agentKey === "none"
+          ? Number(record.spend || 0) - attributed
+          : Number((shares[agentKey] || {}).amount || 0);
+      }
       var label = '<div style="display:flex;align-items:center;gap:8px">' +
         '<span style="width:6px;height:6px;border-radius:50%;background:#C9BFBF;flex-shrink:0"></span>' +
         '<span style="font-size:12px;font-weight:600;color:#6A6161">' + escapeHtml(record.record_date) + "</span>" +
@@ -1602,7 +2137,7 @@
           providers: recordProviders,
           providersTotal: providersSum(record),
           sums: sums
-        }, { bold: false, leaf: true, record: record }) +
+        }, { bold: false, leaf: true, record: record, agentScoped: agentScoped }) +
         (hasActionColumn()
           ? td('<button data-edit="' + escapeHtml(record.id) + '" title="Изменить данные" style="border:none;background:transparent;cursor:pointer;padding:2px">' +
               '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z" stroke="#857D7D" stroke-width="2" stroke-linejoin="round"/></svg></button>', {})
@@ -1634,13 +2169,27 @@
           escapeHtml(config.emptyMessage) + "</td></tr>";
         return;
       }
-      currentTree = groupRecords(state.groups, activeLevels());
+      currentTree = groupRecords(rowsByAgent(state.groups), activeLevels());
       var output = [];
       currentTree.order.forEach(function (key) {
         renderNodeRows(currentTree.children[key], 0, key, output);
       });
+      output.push(totalRow(currentTree.aggregate));
       body.innerHTML = output.join("");
       applyVisibility();
+    }
+
+    /* Итог по всему, что сейчас на доске. Считается по корню дерева, а не
+       складыванием видимых строк: сумма зависит от фильтров и набора колонок,
+       но не от того, какие ветки человек развернул. */
+    function totalRow(aggregate) {
+      return '<tr class="cs-total">' +
+        '<td style="position:sticky;left:0;z-index:2;padding:12px 16px;' +
+        'border-top:2px solid #E8E2E2;border-right:1px solid #E8E2E2">Общая</td>' +
+        metricCells(aggregate, { bold: true, total: true }) +
+        (hasActionColumn()
+          ? '<td style="border-top:2px solid #E8E2E2"></td>'
+          : "") + "</tr>";
     }
 
     /* A row is visible unless one of its ancestors is folded; leaf rows additionally
@@ -1699,6 +2248,12 @@
           openEditModal(findLoadedRecord(recordRow.getAttribute("data-record")));
           return;
         }
+        var daySpendCell = event.target.closest("[data-day-spend]");
+        if (daySpendCell) {
+          event.stopPropagation();
+          openDaySpend(daySpendCell).catch(fail);
+          return;
+        }
         var row = event.target.closest("[data-node]");
         if (!row) return;
         var path = row.getAttribute("data-node");
@@ -1714,6 +2269,7 @@
         state.collapsed[path] = !state.collapsed[path];
         row.setAttribute("data-open", state.collapsed[path] ? "0" : "1");
         applyVisibility();
+        persistFolds();
       });
     }
 
@@ -1747,7 +2303,12 @@
         api.getAll("/offers" + (config.offersQuery || "")),
         api.getAll("/partners"),
         api.get("/me/preferences/" + config.preferenceKey),
-        api.get("/me/preferences/" + config.displayPreferenceKey)
+        api.get("/me/preferences/" + config.displayPreferenceKey),
+        // Свёрнутые ветки нужны только к отрисовке, поэтому едут в общей пачке
+        // со справочниками, а не отдельным походом перед запросом строк.
+        config.foldsPreferenceKey
+          ? api.get("/me/preferences/" + config.foldsPreferenceKey)
+          : Promise.resolve(null)
       ]);
       state.services = (results[0].items || []).filter(function (s) { return s.status === "active"; });
       state.providers = (results[1].items || []).filter(function (s) { return s.status === "active"; });
@@ -1756,13 +2317,17 @@
       state.partners = (results[4].items || []);
       var preference = results[5] && results[5].value;
       state.structure = preference && Array.isArray(preference.items) && preference.items.length
-        ? preference : defaultStructure();
+        ? withNewLevels(preference) : defaultStructure();
       var display = (results[6] && results[6].value) || {};
       // Merged rather than replaced, so a preference saved before a new switch existed
       // still gets that switch's default instead of `undefined`.
       state.display = Object.assign(defaultDisplay(), display, {
         groups: Object.assign(defaultDisplay().groups, display.groups || {})
       });
+      var folds = results[7] && results[7].value;
+      state.collapsed = folds && folds.paths
+        ? folds.paths.reduce(function (map, path) { map[path] = true; return map; }, {})
+        : {};
       setFilterItems("FilterBuyer", state.buyers.map(nameItem));
       setFilterItems("FilterPartner", state.partners.map(nameItem));
       fillOfferFilter();
@@ -1796,9 +2361,9 @@
         return assigned ||
           groups.indexOf((offer.group_name || "").trim().toLowerCase()) >= 0;
       });
-      // У баеров без группы и без назначений сузить не по чему — прячем весь
-      // список только тогда, когда сужение действительно что-то нашло.
-      return scoped.length || groups.length ? scoped : state.offers;
+      // Если у человека нет группы и назначений, показывать ему весь справочник
+      // нельзя: именно так администратору случайно подвязали чужой оффер.
+      return scoped;
     }
 
     function fillOfferFilter() {
@@ -1818,14 +2383,38 @@
      * buyer × offer, which is every grouping the structure bar can ask for. The raw
      * records stay on the server until a branch is opened. */
     function fetchGroups() {
-      var query = queryString(filterParams());
+      var params = filterParams();
+      if (byDateWanted()) params.by_date = "true";
+      var query = queryString(params);
       return api.get(config.groupsEndpoint + (query ? "?" + query : ""));
+    }
+
+    /* Разбивку по дням сервер отдаёт только по просьбе: это единственный
+       уровень, ради которого строки приходится перезапрашивать. Пока структура
+       не загружена (первый запрос уходит параллельно со справочниками), дней не
+       просим — за них отвечает loadRecords, когда структура станет известна. */
+    function byDateWanted() {
+      return !!state.structure &&
+        activeLevels().some(function (key) { return LEVELS[key].byDate; });
+    }
+
+    /* Уровень «Дата» включили или выключили — прежние строки для новой
+       структуры не годятся, нужен новый запрос. */
+    function reloadIfByDateChanged() {
+      if (byDateWanted() === state.groupsByDate) return false;
+      loadRecords().catch(fail);
+      return true;
     }
 
     async function loadRecords(pending) {
       // On the first load the request is already in flight next to the references —
       // waiting for those first would cost another round trip on every navigation.
-      var data = await (pending || fetchGroups());
+      var wanted = byDateWanted();
+      // Запрос, ушедший до загрузки структуры, ничего не знает про дни: если
+      // они в структуре есть, его ответ не годится и нужен новый.
+      if (pending && wanted) pending.catch(function () { /* заменён */ });
+      var data = await (pending && !wanted ? pending : fetchGroups());
+      state.groupsByDate = wanted;
       state.groups = data.groups || [];
       state.recordCount = data.record_count || 0;
       state.truncated = !!data.truncated;
@@ -1868,9 +2457,17 @@
       // against the node client-side below.
       var unfiltered = [];
       Object.keys(node.scope).forEach(function (levelKey) {
+        var level = LEVELS[levelKey];
         var value = node.scope[levelKey];
-        if (value == null || value === "") unfiltered.push(levelKey);
-        else params[LEVELS[levelKey].filter] = value;
+        if (value == null || value === "") {
+          unfiltered.push(levelKey);
+        } else if (level.narrow) {
+          level.narrow(params, value);
+        } else if (level.filter) {
+          params[level.filter] = value;
+        } else {
+          unfiltered.push(levelKey);
+        }
       });
       params.limit = LEAF_PAGE;
       params.offset = offset;
@@ -1929,6 +2526,24 @@
     /* Процент агента прямо в списке: сумму вводят до комиссии, и без него
        непонятно, во что она превратится. Ноль не пишем — скобка «(0%)» только
        занимает место. */
+    /* Суммы приходят из float-арифметики (раскладка дня по офферам, сложение
+       долей) и выглядят как 999.9999999999993. До копеек — на границе
+       сохранения и показа: данные точнее копейки не содержат. */
+    function roundMoney(value) {
+      var amount = Number(value);
+      if (!isFinite(amount)) return amount;
+      return Math.round((amount + Number.EPSILON) * 100) / 100;
+    }
+
+    /* Сумма из базы в поле ввода: хвостовые нули убираем, а значащие знаки
+       оставляем. Доля дня приходит с четырьмя знаками (35.2941), и округление
+       её до копейки теряло бы центы на каждом пересохранении. */
+    function exactMoney(value) {
+      var amount = Number(value);
+      if (!isFinite(amount)) return "";
+      return String(Math.round((amount + Number.EPSILON) * 10000) / 10000);
+    }
+
     function agentLabel(provider) {
       var percent = Number(provider.commission_pct || 0);
       if (!isFinite(percent) || percent <= 0) return provider.name;
@@ -1937,8 +2552,8 @@
       return provider.name + " (" + shown + "%)";
     }
 
-    function agentRows() {
-      var host = byId(p + "EditAgents");
+    function agentRows(block) {
+      var host = block.querySelector("[data-agent-host]");
       return host
         ? Array.prototype.slice.call(host.querySelectorAll("[data-agent-row]"))
         : [];
@@ -1948,31 +2563,52 @@
       return row.querySelector("[data-agent-select]");
     }
 
-    function takenProviders(except) {
-      return agentRows().filter(function (row) { return row !== except; })
+    function takenProviders(block, except) {
+      return agentRows(block).filter(function (row) { return row !== except; })
         .map(function (row) { return agentPick(row).value; });
     }
 
     /* Один агент в записи может быть только один раз, поэтому занятые варианты
      * гасим прямо в списке — так видно, что агент уже добавлен строкой выше. */
-    function refreshAgentRows() {
-      var rows = agentRows();
+    /* Подсказка под суммой: сколько это будет с комиссией агента. Доска
+       показывает сумму с комиссией, поле вводит до неё — без подсказки люди
+       вводили одно вместо другого, и цифры росли на каждом пересохранении. */
+    function agentHint(row) {
+      var hint = row.querySelector("[data-agent-hint]");
+      if (!hint) return;
+      var provider = state.providers.filter(function (item) {
+        return item.id === agentPick(row).value;
+      })[0];
+      var percent = Number((provider || {}).commission_pct || 0);
+      var amount = Number((row.querySelector("[data-agent-amount]") || {}).value);
+      if (!isFinite(amount) || amount <= 0) {
+        hint.textContent = "";
+        return;
+      }
+      // Коротко: процент агента и так стоит в его названии в списке рядом.
+      var total = amount * (percent / 100 + 1);
+      hint.textContent = "в SPEND: $" + total.toFixed(2);
+    }
+
+    function refreshAgentRows(block) {
+      var rows = agentRows(block);
       rows.forEach(function (row) {
-        var taken = takenProviders(row);
+        var taken = takenProviders(block, row);
         Array.prototype.forEach.call(agentPick(row).options, function (option) {
           option.disabled = taken.indexOf(option.value) >= 0;
         });
+        agentHint(row);
       });
-      var button = byId(p + "EditAgentAdd");
+      var button = block.querySelector("[data-agent-add]");
       if (button) button.disabled = rows.length >= state.providers.length;
-      var empty = byId(p + "EditAgentsEmpty");
+      var empty = block.querySelector("[data-agent-empty]");
       if (empty) empty.hidden = rows.length > 0;
     }
 
-    function addAgentRow(providerId, amount) {
-      var host = byId(p + "EditAgents");
+    function addAgentRow(block, providerId, amount) {
+      var host = block.querySelector("[data-agent-host]");
       if (!host) return null;
-      var taken = takenProviders(null);
+      var taken = takenProviders(block, null);
       var free = state.providers.filter(function (provider) {
         return taken.indexOf(provider.id) < 0;
       });
@@ -2000,39 +2636,28 @@
         '" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;' +
         'font:600 13px Inter,sans-serif;outline:none;color:#070505"></label>' +
         '<button type="button" class="board-edit-agent-drop" data-agent-drop ' +
-        'aria-label="Убрать агента">' + AGENT_DROP_SVG + "</button>";
+        'aria-label="Убрать агента">' + AGENT_DROP_SVG + "</button>" +
+        /* Подсказка стоит отдельной строкой под полем, а не внутри его подписи:
+           внутри она растягивала колонку, и поле уезжало вверх относительно
+           списка агентов. */
+        '<span class="board-edit-agent-hint" data-agent-hint></span>';
       host.appendChild(row);
-      refreshAgentRows();
+      refreshAgentRows(block);
       return row;
     }
 
-    function bindAgentSection(record) {
-      var host = byId(p + "EditAgents");
-      if (!host) return;
-      host.addEventListener("click", function (event) {
-        var drop = event.target.closest("[data-agent-drop]");
-        if (!drop) return;
-        drop.closest("[data-agent-row]").remove();
-        refreshAgentRows();
-      });
-      host.addEventListener("change", function (event) {
-        if (event.target.closest("[data-agent-select]")) refreshAgentRows();
-      });
-      var add = byId(p + "EditAgentAdd");
-      if (add) add.addEventListener("click", function () {
-        var row = addAgentRow(null, null);
-        if (row) row.querySelector("[data-agent-amount]").focus();
-      });
-      // Порядок берём из справочника, а не из записи: так строки не прыгают
-      // между открытиями одной и той же записи.
+    /* Суммы агентов записи — строками в её блоке. Порядок берём из справочника,
+       а не из записи: так строки не прыгают между открытиями одной и той же
+       записи. */
+    function fillAgentRows(block, record) {
       state.providers.forEach(function (provider) {
         var value = record && record.providers && record.providers[provider.id];
         if (!value) return;
         var amount = Number(value.base_amount);
         if (!isFinite(amount) || amount <= 0) return;
-        addAgentRow(provider.id, amount);
+        addAgentRow(block, provider.id, exactMoney(amount));
       });
-      refreshAgentRows();
+      refreshAgentRows(block);
     }
 
     var modalKeydownHandler = null;
@@ -2047,61 +2672,107 @@
       document.body.style.overflow = "";
     }
 
-    function openEditModal(record) {
-      closeModal();
-      if (p === "media") ensureMediaModalStyles();
-      if (p === "finance") ensureFinanceModalStyles();
-      var overlay = document.createElement("div");
-      overlay.id = p + "EditModal";
-      overlay.className = "board-edit-overlay board-edit-overlay--" + p;
-      overlay.style.cssText =
-        "position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);display:flex;" +
-        "align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto";
+    /* Блок ввода: день, баер, оффер и агенты этого дня. Блоков может быть
+       несколько — байер закрывает несколько дней или несколько офферов за один
+       заход, и открывать окно на каждую строку значило бы вводить одно и то же
+       по кругу.
+
+       Пустой оффер — это «весь день»: сумма ложится на день целиком и
+       раскладывается сервером поровну по офферам этого дня. */
+    function modalOfferOptions(buyerId, selectedOfferId) {
+      var selected = selectedOfferId || "";
+      var dayOptions = config.dayLevelSpend
+        ? '<option value=""' + (!selected ? " selected" : "") +
+          ">Весь день · все офферы</option>" +
+          '<option value="tier:T1"' + (selected === "tier:T1" ? " selected" : "") +
+          ">Весь день · Tier1</option>" +
+          '<option value="tier:T23"' + (selected === "tier:T23" ? " selected" : "") +
+          ">Весь день · Tier2/3</option>"
+        : "";
+      return dayOptions + offersForBuyers(buyerId ? [buyerId] : []).map(function (offer) {
+        return '<option value="' + escapeHtml(offer.id) + '"' +
+          (selected === offer.id ? " selected" : "") + ">" +
+          escapeHtml(offer.name) + "</option>";
+      }).join("");
+    }
+
+    function blockHtml(index, record, removable, locked) {
       var buyersOptions = state.buyers.map(function (buyer) {
         return '<option value="' + escapeHtml(buyer.id) + '"' +
           (record && record.buyer_id === buyer.id ? " selected" : "") + ">" +
           escapeHtml(buyer.name) + "</option>";
       }).join("");
-      var offersOptions = state.offers.map(function (offer) {
-        // Только название: GEO у оффера одно, и приписка к нему ничего не
-        // различала — оффер и так уникален по имени.
-        return '<option value="' + escapeHtml(offer.id) + '"' +
-          (record && record.offer_id === offer.id ? " selected" : "") + ">" +
-          escapeHtml(offer.name) + "</option>";
-      }).join("");
+      var selectedBuyerId = record && record.buyer_id ||
+        (state.buyers.length ? state.buyers[0].id : "");
+      var offersOptions = modalOfferOptions(
+        selectedBuyerId,
+        record && record.offer_id
+      );
       var servicesInputs = state.services.map(function (service) {
         var value = record && record.services && record.services[service.id];
-        return modalInput(service.name, p + "EditService_" + service.id, "number",
-          value ? Number(value.quantity) : "", 'step="any" min="0"');
+        return modalInput(service.name, p + "EditService_" + service.id + "_" + index,
+          "number", value ? Number(value.quantity) : "", 'step="any" min="0"');
       }).join("");
-      overlay.innerHTML =
-        '<div class="board-edit-card" role="dialog" aria-modal="true" tabindex="-1" aria-labelledby="' + p +
-        'EditTitle" style="background:#fff;border-radius:18px;max-width:720px;width:100%;padding:26px 28px;box-shadow:0 24px 70px rgba(18,12,12,.3)">' +
-        '<div class="board-edit-header" style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:18px;gap:18px">' +
-        '<div><h2 class="board-edit-title" id="' + p +
-        'EditTitle" style="font-family:\'Alumni Sans\',\'Inter\',sans-serif;font-size:19px;font-weight:700">' +
-        (record ? "Изменить данные" : "Добавить данные") + "</h2>" +
-        '<span class="board-edit-subtitle" style="display:none">' +
-        (p === "finance" ? "Финансовые показатели и распределение затрат" :
-          "Ручные показатели и распределение затрат") +
-        "</span></div>" +
-        '<button class="board-edit-close" id="' + p +
-        'EditClose" type="button" aria-label="Закрыть" style="border:none;background:#F7F4F4;border-radius:9px;width:32px;height:32px;cursor:pointer;font-size:15px;font-weight:700;color:#6A6161">' +
-        '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>' +
-        "</button></div>" +
-        '<div class="board-edit-body" style="min-width:0">' +
+      /* День можно отнести к тиру: в финансах у баера книга на каждый тир, и
+         расход, размазанный по офферам обоих, приезжает туда не тем, чем был.
+         «Все офферы» остаётся для дней, которые и правда были общим котлом. */
+      /* Окно, открытое из таблицы, правит одну конкретную клетку: день, баер и
+         оффер в нём уже выбраны самой строкой. Показываем их полями только для
+         чтения — так видно, куда уйдёт сумма, и нельзя случайно переписать
+         соседний день. */
+      if (locked) {
+        return '<section class="board-edit-block" data-block="' + index + '" ' +
+          'data-locked-date="' + escapeHtml(locked.record_date) + '" ' +
+          (locked.pickDate ? "data-pick-date " : "") +
+          'data-locked-buyer="' + escapeHtml(locked.buyer_id) + '" ' +
+          'data-locked-offer="' + escapeHtml(locked.offer_id || "") + '" ' +
+          'data-locked-tier="' + escapeHtml(locked.tier || "") + '">' +
+          '<div class="board-edit-context"><div class="board-edit-locked">' +
+          // Окно тира: день выбирают календарём, баер и офферы — из строки.
+          (locked.pickDate
+            ? modalInput("Дата", p + "EditDate_" + index, "date", locked.record_date, "data-pick-day")
+            : lockedField("Дата", dayLabel(locked.record_date))) +
+          lockedField("Баер", locked.buyer) +
+          lockedField("Оффер", locked.offer || "Весь день · все офферы") +
+          "</div>" +
+          (locked.pickDate
+            ? '<div class="board-edit-day-hint" data-day-hint' +
+              (dayHintText(locked.dayOffers, locked.tier) ? "" : " hidden") + ">" +
+              escapeHtml(dayHintText(locked.dayOffers, locked.tier)) + "</div>"
+            : "") +
+          "</div>" +
+          (state.providers.length
+            ? '<section class="board-edit-section board-edit-section--providers">' +
+              '<div class="board-edit-agents" data-agent-host></div>' +
+              '<div class="board-edit-agents-empty" data-agent-empty>' +
+              "Ни одного агента ещё не добавлено</div>" +
+              '<button type="button" class="board-edit-agent-add" data-agent-add>' +
+              '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+              '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" ' +
+              'stroke-linecap="round"/></svg>Добавить агента</button>' +
+              "</section>"
+            : "") +
+          "</section>";
+      }
+      return '<section class="board-edit-block" data-block="' + index + '">' +
+        (removable
+          ? '<div class="board-edit-block__head"><span>Блок ' + (index + 1) + "</span>" +
+            '<button type="button" class="board-edit-block__drop" data-block-drop>' +
+            "Убрать</button></div>"
+          : "") +
         '<div class="board-edit-context">' +
         '<div class="board-edit-main-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">' +
-        modalInput("Дата", p + "EditDate", "date", record ? record.record_date : new Date().toISOString().slice(0, 10)) +
-        '<label class="board-edit-field" for="' + p +
-        'EditBuyer" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6A6161">Баер' +
-        '<select class="board-edit-select" id="' + p +
-        'EditBuyer" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;font:600 13px Inter,sans-serif;outline:none">' +
+        modalInput("Дата", p + "EditDate_" + index, "date",
+          record ? record.record_date : window.CelestialTime.todayISO()) +
+        '<label class="board-edit-field" for="' + p + "EditBuyer_" + index +
+        '" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6A6161">Баер' +
+        '<select class="board-edit-select" data-block-buyer id="' + p + "EditBuyer_" + index +
+        '" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;font:600 13px Inter,sans-serif;outline:none">' +
         buyersOptions + "</select></label>" +
-        '<label class="board-edit-field board-edit-offer-field" for="' + p +
-        'EditOffer" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6A6161">Оффер' +
-        '<select class="board-edit-select" id="' + p +
-        'EditOffer" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;font:600 13px Inter,sans-serif;outline:none;max-width:100%">' +
+        '<label class="board-edit-field board-edit-offer-field" for="' + p + "EditOffer_" + index +
+        '" style="display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:#6A6161">Оффер' +
+        '<select class="board-edit-select" data-block-offer id="' + p + "EditOffer_" + index +
+        '" style="border:1px solid #EBE6E6;border-radius:9px;padding:9px 11px;font:600 13px Inter,sans-serif;outline:none;max-width:100%">' +
         offersOptions + "</select></label>" +
         "</div></div>" +
         (!config.hideServices && state.services.length
@@ -2114,10 +2785,10 @@
           // Подписи у блока нет: в карточке он один, и «Агенты и платёжки»
           // повторяли то, что и так написано в самой строке — «Агент».
           ? '<section class="board-edit-section board-edit-section--providers">' +
-            '<div class="board-edit-agents" id="' + p + 'EditAgents"></div>' +
-            '<div class="board-edit-agents-empty" id="' + p +
-            'EditAgentsEmpty">Ни одного агента ещё не добавлено</div>' +
-            '<button type="button" class="board-edit-agent-add" id="' + p + 'EditAgentAdd">' +
+            '<div class="board-edit-agents" data-agent-host></div>' +
+            '<div class="board-edit-agents-empty" data-agent-empty>' +
+            "Ни одного агента ещё не добавлено</div>" +
+            '<button type="button" class="board-edit-agent-add" data-agent-add>' +
             '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
             '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" ' +
             'stroke-linecap="round"/></svg>Добавить агента</button>' +
@@ -2129,12 +2800,89 @@
             '<div class="board-edit-grid board-edit-grid--metrics" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
             config.modalMetricInputs(record, modalInput) +
             "</div></section>"
+          : "") +
+        "</section>";
+    }
+
+    function lockedField(label, value) {
+      return '<div class="board-edit-field board-edit-locked__item"><span>' +
+        escapeHtml(label) + "</span><b>" + escapeHtml(value || "—") + "</b></div>";
+    }
+
+    function blocks() {
+      var host = byId(p + "EditBlocks");
+      return host
+        ? Array.prototype.slice.call(host.querySelectorAll("[data-block]"))
+        : [];
+    }
+
+    /* Номера блоков и доступность «Убрать» — после каждого добавления и
+       удаления: единственный блок убирать нечем, а нумерация иначе разъезжается. */
+    function refreshBlocks() {
+      var rows = blocks();
+      rows.forEach(function (block, index) {
+        var head = block.querySelector(".board-edit-block__head span");
+        if (head) head.textContent = "Блок " + (index + 1);
+        var drop = block.querySelector("[data-block-drop]");
+        if (drop) drop.hidden = rows.length < 2;
+      });
+    }
+
+    function addBlock(record) {
+      var host = byId(p + "EditBlocks");
+      if (!host) return null;
+      var wrapper = document.createElement("div");
+      wrapper.innerHTML = blockHtml(blocks().length, record, true);
+      var block = wrapper.firstChild;
+      host.appendChild(block);
+      fillAgentRows(block, record);
+      refreshBlocks();
+      return block;
+    }
+
+    function openEditModal(record, locked) {
+      closeModal();
+      if (p === "media") ensureMediaModalStyles();
+      if (p === "finance") ensureFinanceModalStyles();
+      var overlay = document.createElement("div");
+      overlay.id = p + "EditModal";
+      overlay.className = "board-edit-overlay board-edit-overlay--" + p;
+      overlay.style.cssText =
+        "position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);display:flex;" +
+        "align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto";
+      /* Несколько блоков — только когда окно открыли кнопкой «Изменить
+         данные». У записи, открытой из таблицы, блок ровно один: правят
+         конкретную клетку, а не заводят новые. */
+      var multi = !record && !locked && config.multiBlock;
+      overlay.innerHTML =
+        '<div class="board-edit-card" role="dialog" aria-modal="true" tabindex="-1" aria-labelledby="' + p +
+        'EditTitle" style="background:#fff;border-radius:18px;max-width:720px;width:100%;padding:26px 28px;box-shadow:0 24px 70px rgba(18,12,12,.3)">' +
+        '<div class="board-edit-header" style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:18px;gap:18px">' +
+        '<div><h2 class="board-edit-title" id="' + p +
+        'EditTitle" style="font-family:\'Alumni Sans\',\'Inter\',sans-serif;font-size:19px;font-weight:700">' +
+        (record || locked ? "Изменить данные" : "Добавить данные") + "</h2>" +
+        '<span class="board-edit-subtitle" style="display:none">' +
+        (p === "finance" ? "Финансовые показатели и распределение затрат" :
+          "Ручные показатели и распределение затрат") +
+        "</span></div>" +
+        '<button class="board-edit-close" id="' + p +
+        'EditClose" type="button" aria-label="Закрыть" style="border:none;background:#F7F4F4;border-radius:9px;width:32px;height:32px;cursor:pointer;font-size:15px;font-weight:700;color:#6A6161">' +
+        '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>' +
+        "</button></div>" +
+        '<div class="board-edit-body" style="min-width:0">' +
+        '<div class="board-edit-blocks" id="' + p + 'EditBlocks">' +
+        blockHtml(0, record, multi, locked) + "</div>" +
+        (multi
+          ? '<button type="button" class="board-edit-block-add" id="' + p + 'EditBlockAdd">' +
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+            '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" ' +
+            'stroke-linecap="round"/></svg>Добавить блок</button>'
           : "") + "</div>" +
         '<div class="board-edit-footer" style="display:flex;justify-content:flex-end;gap:10px;margin-top:22px">' +
         '<button class="board-edit-button board-edit-cancel" id="' + p +
-        'EditCancel" type="button" style="border:1px solid #EBE6E6;background:#fff;border-radius:11px;padding:11px 18px;font:700 13px Inter,sans-serif;color:#6A6161;cursor:pointer">Отмена</button>' +
+        'EditCancel" type="button" style="height:40px;padding:0 16px;border:1px solid #EBE6E6;border-radius:10px;background:#fff;font:700 12px Inter,sans-serif;color:#6A6161;cursor:pointer">Отмена</button>' +
         '<button class="board-edit-button board-edit-save" id="' + p +
-        'EditSave" type="button" style="border:none;background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;border-radius:11px;padding:11px 22px;font:600 15px Alumni Sans,Inter,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.28)">Сохранить</button>' +
+        'EditSave" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:Inter,-apple-system,Helvetica Neue,sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Сохранить</button>' +
         "</div></div>";
       document.body.appendChild(overlay);
       document.body.style.overflow = "hidden";
@@ -2148,11 +2896,65 @@
       byId(p + "EditClose").addEventListener("click", closeModal);
       byId(p + "EditCancel").addEventListener("click", closeModal);
       byId(p + "EditSave").addEventListener("click", function () {
-        saveModal(record).catch(fail);
+        saveModal(record, locked).catch(fail);
       });
-      bindAgentSection(record);
+      bindBlocks();
+      var add = byId(p + "EditBlockAdd");
+      if (add) add.addEventListener("click", function () { addBlock(null); });
+      var first = blocks()[0];
+      if (first) fillAgentRows(first, locked ? { providers: locked.providers } : record);
+      refreshBlocks();
       var dialog = overlay.querySelector(".board-edit-card");
       if (dialog) dialog.focus();
+    }
+
+    /* Один слушатель на все блоки: блоки добавляют и убирают на ходу, и вешать
+       обработчики на каждый значило бы плодить их при каждом добавлении. */
+    function bindBlocks() {
+      var host = byId(p + "EditBlocks");
+      if (!host) return;
+      host.addEventListener("click", function (event) {
+        var drop = event.target.closest("[data-agent-drop]");
+        if (drop) {
+          var block = drop.closest("[data-block]");
+          drop.closest("[data-agent-row]").remove();
+          refreshAgentRows(block);
+          return;
+        }
+        var add = event.target.closest("[data-agent-add]");
+        if (add) {
+          var row = addAgentRow(add.closest("[data-block]"), null, null);
+          if (row) row.querySelector("[data-agent-amount]").focus();
+          return;
+        }
+        var blockDrop = event.target.closest("[data-block-drop]");
+        if (blockDrop) {
+          blockDrop.closest("[data-block]").remove();
+          refreshBlocks();
+        }
+      });
+      host.addEventListener("change", function (event) {
+        var buyerSelect = event.target.closest("[data-block-buyer]");
+        if (buyerSelect) {
+          var buyerBlock = buyerSelect.closest("[data-block]");
+          var offerSelect = buyerBlock.querySelector("[data-block-offer]");
+          if (offerSelect) {
+            offerSelect.innerHTML = modalOfferOptions(buyerSelect.value, offerSelect.value);
+          }
+        }
+        if (event.target.closest("[data-agent-select]")) {
+          refreshAgentRows(event.target.closest("[data-block]"));
+        }
+        var pickDay = event.target.closest("[data-pick-day]");
+        if (pickDay) reloadDayAgents(pickDay.closest("[data-block]"), pickDay.value).catch(fail);
+      });
+      host.addEventListener("input", function (event) {
+        if (event.target.closest("[data-agent-amount]")) {
+          var block = event.target.closest("[data-block]");
+          var rows = agentRows(block);
+          rows.forEach(agentHint);
+        }
+      });
     }
 
     function numberValue(id) {
@@ -2162,53 +2964,236 @@
       return isFinite(value) ? value : null;
     }
 
-    async function saveModal(record) {
-      var recordDate = byId(p + "EditDate").value;
-      var buyerId = byId(p + "EditBuyer").value;
-      var offerId = byId(p + "EditOffer").value;
-      if (!recordDate || !buyerId || !offerId) {
-        toast("Заполните дату, баера и оффер", "error");
-        return;
+    /* Один блок формы в то, что уходит на сервер. Пустой оффер оставляем
+       пустым: это и есть «на весь день». */
+    function blockForm(block, index, record) {
+      var pinned = block.hasAttribute("data-locked-date");
+      // В окне тира день выбирают календарём — берём его из поля.
+      var recordDate = pinned && !block.hasAttribute("data-pick-date")
+        ? block.getAttribute("data-locked-date")
+        : byId(p + "EditDate_" + index).value;
+      var buyerId = pinned
+        ? block.getAttribute("data-locked-buyer")
+        : block.querySelector("[data-block-buyer]").value;
+      var offerId = pinned
+        ? block.getAttribute("data-locked-offer")
+        : block.querySelector("[data-block-offer]").value;
+      // «tier:T1» — это не оффер, а день одного тира.
+      var tier = pinned ? block.getAttribute("data-locked-tier") || "" : "";
+      if (offerId.indexOf("tier:") === 0) {
+        tier = offerId.slice(5);
+        offerId = "";
       }
+      if (block.hasAttribute("data-day-loading")) {
+        return "Подождите — загружаются суммы за выбранный день";
+      }
+      if (!recordDate || !buyerId) return "Заполните дату и баера в каждом блоке";
+      if (!offerId && !config.dayLevelSpend) return "Выберите оффер";
       // `null` (not `[]`) when the modal has no services block: the API then leaves
       // the record's existing service values alone instead of deleting them.
       var services = null;
-      if (!config.hideServices) {
+      if (!config.hideServices && !pinned) {
         services = [];
         state.services.forEach(function (service) {
-          var value = numberValue(p + "EditService_" + service.id);
+          var value = numberValue(p + "EditService_" + service.id + "_" + index);
           if (value != null && value > 0) {
             services.push({ service_id: service.id, quantity: value });
           }
         });
       }
-      // Строка без суммы — недозаполненная, а не нулевая: сохранять её нечем.
-      // Убранная строка тем самым и снимает сумму агента с записи.
+      /* Пустое поле суммы — строка недозаполнена, её пропускаем; убранная
+         строка тем самым и снимает сумму агента с записи.
+
+         Ноль при этом — обычная сумма, а не «ничего не ввели»: им закрывают
+         день, у которого расхода не было. Раньше такая строка отбрасывалась, и
+         форма отвечала «укажите агента и сумму» на заполненном блоке. */
       var providers = [];
       var seenProviders = {};
-      agentRows().forEach(function (row) {
+      agentRows(block).forEach(function (row) {
         var providerId = agentPick(row).value;
         var input = row.querySelector("[data-agent-amount]");
-        var value = input.value === "" ? null : Number(input.value);
+        var value = input.value.trim() === "" ? null : Number(input.value);
         if (!providerId || seenProviders[providerId]) return;
-        if (value == null || !isFinite(value) || value <= 0) return;
+        if (value == null || !isFinite(value) || value < 0) return;
         seenProviders[providerId] = true;
         providers.push({ provider_id: providerId, base_amount: value });
       });
+      /* Пустой блок «на весь день» в общей форме сохранять нечего, а
+         промолчать нельзя: пустой список стёр бы расход дня, который только
+         что ввели соседним блоком или прямо в таблице.
+
+         Окно, открытое из таблицы, — другое дело: оно правит расход именно
+         этого дня, и убранная строка агента там означает «этой суммы больше
+         нет». Убрали все — день закрывается нулём, как удаление записи. */
+      if (!offerId && !providers.length && !pinned) {
+        return "В блоке за весь день укажите агента и сумму";
+      }
+      return {
+        record: record,
+        record_date: recordDate,
+        buyer_id: buyerId,
+        offer_id: offerId || null,
+        tier: tier || null,
+        services: services,
+        providers: providers,
+        numberValue: function (name) { return numberValue(name + "_" + index); }
+      };
+    }
+
+    /* «Обновлено: N мин назад ⟳» в конце строки фильтров. Время — из того же
+       статуса, что у карточки Keitaro в меню; кнопка ставит синхронизацию через
+       /integrations/keitaro/refresh, доступную с правами Медиаборда (ручной
+       запуск в настройках — только у администратора). Когда синхронизация
+       закончилась, строки перечитываются здесь же, без перезагрузки страницы. */
+    var keitaroRefresh = { host: null, status: null, busy: false };
+
+    var REFRESH_SVG =
+      '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="M20 11a8 8 0 0 0-14.9-3M4 13a8 8 0 0 0 14.9 3" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round"/><path d="M5 3v5h5M19 21v-5h-5" ' +
+      'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    function refreshedAgo(value) {
+      if (!value) return "ещё не обновлялось";
+      var seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+      if (seconds < 45) return "только что";
+      if (seconds < 3600) return Math.floor(seconds / 60) + " мин назад";
+      if (seconds < 86400) return Math.floor(seconds / 3600) + " ч назад";
+      return Math.floor(seconds / 86400) + " дн назад";
+    }
+
+    function paintKeitaroRefresh() {
+      var host = keitaroRefresh.host;
+      var status = keitaroRefresh.status;
+      if (!host) return;
+      // Без подключения Keitaro обновлять нечего — элемента нет вовсе.
+      if (!status || !status.configured) {
+        host.hidden = true;
+        return;
+      }
+      host.hidden = false;
+      var queued = status.state === "queued";
+      var syncing = keitaroRefresh.busy || status.state === "syncing" || queued;
+      var failed = !syncing && status.state === "error";
+      var label = host.querySelector("[data-kr-label]");
+      var button = host.querySelector("[data-kr-button]");
+      host.classList.toggle("is-syncing", syncing);
+      host.classList.toggle("is-error", failed);
+      if (queued && !keitaroRefresh.busy) {
+        label.textContent = "Ожидает запуска";
+      } else if (syncing) {
+        label.textContent = "Обновляем" +
+          (Number(status.progress_pct) > 0 ? " · " + Number(status.progress_pct) + "%" : "…");
+      } else if (failed) {
+        label.textContent = "Ошибка синхронизации";
+      } else {
+        label.textContent = "Обновлено: " + refreshedAgo(status.last_sync_at);
+      }
+      host.title = failed && status.error ? status.error
+        : status.state === "inactive" ? "Подключение Keitaro выключено" : "";
+      button.disabled = syncing || status.state === "inactive";
+      button.setAttribute("aria-label", syncing ? "Данные Keitaro обновляются"
+        : "Обновить данные Keitaro");
+    }
+
+    async function loadKeitaroStatus() {
+      try {
+        keitaroRefresh.status = await api.get("/integrations/keitaro/sidebar-status");
+      } catch (error) {
+        if (error && error.status === 401) fail(error);
+      }
+      paintKeitaroRefresh();
+      return keitaroRefresh.status;
+    }
+
+    async function runKeitaroRefresh() {
+      if (keitaroRefresh.busy) return;
+      keitaroRefresh.busy = true;
+      paintKeitaroRefresh();
+      try {
+        var result = await api.post("/integrations/keitaro/refresh", {});
+        if (result.state === "fresh") {
+          // Данные моложе минуты: трекер заново не тянем, но строки перечитываем —
+          // человек нажал «обновить» и ждёт актуальную таблицу.
+          await loadRecords();
+          return;
+        }
+        for (var attempt = 0; attempt < 120; attempt += 1) {
+          await new Promise(function (resolve) { window.setTimeout(resolve, 2000); });
+          var status = await loadKeitaroStatus();
+          if (!status || status.state === "syncing" || status.state === "queued") continue;
+          if (status.state === "error") {
+            toast(status.error || "Синхронизация Keitaro завершилась с ошибкой", "error");
+            return;
+          }
+          // Опрос в меню пришлёт о той же синхронизации событие — отмечаем её,
+          // чтобы строки не перечитывались второй раз.
+          if (status.last_sync_at) state.lastKeitaroRefreshAt = status.last_sync_at;
+          await loadRecords();
+          return;
+        }
+        toast("Синхронизация продолжается в фоне", "info");
+      } catch (error) {
+        fail(error);
+      } finally {
+        keitaroRefresh.busy = false;
+        await loadKeitaroStatus();
+      }
+    }
+
+    function mountKeitaroRefresh() {
+      if (keitaroRefresh.host) return;
+      // Рядом с «Экспортом» и «Видом»: в строке фильтров кнопка терялась среди
+      // полей и была не того размера, что остальные действия над таблицей.
+      var exportButton = el("Export");
+      var anchor = exportButton && exportButton.closest(".board-export");
+      var bar = anchor ? anchor.parentElement : el("Filters");
+      if (!bar) return;
+      var host = document.createElement("div");
+      host.className = "kt-refresh";
+      host.hidden = true;
+      host.innerHTML = '<button type="button" class="board-export__btn kt-refresh__btn" ' +
+        'data-kr-button aria-label="Обновить данные Keitaro">' + REFRESH_SVG +
+        '<span class="kt-refresh__label" data-kr-label></span></button>';
+      if (anchor) bar.insertBefore(host, anchor);
+      else bar.appendChild(host);
+      keitaroRefresh.host = host;
+      host.querySelector("[data-kr-button]").addEventListener("click", function () {
+        runKeitaroRefresh().catch(fail);
+      });
+      loadKeitaroStatus();
+      // «N мин назад» стареет само, а статус меняют и планировщик, и другие вкладки.
+      window.setInterval(function () {
+        if (!keitaroRefresh.busy) loadKeitaroStatus();
+      }, 30000);
+      window.addEventListener("celestial:keitaro-synced", function () {
+        if (!keitaroRefresh.busy) loadKeitaroStatus();
+      });
+    }
+
+    async function saveModal(record, locked) {
+      var forms = [];
+      var problem = "";
+      blocks().forEach(function (block, index) {
+        var form = blockForm(block, index, record);
+        if (typeof form === "string") problem = problem || form;
+        else forms.push(form);
+      });
+      if (problem || !forms.length) {
+        toast(problem || "Заполните дату, баера и оффер", "error");
+        return;
+      }
       var saveButton = byId(p + "EditSave");
       saveButton.disabled = true;
       saveButton.textContent = "Сохраняю…";
       try {
-        await config.save({
-          record: record,
-          record_date: recordDate,
-          buyer_id: buyerId,
-          offer_id: offerId,
-          services: services,
-          providers: providers,
-          numberValue: numberValue
-        });
-        toast(record ? "Запись обновлена" : "Запись создана");
+        // Блоки сохраняются по очереди: они могут попасть в один и тот же день
+        // одного баера, а раскладка расхода по дню перезаписывает весь день.
+        for (var index = 0; index < forms.length; index += 1) {
+          await config.save(forms[index]);
+        }
+        toast(record || locked ? "Запись обновлена"
+          : forms.length > 1 ? "Сохранено блоков: " + forms.length : "Запись создана");
         closeModal();
         await loadRecords();
       } finally {
@@ -2244,22 +3229,41 @@
           editButton.style.display = "none";
         }
       }
+      // Раньше ссылок: справочники наполняют уже созданные поля фильтров.
+      bindFilters();
+      // Строки просим уже с сохранённым периодом, иначе первый запрос ушёл бы
+      // за всю историю доски, а через миг его пришлось бы повторять.
+      await restoreFilters();
       // Both requests leave together: the board data does not depend on the catalog,
       // and running them back to back added a whole round trip to every navigation.
       var pendingGroups = fetchGroups();
+      var pendingQuery = queryString(filterParams());
       // A rejection handled later still counts as unhandled until then.
       pendingGroups.catch(function () { /* surfaced by loadRecords below */ });
-      // Раньше ссылок: справочники наполняют уже созданные поля фильтров.
-      bindFilters();
       await loadRefs();
       renderStructureBar();
       bindViewControls();
+      if (config.exportEndpoint) bindExport();
       if (table && state.display.dense) {
         table.classList.add("celestial-board-table--dense");
       }
       renderHead();
       bindTableEvents();
+      // Статус Keitaro опрашивается общей навигацией. Если синхронизация
+      // завершилась, пока доска открыта, перечитываем строки без перезагрузки
+      // страницы, чтобы новые продажи сразу появились в таблице.
+      window.addEventListener("celestial:keitaro-synced", function (event) {
+        var stamp = event && event.detail && event.detail.lastSyncAt;
+        if (stamp && stamp === state.lastKeitaroRefreshAt) return;
+        state.lastKeitaroRefreshAt = stamp || String(Date.now());
+        loadRecords().catch(fail);
+      });
+      if (config.keitaroRefresh) mountKeitaroRefresh();
       if (config.afterInit) config.afterInit(state, { loadRecords: loadRecords, fail: fail, filterQuery: filterQuery });
+      // Справочник мог не подтвердить сохранённое значение — баера убрали из
+      // команды, оффер сняли. Тогда фильтр сузился уже после запроса, и ответ
+      // на руках не тот, который показывают поля.
+      if (pendingQuery !== queryString(filterParams())) pendingGroups = null;
       await loadRecords(pendingGroups);
     }
 
@@ -2272,8 +3276,11 @@
     prefix: "media",
     endpoint: "/media-records",
     groupsEndpoint: "/media-records/groups",
+    exportEndpoint: "/api/v1/exports/media",
     preferenceKey: "mediaboard.structure",
     displayPreferenceKey: "mediaboard.display",
+    filtersPreferenceKey: "mediaboard.filters",
+    foldsPreferenceKey: "mediaboard.folds",
     managePermission: "media.manage",
     funnelTitle: "Воронка",
     // Медиаборд only: no services anywhere, agents and payments as one column in
@@ -2286,11 +3293,20 @@
     hideProviders: true,
     columnDividers: true,
     rowOpensModal: true,
+    // Баер закрывает день целиком: несколько блоков за один заход и расход на
+    // день без выбора оффера — сервер разложит его по офферам этого дня.
+    multiBlock: true,
+    dayLevelSpend: true,
+    // «Обновлено: N мин назад» и ручное обновление данных Keitaro в фильтрах.
+    keitaroRefresh: true,
     metricColumns: [
       { group: "funnel", label: "INST", kind: "num", get: function (s) { return s.installs; } },
       { group: "funnel", label: "REG", kind: "num", get: function (s) { return s.registrations; } },
       { group: "funnel", label: "FTD", kind: "num", get: function (s) { return s.ftd; } },
-      { group: "costs", label: "SPEND", kind: "money", get: function (s) { return s.spend; } },
+      {
+        group: "costs", label: "SPEND", kind: "money", editKey: "spend",
+        get: function (s) { return s.spend; }
+      },
       { group: "result", label: "REVENUE", kind: "money", get: function (s) { return s.revenue; } },
       {
         group: "result", label: "PROFIT", kind: "money", bold: true, tone: signTone,
@@ -2316,6 +3332,18 @@
     leafLabel: function (record) { return record.offer || ""; },
     // No `modalMetricInputs`: the modal no longer edits INST/REG/FTD/Revenue/SPEND.
     save: async function (form) {
+      /* Без оффера расход относится ко дню целиком: сервер делит его поровну
+         между офферами этого дня. Создавать запись тут нечего — делить можно
+         только то, что уже принесла синхронизация. */
+      if (!form.offer_id) {
+        await api.post("/media-records/day-spend", {
+          record_date: form.record_date,
+          buyer_id: form.buyer_id,
+          tier: form.tier || null,
+          providers: form.providers
+        });
+        return;
+      }
       /* The modal owns the record's identity and its agents/payments split, nothing
        * else. INST/REG/FTD/Revenue and the SPEND override are left out of the
        * payload on purpose, so what Keitaro synced survives a manual save, and

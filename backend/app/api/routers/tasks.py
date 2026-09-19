@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import business_today
 from app.core.database import get_db
 from app.core.deps import has_full_access, has_permission, require_permission
 from app.models import (
@@ -34,6 +35,7 @@ from app.models import (
     TaskSection,
     TaskSectionAccess,
     TaskStatus,
+    TaskStatusEvent,
     TaskTemplate,
     User,
 )
@@ -109,6 +111,9 @@ async def board(
         {
             "id": str(section.id),
             "title": section.title,
+            "default_template_id": (
+                str(section.default_template_id) if section.default_template_id else None
+            ),
             "position": section.position,
             "tasks": counts.get(section.id, 0),
             "rights": rights.get(section.id, DEFAULT_ACCESS),
@@ -159,7 +164,7 @@ async def board(
     rows = [_task_row(task, names, current, fields, templates, rights) for task in tasks]
     _sort_rows(rows, sort)
 
-    today = datetime.now(UTC).date()
+    today = business_today()
     columns = []
     for status in statuses:
         column = [row for row in rows if row["status_id"] == str(status.id)]
@@ -216,13 +221,18 @@ async def create_task(
         values = _apply_template(template, values, payload.model_fields_set)
 
     status = _pick_status(statuses, values.get("status_id"))
+    if not _sees_details(current):
+        # Приоритет и исполнителей ставит тот, кому роль открыла эти поля.
+        values["priority"] = None
+        values["assignee_ids"] = []
     fields = await _fields(db, current.workspace_id)
     raw_values = values.get("custom_values") or {}
-    visible = _visible_fields(fields, template, raw_values)
+    task_field_ids = _valid_task_field_ids(fields, values.pop("field_ids", []))
+    visible = _visible_fields(fields, template, raw_values, task_field_ids)
     custom_values = _clean_custom_values(raw_values, visible)
     assignees = await _valid_assignees(db, current, values.get("assignee_ids") or [])
     title = _required_text(values.get("title"), "Название задачи")
-    _check_task_dates(values.get("start_date"), values.get("due_date"))
+    today = business_today()
 
     task = Task(
         workspace_id=current.workspace_id,
@@ -230,10 +240,13 @@ async def create_task(
         status_id=status.id,
         title=title,
         description=values.get("description"),
-        start_date=values.get("start_date"),
-        due_date=values.get("due_date"),
+        # Даты ставятся сами: начало — день создания, выполнение — день, когда
+        # задача попала в завершающую колонку («Готово»).
+        start_date=today,
+        due_date=today if status.is_terminal else None,
         priority=values.get("priority") or TaskPriority.medium,
         custom_values=custom_values,
+        field_ids=[str(value) for value in task_field_ids],
         template_id=template.id if template is not None else None,
         created_by_id=current.id,
         position=await _next_position(db, current.workspace_id, section.id, status.id),
@@ -244,6 +257,7 @@ async def create_task(
     # Файл привязывается к задаче только когда у задачи появился ID, поэтому
     # flush до привязки обязателен.
     await db.flush()
+    _log_status(db, task, status, current)
     await _bind_task_attachments(db, current, task, custom_values, visible)
     await audit(
         db, current, "workspace.task_created", f"Создана задача «{task.title}»", request=request
@@ -269,6 +283,12 @@ async def update_task(
     current: User = Depends(require_permission("workspace.view")),
 ) -> dict:
     changes = payload.model_dump(exclude_unset=True)
+    # Даты больше не вводят руками — их ставит смена статуса.
+    changes.pop("start_date", None)
+    changes.pop("due_date", None)
+    if not _sees_details(current):
+        changes.pop("priority", None)
+        changes.pop("assignee_ids", None)
     rights = await _rights(db, current)
     probe = await _task(db, current, task_id, rights=rights)
     _assert_task_editable(probe, current, rights)
@@ -313,7 +333,7 @@ async def update_task(
             )
             task.status_id = status.id
             task.position = next_position
-            task.completed_at = datetime.now(UTC) if status.is_terminal else None
+            _enter_status(db, task, status, current)
     if "assignee_ids" in changes:
         assignees = await _valid_assignees(db, current, changes.pop("assignee_ids") or [])
         # Через коллекцию, а не отдельным DELETE: cascade delete-orphan сам уберёт
@@ -324,20 +344,24 @@ async def update_task(
         task.template_id = (
             (await _template(db, current, template_id)).id if template_id else None
         )
+    if "field_ids" in changes:
+        fields = await _fields(db, current.workspace_id)
+        task.field_ids = [
+            str(value) for value in _valid_task_field_ids(fields, changes.pop("field_ids") or [])
+        ]
     if "custom_values" in changes:
         raw_values = changes.pop("custom_values") or {}
         fields = await _fields(db, current.workspace_id)
         template = (
             await _template(db, current, task.template_id) if task.template_id else None
         )
-        visible = _visible_fields(fields, template, raw_values)
+        visible = _visible_fields(fields, template, raw_values, task.field_ids or [])
         task.custom_values = _clean_custom_values(raw_values, visible)
         dropped = await _bind_task_attachments(db, current, task, task.custom_values, visible)
-    for field in ("title", "description", "start_date", "due_date", "priority"):
+    for field in ("title", "description", "priority"):
         if field in changes:
             value = changes[field]
             setattr(task, field, value.strip() if field == "title" and value else value)
-    _check_task_dates(task.start_date, task.due_date)
 
     await audit(
         db, current, "workspace.task_updated", f"Изменена задача «{task.title}»",
@@ -403,12 +427,48 @@ async def move_task(
     moved_column = task.status_id != status.id
     task.status_id = status.id
     if moved_column:
-        task.completed_at = datetime.now(UTC) if status.is_terminal else None
+        _enter_status(db, task, status, current)
     for order, item in enumerate(siblings):
         item.position = order * POSITION_STEP
 
     await db.commit()
     return {"id": str(task.id), "status_id": str(status.id), "position": index}
+
+
+@router.get("/tasks/{task_id}/history")
+async def task_history(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("workspace.view")),
+) -> dict:
+    """Переходы задачи по статусам — от создания до текущего."""
+    task = await _task(db, current, task_id, rights=await _rights(db, current))
+    events = list(
+        (
+            await db.execute(
+                select(TaskStatusEvent)
+                .where(TaskStatusEvent.task_id == task.id)
+                .order_by(TaskStatusEvent.created_at, TaskStatusEvent.id)
+            )
+        ).scalars()
+    )
+    names = await _user_names(db, current.workspace_id)
+    return {
+        # Создание — первая строка журнала: кто завёл задачу и когда.
+        "created": {
+            "at": task.created_at,
+            "user": names.get(task.created_by_id) if task.created_by_id else None,
+        },
+        "items": [
+            {
+                "status_id": str(event.status_id) if event.status_id else None,
+                "status_name": event.status_name,
+                "user": names.get(event.user_id) if event.user_id else None,
+                "at": event.created_at,
+            }
+            for event in events
+        ]
+    }
 
 
 @router.delete("/tasks/{task_id}")
@@ -478,6 +538,9 @@ async def create_section(
     return {
         "id": str(section.id),
         "title": section.title,
+        "default_template_id": (
+            str(section.default_template_id) if section.default_template_id else None
+        ),
         "position": section.position,
         "tasks": 0,
         "rights": dict(FULL_ACCESS),
@@ -506,12 +569,26 @@ async def update_section(
         section.title = title
     if changes.get("position") is not None:
         section.position = changes["position"]
+    if "default_template_id" in changes:
+        template_id = changes["default_template_id"]
+        if template_id is not None:
+            # Шаблон должен быть свой: чужой id подставил бы в раздел бриф другого
+            # воркспейса.
+            await _template(db, current, template_id)
+        section.default_template_id = template_id
     await audit(
         db, current, "workspace.section_updated", f"Изменён раздел задач «{section.title}»",
         request=request, entity_id=str(section.id),
     )
     await db.commit()
-    return {"id": str(section.id), "title": section.title, "position": section.position}
+    return {
+        "id": str(section.id),
+        "title": section.title,
+        "position": section.position,
+        "default_template_id": (
+            str(section.default_template_id) if section.default_template_id else None
+        ),
+    }
 
 
 @router.delete("/sections/{section_id}")
@@ -621,6 +698,9 @@ async def section_access(
     return {
         "section_id": str(section.id),
         "title": section.title,
+        "default_template_id": (
+            str(section.default_template_id) if section.default_template_id else None
+        ),
         "open": not existing,
         "roles": [
             {"role_id": str(role.id), "role_name": role.name, **entry(by_role.get(role.id))}
@@ -858,8 +938,23 @@ async def create_field(
 ) -> dict:
     name = _required_text(payload.name, "Название поля")
     existing = await _fields(db, current.workspace_id)
-    if any(row.name.casefold() == name.casefold() for row in existing):
-        raise HTTPException(status_code=422, detail="Поле с таким названием уже есть")
+    same = next((row for row in existing if row.name.casefold() == name.casefold()), None)
+    if same:
+        # Поля — общий справочник воркспейса: «ТЗ» в шаблоне и «ТЗ» в задаче —
+        # одно и то же поле. Вместо отказа отдаём уже заведённое, и форма
+        # подставляет его — человек хотел поле, а не отдельную запись.
+        if same.kind != payload.kind:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Поле «{same.name}» уже есть, но с другим типом — "
+                "выберите его из списка или назовите новое иначе",
+            )
+        if payload.show_always and not same.show_always:
+            # Завели из задачи — значит, поле нужно и в задачах без шаблона.
+            same.show_always = True
+            await db.commit()
+            await db.refresh(same)
+        return _field_row(same)
     field = TaskField(
         workspace_id=current.workspace_id,
         name=name,
@@ -1039,7 +1134,11 @@ async def read_task_attachment(
         or attachment.article_id is not None
     ):
         raise HTTPException(status_code=404, detail="Файл не найден")
-    if attachment.task_id is None and attachment.uploaded_by_id != current.id:
+    if attachment.task_id is not None:
+        # Файл закреплён за задачей — виден тем, кому видна она: прямая ссылка
+        # не должна открывать вложения закрытого раздела.
+        await _task(db, current, attachment.task_id, rights=await _rights(db, current))
+    elif attachment.uploaded_by_id != current.id:
         # Ещё не закреплённый файл виден только тому, кто его загрузил: пока
         # он не в карточке, «доступ есть у всей команды» ещё не наступил.
         if not has_permission(current, "workspace.manage"):
@@ -1054,7 +1153,9 @@ async def read_task_attachment(
         headers={
             # nosniff обязателен: файл, который браузер решит считать HTML,
             # выполнит скрипты в нашем домене.
-            "Content-Disposition": f'inline; filename="{attachment.id}"',
+            "Content-Disposition": storage.disposition(
+                attachment.file_name, inline=True
+            ),
             "X-Content-Type-Options": "nosniff",
         },
     )
@@ -1568,13 +1669,29 @@ async def _valid_assignees(
     return wanted
 
 
-def _check_task_dates(start: date | None, due: date | None) -> None:
-    """Начать позже срока нельзя — это не задача, а опечатка."""
-    if start and due and start > due:
-        raise HTTPException(
-            status_code=422,
-            detail="Дата начала не может быть позже срока выполнения",
-        )
+def _sees_details(current: User) -> bool:
+    """Приоритет, даты и исполнители задачи — по праву роли `workspace.details`."""
+    return has_permission(current, "workspace.details")
+
+
+def _log_status(db: AsyncSession, task: Task, status: TaskStatus, current: User) -> None:
+    db.add(TaskStatusEvent(
+        task_id=task.id, status_id=status.id, status_name=status.name, user_id=current.id,
+        # Время ставим сами: now() базы — время начала транзакции, и два перехода
+        # в одной секунде иначе встали бы в журнале в случайном порядке.
+        created_at=datetime.now(UTC),
+    ))
+
+
+def _enter_status(db: AsyncSession, task: Task, status: TaskStatus, current: User) -> None:
+    """Задача перешла в другую колонку: отметка времени, дата выполнения, журнал.
+
+    Дата выполнения — день перехода в завершающую колонку; вернули задачу в
+    работу — даты выполнения снова нет.
+    """
+    task.completed_at = datetime.now(UTC) if status.is_terminal else None
+    task.due_date = business_today() if status.is_terminal else None
+    _log_status(db, task, status, current)
 
 
 def _required_text(value: str | None, label: str) -> str:
@@ -1584,11 +1701,21 @@ def _required_text(value: str | None, label: str) -> str:
     return clean
 
 
+class _Names(dict):
+    """Имена людей воркспейса плюс их логины — на карточке показывают логин."""
+
+    logins: dict[uuid.UUID, str]
+
+
 async def _user_names(db: AsyncSession, workspace_id: uuid.UUID) -> dict[uuid.UUID, str]:
-    rows = await db.execute(
-        select(User.id, User.name).where(User.workspace_id == workspace_id)
+    rows = list(
+        await db.execute(
+            select(User.id, User.name, User.login).where(User.workspace_id == workspace_id)
+        )
     )
-    return {row.id: row.name for row in rows}
+    names = _Names({row.id: row.name for row in rows})
+    names.logins = {row.id: row.login for row in rows}
+    return names
 
 
 def _apply_template(template: TaskTemplate, values: dict, provided: set[str]) -> dict:
@@ -1634,6 +1761,7 @@ def _visible_fields(
     fields: list[TaskField],
     template: TaskTemplate | None,
     values: dict | None = None,
+    task_field_ids: list | None = None,
 ) -> list[TaskField]:
     """Какие поля показывает эта карточка и в каком порядке.
 
@@ -1652,6 +1780,11 @@ def _visible_fields(
         if field is not None and str(field.id) not in seen:
             seen.add(str(field.id))
             ordered.append(field)
+    for raw in task_field_ids or []:
+        field = by_id.get(str(raw))
+        if field is not None and str(field.id) not in seen:
+            seen.add(str(field.id))
+            ordered.append(field)
     for field in fields:
         key = str(field.id)
         if key in seen:
@@ -1660,6 +1793,19 @@ def _visible_fields(
             seen.add(key)
             ordered.append(field)
     return ordered
+
+
+def _valid_task_field_ids(fields: list[TaskField], values: list) -> list[uuid.UUID]:
+    """Поля карточки обязаны принадлежать тому же воркспейсу."""
+    known = {field.id for field in fields}
+    result: list[uuid.UUID] = []
+    for value in values or []:
+        field_id = value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+        if field_id not in known:
+            raise HTTPException(status_code=422, detail="Одно из полей задачи не найдено")
+        if field_id not in result:
+            result.append(field_id)
+    return result
 
 
 def _clean_custom_values(
@@ -1808,7 +1954,9 @@ def _task_row(
     rights = rights or {}
     can_edit = _can_edit_task(task, current, rights)
     template = (templates or {}).get(task.template_id) if task.template_id else None
-    visible = _visible_fields(fields or [], template, task.custom_values or {})
+    visible = _visible_fields(
+        fields or [], template, task.custom_values or {}, task.field_ids or []
+    )
     return {
         "id": str(task.id),
         "title": task.title,
@@ -1818,6 +1966,7 @@ def _task_row(
         # Порядок полей именно этой карточки — считает сервер, чтобы бриф
         # выглядел одинаково в интерфейсе и в любом другом клиенте API.
         "field_ids": [str(field.id) for field in visible],
+        "local_field_ids": [str(value) for value in (task.field_ids or [])],
         "status_id": str(task.status_id),
         "priority": task.priority.value,
         "start_date": task.start_date.isoformat() if task.start_date else None,
@@ -1826,7 +1975,11 @@ def _task_row(
         "custom_values": task.custom_values or {},
         "assignee_ids": [str(link.user_id) for link in task.assignees],
         "assignees": [
-            {"id": str(link.user_id), "name": names.get(link.user_id, "—")}
+            {
+                "id": str(link.user_id),
+                "name": names.get(link.user_id, "—"),
+                "login": getattr(names, "logins", {}).get(link.user_id),
+            }
             for link in task.assignees
         ],
         "is_done": task.completed_at is not None,

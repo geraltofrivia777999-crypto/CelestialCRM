@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from sqlalchemy import delete, func, select, update
 
+from app.core.clock import business_today
 from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.models import (
@@ -20,6 +21,7 @@ from app.models import (
     TaskAssignee,
     TaskField,
     TaskStatus,
+    TaskStatusEvent,
     TaskTemplate,
     User,
     UserParent,
@@ -53,6 +55,7 @@ async def workspace(database):
             delete(KnowledgeSection).where(KnowledgeSection.workspace_id == ids["workspace"])
         )
         await db.execute(delete(TaskAssignee))
+        await db.execute(delete(TaskStatusEvent))
         await db.execute(delete(Task).where(Task.workspace_id == ids["workspace"]))
         await db.execute(
             delete(TaskTemplate).where(TaskTemplate.workspace_id == ids["workspace"])
@@ -147,28 +150,6 @@ async def test_filters_narrow_cards_but_keep_every_column(workspace) -> None:
     assert len(found["columns"]) == 5
     assert by_priority["total"] == 1
     assert by_priority["columns"][0]["tasks"][0]["title"] == "Отчёт"
-
-
-async def test_sorting_by_due_date_puts_undated_tasks_last(workspace) -> None:
-    soon = (date.today() + timedelta(days=1)).isoformat()
-    later = (date.today() + timedelta(days=9)).isoformat()
-    with _admin_client() as client:
-        client.post("/api/v1/workspace/tasks", json={"title": "Без срока"})
-        client.post("/api/v1/workspace/tasks", json={"title": "Поздняя", "due_date": later})
-        client.post("/api/v1/workspace/tasks", json={"title": "Срочная", "due_date": soon})
-        columns = client.get("/api/v1/workspace/board?sort=due_date").json()["columns"]
-
-    assert [task["title"] for task in columns[0]["tasks"]] == [
-        "Срочная", "Поздняя", "Без срока"
-    ]
-
-
-async def test_overdue_tasks_are_counted(workspace) -> None:
-    past = (date.today() - timedelta(days=3)).isoformat()
-    with _admin_client() as client:
-        client.post("/api/v1/workspace/tasks", json={"title": "Горит", "due_date": past})
-        board = client.get("/api/v1/workspace/board").json()
-    assert board["overdue"] == 1
 
 
 async def test_several_assignees_fit_on_one_task(workspace) -> None:
@@ -384,9 +365,25 @@ async def test_a_buyer_can_use_the_board_but_not_reshape_it(workspace) -> None:
             )
             assert login.status_code == 200
             assert client.get("/api/v1/workspace/board").status_code == 200
-            assert client.post(
-                "/api/v1/workspace/tasks", json={"title": "Моя задача"}
-            ).status_code == 201
+            mine = client.post(
+                "/api/v1/workspace/tasks",
+                json={"title": "Моя задача", "priority": "critical",
+                      "assignee_ids": [str(workspace["admin"])]},
+            )
+            assert mine.status_code == 201
+            # Приоритет и исполнители — по праву workspace.details, у баера его нет:
+            # присланные значения не применяются.
+            assert mine.json()["priority"] == "medium"
+            assert mine.json()["assignee_ids"] == []
+            client.patch(
+                f"/api/v1/workspace/tasks/{mine.json()['id']}", json={"priority": "high"}
+            )
+            board = client.get("/api/v1/workspace/board").json()
+            card = next(
+                task for column in board["columns"] for task in column["tasks"]
+                if task["id"] == mine.json()["id"]
+            )
+            assert card["priority"] == "medium"
             # Колонки и поля — структура доски, её меняет только руководство.
             assert client.post(
                 "/api/v1/workspace/statuses", json={"name": "Своя колонка"}
@@ -1411,6 +1408,31 @@ async def test_a_field_created_from_a_card_shows_in_every_task(workspace) -> Non
     assert stored["field_ids"] == [field["id"]]
 
 
+async def test_a_field_created_for_one_card_does_not_appear_in_the_next_task(workspace) -> None:
+    """Поле из формы задачи принадлежит карточке, а не всей доске."""
+    with _admin_client() as client:
+        field = client.post(
+            "/api/v1/workspace/fields",
+            json={"name": "ТЗ только этой задачи", "kind": "textarea", "show_always": False},
+        ).json()
+        first = client.post(
+            "/api/v1/workspace/tasks",
+            json={
+                "title": "С локальным полем",
+                "field_ids": [field["id"]],
+                "custom_values": {field["id"]: "Сделать баннер"},
+            },
+        ).json()
+        second = client.post(
+            "/api/v1/workspace/tasks", json={"title": "Без локального поля"}
+        ).json()
+
+    assert first["field_ids"] == [field["id"]]
+    assert first["local_field_ids"] == [field["id"]]
+    assert second["field_ids"] == []
+    assert second["local_field_ids"] == []
+
+
 async def test_children_are_assigned_from_the_parent_card(database) -> None:
     """Иерархию задают с обеих сторон: «мои начальники» и «мои подчинённые».
 
@@ -1465,38 +1487,56 @@ async def test_children_are_assigned_from_the_parent_card(database) -> None:
             client.delete(f"/api/v1/users/{user_id}")
 
 
-async def test_a_task_keeps_its_start_date(workspace) -> None:
-    """Дата начала — отдельная от срока: по ней видно, когда задачу берут.
+async def test_task_dates_and_status_log_are_automatic(workspace) -> None:
+    """Даты ставятся сами, а каждый переход по статусам попадает в журнал.
 
-    И начать позже срока нельзя: это не задача, а опечатка.
+    Начало — день создания (руками не меняется), выполнение — день перехода
+    в завершающую колонку; вернули задачу в работу — даты выполнения нет.
     """
+    today = business_today().isoformat()
     with _admin_client() as client:
         created = client.post(
             "/api/v1/workspace/tasks",
-            json={"title": "Спланировать залив", "start_date": "2026-09-10",
-                  "due_date": "2026-09-20"},
+            json={"title": "Автодаты", "start_date": "2020-01-01", "due_date": "2020-01-02"},
         )
         assert created.status_code == 201
         task = created.json()
-        assert task["start_date"] == "2026-09-10"
+        assert task["start_date"] == today
+        assert task["due_date"] is None
 
-        columns = await _columns(client)
-        card = columns[0]["tasks"][0]
-        assert card["start_date"] == "2026-09-10"
-
-        moved = client.patch(
-            f"/api/v1/workspace/tasks/{task['id']}", json={"start_date": "2026-09-12"}
+        by_code = {column["code"]: column for column in await _columns(client)}
+        # Ручная правка дат игнорируется.
+        client.patch(f"/api/v1/workspace/tasks/{task['id']}", json={"start_date": "2020-05-05"})
+        client.patch(
+            f"/api/v1/workspace/tasks/{task['id']}",
+            json={"status_id": by_code["in_progress"]["id"]},
         )
-        assert moved.status_code == 200
-
-        wrong = client.patch(
-            f"/api/v1/workspace/tasks/{task['id']}", json={"start_date": "2026-09-25"}
+        client.post(
+            f"/api/v1/workspace/tasks/{task['id']}/move",
+            json={"status_id": by_code["done"]["id"], "position": 0},
         )
-        assert wrong.status_code == 422
-
-        backwards = client.post(
-            "/api/v1/workspace/tasks",
-            json={"title": "Задом наперёд", "start_date": "2026-09-20",
-                  "due_date": "2026-09-10"},
+        done = next(
+            row for column in await _columns(client) for row in column["tasks"]
+            if row["id"] == task["id"]
         )
-        assert backwards.status_code == 422
+        assert done["start_date"] == today
+        assert done["due_date"] == today
+
+        client.post(
+            f"/api/v1/workspace/tasks/{task['id']}/move",
+            json={"status_id": by_code["review"]["id"], "position": 0},
+        )
+        back = next(
+            row for column in await _columns(client) for row in column["tasks"]
+            if row["id"] == task["id"]
+        )
+        assert back["due_date"] is None
+
+        payload = client.get(f"/api/v1/workspace/tasks/{task['id']}/history").json()
+        history = payload["items"]
+    assert payload["created"]["user"] and payload["created"]["at"]
+    assert [row["status_name"] for row in history] == [
+        by_code["open"]["name"], by_code["in_progress"]["name"],
+        by_code["done"]["name"], by_code["review"]["name"],
+    ]
+    assert all(row["user"] and row["at"] for row in history)

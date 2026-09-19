@@ -110,9 +110,9 @@ def moment(value: datetime | None, timezone_name: str) -> str:
     if not value:
         return DASH
     try:
-        zone = ZoneInfo(timezone_name or "UTC")
+        zone = ZoneInfo(timezone_name or "Europe/Moscow")
     except Exception:
-        zone = ZoneInfo("UTC")
+        zone = ZoneInfo("Europe/Moscow")
     return value.astimezone(zone).strftime("%d.%m.%Y %H:%M")
 
 

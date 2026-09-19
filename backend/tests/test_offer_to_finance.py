@@ -132,6 +132,48 @@ async def test_a_repeated_assignment_updates_the_row_instead_of_doubling_it(
     assert Decimal(book["offers"][0]["rate"]) == Decimal("40")
 
 
+async def test_offer_id_propagates_but_locked_manual_book_values_survive(pulled_offer) -> None:
+    """ID ПП виден сразу, а защищённая ручная ставка не затирается справочником."""
+    today = date.today()
+    with _admin_client() as client:
+        client.put(
+            f"/api/v1/offers/{pulled_offer['offer']}/buyers",
+            json={"buyer_ids": [pulled_offer["buyer"]]},
+        )
+        book = _book(client, pulled_offer["buyer"], "T1")
+        row = book["offers"][0]
+        row.update({"rate": 31, "locked_fields": ["name", "partner", "geo", "rate", "rate_currency"]})
+        saved = client.put(
+            "/api/v1/finance/book",
+            json={
+                "buyer_id": pulled_offer["buyer"],
+                "year": today.year,
+                "month": today.month,
+                "tier": "T1",
+                "eur_usd_rate": 1,
+                "days": {},
+                "offers": [row],
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        changed = client.put(
+            f"/api/v1/offers/{pulled_offer['offer']}",
+            json={
+                "name": "Оффер для книги",
+                "external_id": "pp-157",
+                "geo": "US",
+                "cpa": 55,
+                "buyer_ids": [pulled_offer["buyer"]],
+            },
+        )
+        assert changed.status_code == 200, changed.text
+        refreshed = _book(client, pulled_offer["buyer"], "T1")["offers"][0]
+
+    assert refreshed["external_id"] == "pp-157"
+    assert Decimal(refreshed["rate"]) == Decimal("31")
+    assert "rate" in refreshed["locked_fields"]
+
+
 async def test_an_offer_without_geo_is_not_pulled(pulled_offer) -> None:
     """Тир — это страна: без гео выбрать таблицу нечем, и мы не гадаем."""
     with _admin_client() as client:

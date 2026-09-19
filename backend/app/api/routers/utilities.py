@@ -12,18 +12,19 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
-from app.core.deps import require_permission
+from app.core.deps import accessible_user_ids, has_permission, require_permission
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models import (
     AlertChannel,
     AlertEvent,
     AlertRule,
     CapRule,
-    KeitaroCampaign,
+    KeitaroGroup,
     Offer,
     Status,
     TelegramBot,
@@ -45,6 +46,7 @@ from app.services.alerts import (
     CAP_PERIODS,
     SCHEDULES,
     ZERO,
+    cap_metrics,
     cap_offer_ids,
     cap_period_range,
     cap_today,
@@ -54,6 +56,22 @@ from app.services.alerts import (
 from app.services.audit import audit
 
 router = APIRouter(prefix="/utilities", tags=["utilities"])
+
+
+def _newest_first(offers: list[Offer]) -> list[Offer]:
+    """Свежие офферы — наверху: CAP обычно ставят на то, что только завели.
+
+    Порядок по id Keitaro: трекер выдаёт их по возрастанию, а наш created_at у
+    всех одинаковый после первой синхронизации. Без числового id — по времени
+    появления в CRM.
+    """
+
+    def key(offer: Offer) -> tuple:
+        raw = str(offer.external_id or "").strip()
+        number = int(raw) if raw.isdigit() else -1
+        return (number, offer.created_at.timestamp() if offer.created_at else 0.0)
+
+    return sorted(offers, key=key, reverse=True)
 
 
 @router.get("/reference")
@@ -66,12 +84,26 @@ async def reference(
         (
             await db.execute(
                 select(Offer)
-                .where(Offer.workspace_id == current.workspace_id)
-                .order_by(Offer.name)
-                .limit(500)
+                .where(
+                    Offer.workspace_id == current.workspace_id,
+                    # CAP работает по статистике Keitaro. Ручные офферы из
+                    # раздела «Офферы» в трекере не существуют и здесь не нужны.
+                    Offer.connection_id.is_not(None),
+                    # После пересинхронизации недоступные и удалённые в Keitaro
+                    # строки остаются в истории CRM, но выбирать их для нового
+                    # правила нельзя.
+                    Offer.keitaro_state == Status.active,
+                    # Служебная группа OFFERS принадлежит отдельному разделу
+                    # CRM и не должна смешиваться с рабочими офферами CAP.
+                    func.lower(func.coalesce(Offer.group_name, ""))
+                    != settings.keitaro_offers_group.strip().lower(),
+                )
+                .order_by(Offer.name, Offer.id)
             )
         ).scalars()
     )
+    # Людей в формах — только тех, чьи данные человеку доступны по области
+    # доступа его роли: назначить капу на чужого баера он всё равно не сможет.
     people = list(
         (
             await db.execute(
@@ -79,6 +111,7 @@ async def reference(
                 .where(
                     User.workspace_id == current.workspace_id,
                     User.status == Status.active,
+                    User.id.in_(await accessible_user_ids(db, current)),
                 )
                 .order_by(User.name, User.login)
             )
@@ -87,19 +120,20 @@ async def reference(
     groups = list(
         (
             await db.execute(
-                select(KeitaroCampaign.group_external_id, KeitaroCampaign.group_name)
+                select(KeitaroGroup.external_id, KeitaroGroup.name)
                 .where(
-                    KeitaroCampaign.workspace_id == current.workspace_id,
-                    KeitaroCampaign.group_external_id.is_not(None),
+                    KeitaroGroup.workspace_id == current.workspace_id,
+                    KeitaroGroup.resource_type == "campaigns",
                 )
                 .distinct()
             )
         ).all()
     )
     return {
-        # Группы кампаний Keitaro — фильтр уведомления о депозитах. Берём их из
-        # уже синхронизированных кампаний, а не отдельным запросом в трекер:
-        # фильтровать всё равно можно только по тому, что у нас есть.
+        # Группы кампаний Keitaro — фильтр уведомления о депозитах. Отдельный
+        # справочник является источником истины: синхронизация удаляет из него
+        # старые группы. Исторические кампании остаются в БД и поэтому для
+        # выпадающего списка не подходят.
         "campaign_groups": sorted(
             (
                 {"code": str(code), "label": name or str(code)}
@@ -138,7 +172,7 @@ async def reference(
             {"code": code, "label": label} for code, label in CAP_PERIODS.items()
         ],
         "offers": [
-            {"id": str(offer.id), "name": offer.name} for offer in offers
+            {"id": str(offer.id), "name": offer.name} for offer in _newest_first(offers)
         ],
         # Фильтр депозитов идёт по внешнему id оффера: в конверсии Keitaro
         # присылает свой id, а не наш.
@@ -257,6 +291,16 @@ async def list_channels(
     return Page(items=items, total=len(items), limit=len(items), offset=0)
 
 
+def _require_channels(current: User) -> None:
+    """Каналы правит только тот, кому роль открыла вкладку «Каналы».
+
+    Сам список каналов остаётся у всех, кто видит Утилиты: без него не выбрать
+    чат в форме уведомления или CapAlert.
+    """
+    if not has_permission(current, "utilities.channels"):
+        raise HTTPException(status_code=403, detail="Каналы недоступны вашей роли")
+
+
 @router.post("/channels", status_code=201)
 async def create_channel(
     payload: AlertChannelIn,
@@ -264,6 +308,7 @@ async def create_channel(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("utilities.manage")),
 ) -> dict:
+    _require_channels(current)
     channel = AlertChannel(workspace_id=current.workspace_id, **payload.model_dump())
     db.add(channel)
     await audit(
@@ -283,6 +328,7 @@ async def update_channel(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("utilities.manage")),
 ) -> dict:
+    _require_channels(current)
     channel = await _channel(db, current, channel_id)
     for field, value in payload.model_dump().items():
         setattr(channel, field, value)
@@ -301,6 +347,7 @@ async def delete_channel(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("utilities.manage")),
 ) -> dict:
+    _require_channels(current)
     channel = await _channel(db, current, channel_id)
     name = channel.name
     await db.delete(channel)
@@ -323,6 +370,7 @@ async def test_channel(
     Единственный надёжный способ проверить chat_id: Bot API не подтверждает
     доступ к чату иначе, чем доставкой.
     """
+    _require_channels(current)
     channel = await _channel(db, current, channel_id)
     bot = await _bot(db, current.workspace_id)
     if not bot:
@@ -491,7 +539,14 @@ async def list_caps(
     Прогресс считается здесь, а не отдельным запросом на строку: список из
     двадцати кап иначе стоил бы двадцати круговых поездок.
     """
-    filters = [CapRule.workspace_id == current.workspace_id]
+    # Капа, назначенная на человека, — его: чужие в списке не показываем.
+    # Капа без пользователя — общий лимит на связку офферов, она ничья и видна
+    # всем, кто вообще открывает раздел.
+    visible_users = await accessible_user_ids(db, current)
+    filters = [
+        CapRule.workspace_id == current.workspace_id,
+        or_(CapRule.user_id.is_(None), CapRule.user_id.in_(visible_users)),
+    ]
     if status:
         filters.append(CapRule.status == status)
     if metric:
@@ -541,14 +596,7 @@ def _cap_values(payload: CapRuleIn) -> dict:
 
 async def _cap_progress(db: AsyncSession, workspace_id: uuid.UUID, rule: CapRule) -> dict:
     first, last, _ = cap_period_range(rule.period, cap_today(rule.timezone))
-    values = await metrics_for(
-        db,
-        workspace_id,
-        first,
-        last,
-        user_id=rule.user_id,
-        offer_ids=cap_offer_ids(rule),
-    )
+    values = await cap_metrics(db, rule, first, last)
     value = values.get(rule.metric) or ZERO
     percent = int(value / rule.limit_value * 100) if rule.limit_value else 0
     return {
@@ -638,14 +686,35 @@ async def cap_progress(
 @router.get("/events", response_model=Page)
 async def list_events(
     limit: int = 50,
+    delivered: bool | None = None,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("utilities.view")),
+    # Журнал — отдельная вкладка со своим правом роли.
+    current: User = Depends(require_permission("utilities.events")),
 ) -> Page:
+    """Журнал отправок. `delivered` отбирает ушедшие или застрявшие.
+
+    Фильтр серверный, а не в браузере: журнал отдаётся последними записями, и
+    среди полусотни ушедших ни одной неудачной могло не оказаться вовсе —
+    именно их и ищут, когда открывают этот список.
+    """
+    visible_users = await accessible_user_ids(db, current)
+    visible_caps = select(CapRule.id).where(
+        CapRule.workspace_id == current.workspace_id,
+        or_(CapRule.user_id.is_(None), CapRule.user_id.in_(visible_users)),
+    )
+    filters = [
+        AlertEvent.workspace_id == current.workspace_id,
+        # Срабатывание чужой капы — это её название, оффер и цифры. Видно оно
+        # тем же, кому видна сама капа.
+        or_(AlertEvent.cap_rule_id.is_(None), AlertEvent.cap_rule_id.in_(visible_caps)),
+    ]
+    if delivered is not None:
+        filters.append(AlertEvent.delivered.is_(delivered))
     rows = list(
         (
             await db.execute(
                 select(AlertEvent)
-                .where(AlertEvent.workspace_id == current.workspace_id)
+                .where(*filters)
                 .order_by(AlertEvent.created_at.desc())
                 .limit(max(1, min(limit, 200)))
             )
@@ -705,6 +774,10 @@ async def _cap(db: AsyncSession, current: User, rule_id: uuid.UUID) -> CapRule:
     rule = await db.get(CapRule, rule_id)
     if not rule or rule.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="CAP не найден")
+    # Чужая капа отвечает тем же «не найден», что и несуществующая: знать о её
+    # существовании человеку тоже незачем.
+    if rule.user_id and rule.user_id not in await accessible_user_ids(db, current):
+        raise HTTPException(status_code=404, detail="CAP не найден")
     return rule
 
 
@@ -735,6 +808,10 @@ async def _validate_targets(db: AsyncSession, current: User, payload) -> None:
         if not user or user.workspace_id != current.workspace_id:
             raise HTTPException(
                 status_code=422, detail="Такого пользователя в воркспейсе нет"
+            )
+        if user.id not in await accessible_user_ids(db, current):
+            raise HTTPException(
+                status_code=422, detail="Этот пользователь вне вашей зоны видимости"
             )
     if getattr(payload, "offer_id", None) is not None:
         offer = await db.get(Offer, payload.offer_id)

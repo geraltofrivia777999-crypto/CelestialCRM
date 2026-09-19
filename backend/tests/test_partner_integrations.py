@@ -6,8 +6,10 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.core.clock import business_today
 from app.core.database import SessionLocal
-from app.core.security import encrypt_secret
+from app.core.security import decrypt_secret, encrypt_secret, hash_password
+from app.main import app
 from app.models import (
     FinanceBook,
     FinanceBookOffer,
@@ -17,6 +19,8 @@ from app.models import (
     OfferBuyer,
     PartnerIntegration,
     PartnerPendingTag,
+    Permission,
+    Role,
     User,
 )
 from tests.test_media_finance import _admin_client
@@ -79,6 +83,10 @@ async def pp_setup(database):
                 )
             ).scalars()
         )
+        offer_ids = select(FinanceBookOffer.id).where(FinanceBookOffer.book_id.in_(books or [uuid.uuid4()]))
+        tag_ids = select(FinanceOfferTag.id).where(FinanceOfferTag.offer_id.in_(offer_ids))
+        await db.execute(delete(FinanceTagDay).where(FinanceTagDay.tag_id.in_(tag_ids)))
+        await db.execute(delete(FinanceOfferTag).where(FinanceOfferTag.offer_id.in_(offer_ids)))
         await db.execute(delete(FinanceBookOffer).where(FinanceBookOffer.book_id.in_(books or [uuid.uuid4()])))
         await db.execute(delete(FinanceBook).where(FinanceBook.id.in_(books or [uuid.uuid4()])))
         await db.execute(delete(PartnerPendingTag).where(PartnerPendingTag.workspace_id == ids["workspace"]))
@@ -233,6 +241,10 @@ async def two_buyers(database):
                 )
             ).scalars()
         )
+        offer_ids = select(FinanceBookOffer.id).where(FinanceBookOffer.book_id.in_(books or [uuid.uuid4()]))
+        tag_ids = select(FinanceOfferTag.id).where(FinanceOfferTag.offer_id.in_(offer_ids))
+        await db.execute(delete(FinanceTagDay).where(FinanceTagDay.tag_id.in_(tag_ids)))
+        await db.execute(delete(FinanceOfferTag).where(FinanceOfferTag.offer_id.in_(offer_ids)))
         await db.execute(delete(FinanceBookOffer).where(FinanceBookOffer.book_id.in_(books or [uuid.uuid4()])))
         await db.execute(delete(FinanceBook).where(FinanceBook.id.in_(books or [uuid.uuid4()])))
         await db.execute(delete(PartnerPendingTag).where(PartnerPendingTag.workspace_id == ids["workspace"]))
@@ -704,9 +716,8 @@ async def test_finance_sync_asks_the_service_for_the_book_month(
 
 async def test_finance_sync_does_not_ask_for_the_future(pp_setup, pp_transport) -> None:
     """Будущее партнёрка не отдаст — верхнюю границу режем по сегодня."""
-    from datetime import date
 
-    today = date.today()
+    today = business_today()
     pp_transport["responses"][("GET", "stats")] = []
     with _admin_client() as client:
         response = client.post(
@@ -845,77 +856,245 @@ async def test_numbers_do_not_repeat_inside_a_workspace(pp_setup, pp_transport) 
     assert None not in refs
     assert len(refs) == 2
 
+async def test_a_new_integration_is_created_on_the_service(database, monkeypatch) -> None:
+    """Форма — четыре поля, а интеграцию на сервисе заводит сам бэкенд.
 
-async def test_a_new_integration_needs_only_the_service_credentials(
-    database, monkeypatch
-) -> None:
-    """В форме остались партнёрка, адрес и ключ — остальное CRM берёт сама.
-
-    Название — просто подпись партнёрки, а id интеграции на сервисе спрашиваем
-    у самого сервиса: раньше его вбивали руками, и без него синк не ходил в ПП.
+    Конфиг коннектора руками не собирают: платформа выбирается списком и
+    резолвится в номер шаблона, а доступы к самой ПП уезжают сервису — дальше
+    в партнёрку ходит он.
     """
     import app.api.routers.partner_integrations as router
 
-    async def fake_integrations(self):
-        return [
-            {"id": 41, "name": "other", "partner_name": "Другая ПП"},
-            {"id": 17, "name": "famecpa", "partner_name": "Affise (famecpa)"},
-        ]
+    calls = []
 
-    monkeypatch.setattr(router.PartnerServiceClient, "integrations", fake_integrations)
+    async def fake_create(self, **kwargs):
+        calls.append(kwargs)
+        return {"id": 17}
+
+    monkeypatch.setattr(router.PartnerServiceClient, "create_integration", fake_create)
 
     with _admin_client() as client:
         created = client.post(
             "/api/v1/partner-integrations",
-            json={"partner_name": "Affise (famecpa)", "base_url": "http://pp.test",
-                  "api_key": "pp-key"},
+            json={"partner_name": "Jugabet CO", "platform": "alanbase",
+                  "base_url": "https://api.jugabet.com", "api_key": "pp-key"},
         )
         assert created.status_code == 201, created.text
         body = created.json()
-        assert body["name"] == "Affise (famecpa)"
+        assert body["name"] == "Jugabet CO"
+        assert body["platform"] == "alanbase"
         assert body["external_id"] == "17"
+        assert calls[0] == {
+            "partner_name": "Jugabet CO",
+            "name": "Jugabet CO",
+            "template_integration_id": 2,
+            "base_url": "https://api.jugabet.com",
+            "api_key": "pp-key",
+        }
 
-        # Второй раз то же имя — не конфликт, а порядковый номер.
+        # Второй раз то же имя — не конфликт, а порядковый номер: на сервисе
+        # оно служит слагом и должно быть своим.
         twin = client.post(
             "/api/v1/partner-integrations",
-            json={"partner_name": "Affise (famecpa)", "base_url": "http://pp.test",
-                  "api_key": "pp-key"},
+            json={"partner_name": "Jugabet CO", "platform": "affise",
+                  "base_url": "https://api.jugabet.com", "api_key": "pp-key"},
         )
         assert twin.status_code == 201
-        assert twin.json()["name"] == "Affise (famecpa) 2"
+        assert twin.json()["name"] == "Jugabet CO 2"
+        assert calls[1]["template_integration_id"] == 1
 
-        # Без партнёрки, адреса или ключа сохранять нечего.
-        empty = client.post(
+        # Без любого из четырёх полей сохранять нечего.
+        for payload in (
+            {"partner_name": "", "platform": "affise", "base_url": "u", "api_key": "k"},
+            {"partner_name": "П", "platform": "", "base_url": "u", "api_key": "k"},
+            {"partner_name": "П", "platform": "affise", "base_url": "", "api_key": "k"},
+            {"partner_name": "П", "platform": "affise", "base_url": "u", "api_key": ""},
+        ):
+            answer = client.post("/api/v1/partner-integrations", json=payload)
+            assert answer.status_code == 422
+
+        # Платформы, под которую у сервиса нет шаблона, в списке нет.
+        unknown = client.post(
             "/api/v1/partner-integrations",
-            json={"partner_name": "", "base_url": "http://pp.test", "api_key": "k"},
+            json={"partner_name": "П", "platform": "leadrock",
+                  "base_url": "u", "api_key": "k"},
         )
-        assert empty.status_code == 422
+        assert unknown.status_code == 422
 
         for row in (body, twin.json()):
             client.delete("/api/v1/partner-integrations/" + row["id"])
 
 
-async def test_the_service_id_stays_empty_when_the_service_is_silent(
+async def test_integration_rejects_api_address_without_scheme(database, monkeypatch) -> None:
+    """Неполный адрес не должен превращаться в нерабочую интеграцию сервиса."""
+    import app.api.routers.partner_integrations as router
+
+    calls = []
+
+    async def fake_create(self, **kwargs):
+        calls.append(kwargs)
+        return {"id": 18}
+
+    monkeypatch.setattr(router.PartnerServiceClient, "create_integration", fake_create)
+
+    with _admin_client() as client:
+        response = client.post(
+            "/api/v1/partner-integrations",
+            json={"partner_name": "Growe", "platform": "afftech",
+                  "base_url": "api.growe.partners", "api_key": "pp-key"},
+        )
+
+    assert response.status_code == 422
+    assert "http://" in response.text
+    assert calls == []
+
+
+async def test_changed_access_is_updated_in_service_before_crm(
+    pp_setup, pp_transport
+) -> None:
+    """URL и ключ карточки CRM не должны расходиться с рабочим коннектором."""
+    pp_transport["responses"][("GET", "17")] = {
+        "id": 17,
+        "connector_config": {
+            "base_url": "http://pp.test",
+            "path": "/stats",
+            "method": "GET",
+        },
+    }
+    pp_transport["responses"][("PATCH", "17")] = {"id": 17}
+
+    with _admin_client() as client:
+        response = client.patch(
+            f"/api/v1/partner-integrations/{pp_setup['integration']}",
+            json={"base_url": "https://api.pp.test/", "api_key": "new-key"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["base_url"] == "https://api.pp.test"
+    service_patch = next(
+        call for call in pp_transport["calls"] if call["method"] == "PATCH"
+    )
+    assert service_patch["json"] == {
+        "connector_config": {
+            "base_url": "https://api.pp.test",
+            "path": "/stats",
+            "method": "GET",
+        },
+        "credentials": {"api_key": "new-key"},
+    }
+    async with SessionLocal() as db:
+        integration = await db.get(PartnerIntegration, pp_setup["integration"])
+        assert integration.base_url == "https://api.pp.test"
+        assert decrypt_secret(integration.api_key_encrypted) == "new-key"
+
+
+async def test_the_card_is_not_saved_when_the_service_refuses(
     database, monkeypatch
 ) -> None:
-    """Сервис недоступен — интеграция всё равно заводится.
+    """Иначе карточка выглядит рабочей, а синку не за что зацепиться.
 
-    Без id синк читает то, что сервис уже собрал: это рабочее состояние, а не
-    повод не дать сохранить подключение.
+    Без интеграции на стороне сервиса ни привязок офферов не завести, ни
+    депозитов не забрать, поэтому отказ сервиса показываем сразу.
     """
     import app.api.routers.partner_integrations as router
 
-    async def broken(self):
+    async def broken(self, **kwargs):
         raise router.PartnerIntegrationError("сервис недоступен")
 
-    monkeypatch.setattr(router.PartnerServiceClient, "integrations", broken)
+    monkeypatch.setattr(router.PartnerServiceClient, "create_integration", broken)
 
     with _admin_client() as client:
         created = client.post(
             "/api/v1/partner-integrations",
-            json={"partner_name": "Тихая ПП", "base_url": "http://pp.test",
-                  "api_key": "pp-key"},
+            json={"partner_name": "Тихая ПП", "platform": "affise",
+                  "base_url": "https://api.pp.test", "api_key": "pp-key"},
         )
-        assert created.status_code == 201
-        assert created.json()["external_id"] is None
-        client.delete("/api/v1/partner-integrations/" + created.json()["id"])
+        assert created.status_code == 422
+        assert "сервис недоступен" in created.text
+        assert client.get("/api/v1/partner-integrations").json() == []
+
+
+async def test_platforms_come_from_the_backend(database) -> None:
+    """Список платформ отдаёт бэкенд: соответствие шаблонам живёт в настройках."""
+    with _admin_client() as client:
+        rows = client.get("/api/v1/partner-integrations/platforms").json()
+
+    assert [row["value"] for row in rows] == ["affise", "alanbase", "afftech"]
+    assert [row["label"] for row in rows] == ["Affise", "Alanbase", "AffTech"]
+
+
+def test_repeated_facts_are_reported() -> None:
+    """Иначе цифра в книге зависит от порядка строк в ответе сервиса."""
+    from app.services.partner_sync import duplicate_notes
+
+    facts = [
+        {"date": "2026-08-28", "offer_id": "o1", "tag": "EVS", "deposits": 15},
+        {"date": "2026-08-28", "offer_id": "o1", "tag": "evs ", "deposits": 15},
+        {"date": "2026-08-29", "offer_id": "o1", "tag": "EVS", "deposits": 12},
+    ]
+
+    notes = duplicate_notes(facts)
+
+    assert len(notes) == 1
+    assert "1 троек" in notes[0]
+
+
+def test_clean_facts_say_nothing() -> None:
+    """Молчание — признак нормы: лишняя строка в отчёте о синке только шумит."""
+    from app.services.partner_sync import duplicate_notes
+
+    facts = [
+        {"date": "2026-08-28", "offer_id": "o1", "tag": "EVS", "deposits": 15},
+        {"date": "2026-08-28", "offer_id": "o1", "tag": "kilo", "deposits": 12},
+        {"date": "2026-08-29", "offer_id": "o2", "tag": "EVS", "deposits": 3},
+    ]
+
+    assert duplicate_notes(facts) == []
+
+
+async def test_viewer_without_manage_can_read_platforms_and_service(pp_setup) -> None:
+    """У роли «смотреть настройки» вкладка ПП должна открываться целиком.
+
+    Team Lead ловил «Permission denied» на /platforms: список интеграций
+    отрабатывал по settings.view, а следом UI запрашивал платформы,
+    которые требовали settings.manage, — и вся вкладка помечалась сломанной.
+    """
+    import httpx
+
+    viewer_login = "viewer_" + uuid.uuid4().hex[:6]
+    async with SessionLocal() as db:
+        permission = (await db.execute(
+            select(Permission).where(Permission.code == "settings.view")
+        )).scalar_one()
+        role = Role(
+            workspace_id=pp_setup["workspace"],
+            name="Viewer " + uuid.uuid4().hex[:6],
+            is_system=False,
+            permissions=[permission],
+        )
+        db.add(role)
+        await db.flush()
+        db.add(User(
+            workspace_id=pp_setup["workspace"],
+            role_id=role.id,
+            name="Viewer",
+            login=viewer_login,
+            password_hash=hash_password("viewer-password"),
+        ))
+        await db.commit()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        login = await client.post("/api/v1/auth/login", json={
+            "login": viewer_login, "password": "viewer-password",
+        })
+        assert login.status_code == 200
+        assert (await client.get("/api/v1/partner-integrations")).status_code == 200
+        assert (await client.get("/api/v1/partner-integrations/platforms")).status_code == 200
+        runs = await client.get(
+            f"/api/v1/partner-integrations/{pp_setup['integration']}/runs"
+        )
+        assert runs.status_code == 200
+        # Писать по-прежнему нельзя.
+        create = await client.post("/api/v1/partner-integrations", json={})
+        assert create.status_code == 403

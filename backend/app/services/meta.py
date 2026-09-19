@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 import zlib
 from datetime import date
@@ -39,10 +40,12 @@ ACCOUNT_FIELDS = [
     "disable_reason",
 ]
 ENTITY_FIELDS = {
+    # Стратегия и сумма ставки — для окна «Бюджет и ставка» в структуре.
     "campaign": ["id", "name", "status", "effective_status", "objective", "daily_budget",
-                 "lifetime_budget", "start_time", "stop_time"],
+                 "lifetime_budget", "start_time", "stop_time", "bid_strategy"],
     "adset": ["id", "name", "campaign_id", "status", "effective_status", "daily_budget",
-              "lifetime_budget", "optimization_goal", "start_time", "end_time"],
+              "lifetime_budget", "optimization_goal", "start_time", "end_time",
+              "bid_strategy", "bid_amount"],
     # `effective_object_story_id` — это "<page_id>_<post_id>": по нему объявление
     # связывается с фан-пейджем, от лица которого крутится.
     "ad": ["id", "name", "adset_id", "status", "effective_status",
@@ -159,6 +162,114 @@ PUBLISHER_PLATFORMS = {
     "audience_network": "Audience Network",
     "messenger": "Messenger",
 }
+# Места размещения внутри платформ — то, что Ads Manager показывает под
+# «Плейсменты», когда автоматические выключены. Сгруппированы так же, как у
+# Meta: человек думает «ленты» и «истории», а не «facebook_positions=feed».
+#
+# Коды — это значения `*_positions` из Marketing API, и переименовывать их
+# нельзя: они уходят в Meta как есть. Позиция принадлежит своей платформе,
+# поэтому в группе они лежат парами «платформа + код» — одна и та же «лента»
+# у Facebook и Instagram называется по-разному.
+PLACEMENT_GROUPS = (
+    {
+        "code": "feeds",
+        "label": "Ленты",
+        "hint": "Реклама в ленте — самое заметное место.",
+        "positions": (
+            {"platform": "facebook", "code": "feed", "label": "Лента Facebook"},
+            {"platform": "facebook", "code": "profile_feed", "label": "Лента профиля Facebook"},
+            {"platform": "facebook", "code": "marketplace", "label": "Marketplace"},
+            {"platform": "facebook", "code": "video_feeds", "label": "Видео Facebook"},
+            {"platform": "facebook", "code": "right_hand_column", "label": "Правый столбец"},
+            {"platform": "instagram", "code": "stream", "label": "Лента Instagram"},
+            {"platform": "instagram", "code": "profile_feed", "label": "Лента профиля Instagram"},
+            {"platform": "instagram", "code": "explore", "label": "Интересное"},
+            {"platform": "instagram", "code": "explore_home", "label": "Главная «Интересного»"},
+            {"platform": "messenger", "code": "messenger_home", "label": "Главная Messenger"},
+        ),
+    },
+    {
+        "code": "stories",
+        "label": "Истории и видео Reels",
+        "hint": "Полноэкранная вертикальная реклама.",
+        "positions": (
+            {"platform": "facebook", "code": "story", "label": "Истории Facebook"},
+            {"platform": "facebook", "code": "facebook_reels", "label": "Reels Facebook"},
+            {"platform": "instagram", "code": "story", "label": "Истории Instagram"},
+            {"platform": "instagram", "code": "reels", "label": "Reels Instagram"},
+            {"platform": "instagram", "code": "profile_reels", "label": "Reels в профиле"},
+            {"platform": "messenger", "code": "story", "label": "Истории Messenger"},
+        ),
+    },
+    {
+        "code": "apps_sites",
+        "label": "Приложения и сайты",
+        "hint": "Показы за пределами Meta — в сторонних приложениях и на сайтах.",
+        "positions": (
+            {"platform": "audience_network", "code": "classic", "label": "Баннеры и нативная реклама"},
+            {"platform": "audience_network", "code": "rewarded_video", "label": "Видео за вознаграждение"},
+        ),
+    },
+    {
+        "code": "instream",
+        "label": "Реклама In-Stream для видео и Reels",
+        "hint": "До, во время и после просмотра видео.",
+        "positions": (
+            {"platform": "facebook", "code": "instream_video", "label": "In-Stream видео Facebook"},
+        ),
+    },
+    {
+        "code": "search",
+        "label": "Результаты поиска",
+        "hint": "Показы в выдаче, когда человек ищет сам.",
+        "positions": (
+            {"platform": "facebook", "code": "search", "label": "Поиск Facebook"},
+            {"platform": "instagram", "code": "ig_search", "label": "Поиск Instagram"},
+        ),
+    },
+    {
+        "code": "messages",
+        "label": "Сообщения",
+        "hint": "Письма тем, кто уже писал вам.",
+        "positions": (
+            {
+                "platform": "messenger",
+                "code": "sponsored_messages",
+                "label": "Рекламные сообщения в Messenger",
+            },
+        ),
+    },
+    {
+        "code": "articles",
+        "label": "В статьях",
+        "hint": "Моментальные статьи на Facebook.",
+        "positions": (
+            {"platform": "facebook", "code": "instant_article", "label": "Моментальные статьи"},
+        ),
+    },
+)
+# Ключ в `placements`, куда складывается позиция своей платформы.
+PLACEMENT_KEYS = {
+    "facebook": "facebook_positions",
+    "instagram": "instagram_positions",
+    "audience_network": "audience_network_positions",
+    "messenger": "messenger_positions",
+}
+
+
+def placement_catalog() -> list[dict]:
+    """Группы мест размещения для интерфейса — простыми списками и словарями."""
+    return [
+        {
+            "code": group["code"],
+            "label": group["label"],
+            "hint": group["hint"],
+            "positions": [dict(position) for position in group["positions"]],
+        }
+        for group in PLACEMENT_GROUPS
+    ]
+
+
 # Конверсия, ради которой оптимизируется adset. Meta требует её вместе с пикселем,
 # когда optimization_goal = OFFSITE_CONVERSIONS.
 CUSTOM_EVENT_TYPES = {
@@ -206,6 +317,11 @@ RETRYABLE_ERROR_CODES = {1, 2, 4, 17, 32, 341, 613, 80000, 80001, 80002, 80003, 
 # лимиту. Только эти коды дают право повторить запись.
 RATE_LIMIT_ERROR_CODES = {4, 17, 32, 341, 613, 80000, 80001, 80002, 80003, 80004}
 ERROR_HINTS = {
+    10: (
+        "Meta запретила действие (код 10). Проверьте ограничения бизнеса и права "
+        "профиля подключения CRM в Meta. Активный статус кабинета не гарантирует "
+        "доступ к созданию рекламы. Повторите после устранения причины."
+    ),
     190: (
         "Meta отклонила токен (код 190). Он истёк или отозван — выпустите новый "
         "токен системного пользователя в Business Manager и вставьте его в подключение."
@@ -252,11 +368,13 @@ class MetaError(RuntimeError):
         status_code: int | None = None,
         error_code: int | None = None,
         retryable: bool = False,
+        details: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.error_code = error_code
         self.retryable = retryable
+        self.details = details or {}
 
 
 class MetaClient:
@@ -275,6 +393,7 @@ class MetaClient:
         user_agent: str | None = None,
     ) -> None:
         self.version = version or settings.meta_graph_version
+        self.access_token = access_token
         base = (api_base or settings.meta_api_base).rstrip("/")
         self.base_url = f"{base}/{self.version}"
         # Токен уходит заголовком, а не параметром запроса: URL попадает в логи
@@ -338,6 +457,9 @@ class MetaClient:
                 payload = _json_body(response)
                 error = payload.get("error") if isinstance(payload, dict) else None
                 if error:
+                    # Сохраняем только диагностические поля, а не весь ответ
+                    # или запрос, в которых могут оказаться токены и cookies.
+                    error = _meta_error_details(error, self.access_token)
                     code = _int_or_none(error.get("code"))
                     rate_limited = code in RATE_LIMIT_ERROR_CODES
                     retryable = (
@@ -353,6 +475,7 @@ class MetaClient:
                         status_code=response.status_code,
                         error_code=code,
                         retryable=retryable,
+                        details=error,
                     )
                 if (
                     idempotent
@@ -422,6 +545,24 @@ class MetaClient:
         """Проверка токена. Возвращает то, чем Meta считает его владельца."""
         return await self._request("/me", {"fields": "id,name"})
 
+    async def check_ad_account(self, account_external_id: str) -> dict:
+        """Свежий статус перед записью; ACTIVE не доказывает права на запись."""
+        result = await self._request(
+            f"/{account_external_id}", {"fields": "id,name,account_status,disable_reason"}
+        )
+        status = _int_or_none(result.get("account_status"))
+        reason = _int_or_none(result.get("disable_reason"))
+        if status is None:
+            raise MetaError("Meta не вернула статус кабинета. Публикация остановлена до создания кампании.")
+        if status not in {1, 9} or reason not in {None, 0}:
+            raise MetaError(
+                "Публикация остановлена: Meta сообщает о недоступности кабинета "
+                f"(статус {account_status_label(status)}, причина {reason}). "
+                "Проверьте ограничения и оплату в Meta, затем повторите.",
+                details={"account_status": status, "disable_reason": reason},
+            )
+        return {key: result[key] for key in ("id", "name", "account_status", "disable_reason") if key in result}
+
     async def ad_accounts(self, business_id: str | None = None) -> list[dict]:
         params = {"fields": ",".join(ACCOUNT_FIELDS), "limit": 100}
         if business_id:
@@ -448,6 +589,32 @@ class MetaClient:
             f"/{account_external_id}/{ENTITY_EDGE[level]}",
             {"fields": ",".join(ENTITY_FIELDS[level]), "limit": 200},
         )
+
+    async def entities_by_ids(self, level: str, external_ids: list[str]) -> list[dict]:
+        """Те же поля, что и у `entities`, но для перечисленных объектов.
+
+        Нужно сразу после залива: объекты уже созданы, а синхронизация кабинета
+        будет только через несколько минут. Читать ради трёх новых кампаний всю
+        выдачу кабинета — это тысячи строк на каждый залив, поэтому спрашиваем
+        поимённо: Graph отдаёт их одним запросом через `?ids=`.
+        """
+        if level not in ENTITY_EDGE:
+            raise ValueError("Unsupported Meta entity level")
+        wanted = [str(value).strip() for value in external_ids if str(value or "").strip()]
+        if not wanted:
+            return []
+        rows: list[dict] = []
+        # 50 — предел Graph на один запрос по `ids`.
+        for start in range(0, len(wanted), 50):
+            chunk = wanted[start:start + 50]
+            payload = await self._request(
+                "", {"ids": ",".join(chunk), "fields": ",".join(ENTITY_FIELDS[level])}
+            )
+            for key in chunk:
+                row = payload.get(key)
+                if isinstance(row, dict) and row.get("id"):
+                    rows.append(row)
+        return rows
 
     async def insights(
         self,
@@ -834,6 +1001,20 @@ class MetaClient:
     async def set_daily_budget(self, external_id: str, budget: Decimal) -> dict:
         return await self.update_object(external_id, {"daily_budget": money_to_minor(budget)})
 
+    async def delete_object(self, external_id: str) -> dict:
+        """Удалить кампанию, адсет или объявление в Meta. Необратимо."""
+        return await self._send("DELETE", f"/{external_id}")
+
+    async def copy_object(self, external_id: str, deep: bool) -> dict:
+        """Дубль объекта на паузе. `deep` копирует и вложенные адсеты и объявления.
+
+        Ответ Meta — `copied_campaign_id` / `copied_adset_id` / `copied_ad_id`.
+        """
+        data = {"status_option": "PAUSED"}
+        if deep:
+            data["deep_copy"] = "true"
+        return await self._send("POST", f"/{external_id}/copies", data=data)
+
 
 def client_with_token(base: MetaClient, token: str) -> MetaClient:
     """Клиент с другим токеном — в том же транспорте и с теми же настройками.
@@ -1008,10 +1189,21 @@ def build_targeting(template: object) -> dict:
     ]
     if platforms and not advantage and not adset.get("auto_placements", True):
         targeting["publisher_platforms"] = platforms
-        for key in ("facebook_positions", "instagram_positions", "audience_network_positions"):
-            values = placements.get(key)
+        # Позиции отправляются только для выбранных платформ: место чужой
+        # платформы Meta отбивает ошибкой, а не игнорирует.
+        for platform in platforms:
+            key = PLACEMENT_KEYS[platform]
+            values = [
+                str(value)
+                for value in (placements.get(key) or [])
+                if any(
+                    position["platform"] == platform and position["code"] == value
+                    for group in PLACEMENT_GROUPS
+                    for position in group["positions"]
+                )
+            ]
             if values:
-                targeting[key] = list(values)
+                targeting[key] = values
     targeting.update(_device_targeting(adset))
     return targeting
 
@@ -1269,6 +1461,35 @@ def hour_of(row: dict) -> int | None:
     return hour if 0 <= hour <= 23 else None
 
 
+def entity_parent_id(level: str, row: dict) -> str | None:
+    field = ENTITY_PARENT_FIELD.get(level)
+    return (str(row.get(field) or "") or None) if field else None
+
+
+def apply_entity_row(entity, level: str, row: dict) -> None:
+    """Разложить ответ Graph по колонкам `meta_entities`.
+
+    Одно место на всех, кто эти строки пишет: синхронизация кабинета и залив,
+    который добавляет только что созданные объекты. Разойдись они — в разделе
+    появились бы две разные записи об одной кампании.
+    """
+    external_id = str(row.get("id") or "")
+    entity.name = str(row.get("name") or external_id)[:300]
+    entity.parent_external_id = entity_parent_id(level, row)
+    if level == "ad":
+        entity.page_external_id = creative_page_id(row)
+        entity.post_external_id = creative_post_id(row)
+    entity.effective_status = (
+        str(row.get("effective_status") or row.get("status") or "") or None
+    )
+    entity.objective = (
+        str(row.get("objective") or row.get("optimization_goal") or "") or None
+    )
+    entity.daily_budget = money_from_minor(row.get("daily_budget"))
+    entity.lifetime_budget = money_from_minor(row.get("lifetime_budget"))
+    entity.external_payload = row
+
+
 def creative_post_id(row: dict) -> str | None:
     """Пост объявления — «<page_id>_<post_id>».
 
@@ -1312,6 +1533,27 @@ def _int_or_none(value: object) -> int | None:
         return int(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _meta_error_details(error: dict, access_token: str) -> dict:
+    details = {}
+    for key in ("code", "error_subcode"):
+        value = _int_or_none(error.get(key))
+        if value is not None:
+            details[key] = value
+    for key in ("message", "type", "error_user_title", "error_user_msg", "fbtrace_id"):
+        value = error.get(key)
+        if isinstance(value, str):
+            if access_token:
+                value = value.replace(access_token, "[REDACTED]")
+            value = re.sub(
+                r"(?i)(access_token|appsecret_proof|authorization|cookie)\s*[=:]\s*[^\s&,;]+",
+                r"\1=[REDACTED]", value,
+            )
+            details[key] = value[:2000]
+    if isinstance(error.get("is_transient"), bool):
+        details["is_transient"] = error["is_transient"]
+    return details
 
 
 def _error_message(error: dict) -> str:

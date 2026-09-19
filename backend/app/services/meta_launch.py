@@ -14,17 +14,19 @@ import random
 import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.clock import business_now, business_today
 from app.core.security import decrypt_secret
 from app.models import (
     IntegrationConnection,
     LaunchStatus,
     MetaAdAccount,
     MetaCreative,
+    MetaEntity,
     MetaLaunch,
     MetaLaunchCreative,
     MetaOperation,
@@ -35,6 +37,7 @@ from app.models import (
 from app.services.meta import (
     MetaClient,
     MetaError,
+    apply_entity_row,
     build_asset_feed_spec,
     build_object_story_spec,
     build_targeting,
@@ -99,6 +102,11 @@ class MetaLaunchPublisher:
                 user_agent=context.get("user_agent"),
                 transport=access["transport"],
             )
+            await self._call(
+                launch_uuid, context, actor, "account_check",
+                {"account_id": context["account"].external_id},
+                lambda: client.check_ad_account(context["account"].external_id),
+            )
             # Числовые ID локалей (для правил мультиязычного креатива) резолвим
             # ДО создания кампании: сбой здесь не должен оставить осиротевший
             # объект в кабинете.
@@ -133,6 +141,10 @@ class MetaLaunchPublisher:
             activated = await self._activate(
                 launch_uuid, context, client, campaign_ids, all_adsets, all_ads, actor
             )
+            # Созданное сразу заносим в раздел Meta Ads: синхронизация кабинета
+            # придёт минутами позже, а до неё залив выглядел как «кампания есть
+            # в Meta, но её нет в CRM» — и правило на неё не поставить.
+            await self._record_entities(context, client, campaign_ids, all_adsets, all_ads)
         except Exception as exc:
             async with self.session_factory() as db:
                 launch = await db.get(MetaLaunch, launch_uuid)
@@ -166,6 +178,64 @@ class MetaLaunchPublisher:
             "adset_ids": first_adset_ids,
             "ads": first_ads,
         }
+
+    async def _record_entities(
+        self,
+        context: dict,
+        client: MetaClient,
+        campaigns: list[str],
+        adsets: list[str],
+        ads: list[str],
+    ) -> None:
+        """Записать созданные объекты в `meta_entities` — как это делает синк.
+
+        Поля читаются из самой Meta, а не собираются из залива: тогда строка не
+        разойдётся с той, которую напишет ближайшая синхронизация, и статусы в
+        разделе будут настоящими, а не «какими мы их задумали».
+
+        Ошибку глушим: объекты в кабинете уже созданы, и падать здесь — значит
+        объявить неудачным залив, который на самом деле прошёл. До синка данные
+        просто появятся чуть позже.
+        """
+        account = context["account"]
+        levels = (("campaign", campaigns), ("adset", adsets), ("ad", ads))
+        try:
+            for level, ids in levels:
+                rows = await client.entities_by_ids(level, ids)
+                if not rows:
+                    continue
+                async with self.session_factory() as db:
+                    existing = {
+                        entity.external_id: entity
+                        for entity in (
+                            await db.execute(
+                                select(MetaEntity).where(
+                                    MetaEntity.account_id == account.id,
+                                    MetaEntity.external_id.in_(
+                                        [str(row.get("id")) for row in rows]
+                                    ),
+                                )
+                            )
+                        ).scalars()
+                    }
+                    for row in rows:
+                        external_id = str(row.get("id") or "").strip()
+                        if not external_id:
+                            continue
+                        entity = existing.get(external_id)
+                        if entity is None:
+                            entity = MetaEntity(
+                                workspace_id=account.workspace_id,
+                                connection_id=account.connection_id,
+                                account_id=account.id,
+                                level=level,
+                                external_id=external_id,
+                            )
+                            db.add(entity)
+                        apply_entity_row(entity, level, row)
+                    await db.commit()
+        except Exception:  # noqa: BLE001 — залив уже состоялся
+            logger.warning("meta launch: не удалось записать созданные объекты", exc_info=True)
 
     async def _resolve_locale_ids(
         self, client: MetaClient, launch: MetaLaunch
@@ -734,7 +804,24 @@ class MetaLaunchPublisher:
         try:
             response = await action()
         except Exception as exc:
-            await self._close_operation(operation_id, "failed", {}, _safe_error(exc))
+            response = {}
+            if isinstance(exc, MetaError):
+                response = {
+                    "error": exc.details,
+                    "http_status": exc.status_code,
+                    "retryable": exc.retryable,
+                    "context": {
+                        "account_id": context["account"].external_id,
+                        "connection_name": context.get("connection_name"),
+                        "page_id": context["launch"].page_id or context["template"].page_id,
+                    },
+                }
+                logger.warning(
+                    "Meta launch=%s stage=%s code=%s subcode=%s trace=%s",
+                    launch_uuid, kind, exc.error_code,
+                    exc.details.get("error_subcode"), exc.details.get("fbtrace_id"),
+                )
+            await self._close_operation(operation_id, "failed", response, _safe_error(exc))
             raise
         await self._close_operation(operation_id, "success", response, None)
         return response
@@ -1083,7 +1170,7 @@ def _name(pattern: object, context: dict, extra: dict | None = None) -> str:
     launch = context["launch"]
     account = context["account"]
     template = context["template"]
-    now = datetime.now(UTC)
+    now = business_now()
     genders = list(template.genders or [])
     values = {
         "bundle.name": template.name,
@@ -1157,14 +1244,27 @@ def _randomized_age(template: MetaTemplate, seed: str, years: int = 3) -> dict:
     return {"age_min": low, "age_max": high}
 
 
-def _randomized(amount: Decimal, seed: str) -> Decimal:
-    """Разброс ±10 % вокруг суммы.
+DEFAULT_RANDOMIZE_PCT = Decimal("10")
+
+
+def _randomize_pct(value: object) -> Decimal:
+    try:
+        pct = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return DEFAULT_RANDOMIZE_PCT
+    # Больше 90 % разброс мог бы увести бюджет почти в ноль.
+    return pct if Decimal(0) < pct <= Decimal(90) else DEFAULT_RANDOMIZE_PCT
+
+
+def _randomized(amount: Decimal, seed: str, pct: object = DEFAULT_RANDOMIZE_PCT) -> Decimal:
+    """Разброс ±pct % вокруг суммы (по умолчанию ±10 %).
 
     Одинаковый бюджет на двадцати кабинетах — заметный след, и Meta его видит.
     Seed берётся от залива, поэтому повтор после сбоя не меняет сумму: иначе
     вторая попытка ушла бы в кабинет с другим бюджетом.
     """
-    shift = Decimal(str(random.Random(seed).uniform(-0.1, 0.1)))
+    share = float(_randomize_pct(pct)) / 100
+    shift = Decimal(str(random.Random(seed).uniform(-share, share)))
     result = (amount * (Decimal(1) + shift)).quantize(Decimal("0.01"))
     return result if result > 0 else amount
 
@@ -1179,9 +1279,10 @@ def _split_budget(launch: MetaLaunch, campaign: dict) -> dict:
     if amount is None:
         return {"daily_budget": None, "lifetime_budget": None}
     kind = launch.budget_kind or str(campaign.get("budget_kind") or "daily")
-    randomize = launch.budget_randomize or bool(campaign.get("budget_randomize"))
-    if randomize:
-        amount = _randomized(amount, str(launch.id))
+    if launch.budget_randomize:
+        amount = _randomized(amount, str(launch.id), launch.budget_randomize_pct)
+    elif campaign.get("budget_randomize"):
+        amount = _randomized(amount, str(launch.id), campaign.get("budget_randomize_pct"))
     if kind == "lifetime":
         return {"daily_budget": None, "lifetime_budget": amount}
     return {"daily_budget": amount, "lifetime_budget": None}
@@ -1410,10 +1511,10 @@ def _launch_with_link(launch: MetaLaunch, link: str, texts: dict) -> MetaLaunch:
 def _schedule_time(value: date | None) -> str | None:
     if not value:
         return None
-    if value <= datetime.now(UTC).date():
+    if value <= business_today():
         # Прошедшую дату Meta отклоняет — для неё «начать сейчас» это отсутствие поля.
         return None
-    return f"{value.isoformat()}T00:00:00+0000"
+    return f"{value.isoformat()}T00:00:00+0300"
 
 
 def _jsonable(payload: object) -> dict:

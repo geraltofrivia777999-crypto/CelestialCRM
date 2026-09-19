@@ -21,10 +21,11 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from redis.asyncio import Redis
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.analytics import invalidate_dashboard_cache
+from app.core.clock import business_today, meta_rules_step_minutes
 from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.core.deps import (
@@ -73,6 +74,7 @@ from app.schemas import (
     MetaConnectionOut,
     MetaConnectionPreview,
     MetaConnectionUpdate,
+    MetaEntityActionIn,
     MetaLaunchBatch,
     MetaLaunchCreate,
     MetaLaunchUpdate,
@@ -88,7 +90,14 @@ from app.schemas import (
     MetaTemplateUpdate,
     Page,
 )
-from app.services import meta_bundle, meta_comments, meta_hourly, meta_levels, meta_spend
+from app.services import (
+    finance_spend,
+    meta_bundle,
+    meta_comments,
+    meta_hourly,
+    meta_levels,
+    meta_spend,
+)
 from app.services.audit import audit
 from app.services.formulas import amount_with_commission, q
 from app.services.meta import (
@@ -110,6 +119,8 @@ from app.services.meta import (
     client_with_token,
     graph_base_url,
     money_from_minor,
+    money_to_minor,
+    placement_catalog,
     uniquify,
 )
 from app.services.meta_launch import (
@@ -498,6 +509,11 @@ async def session_start(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Неверный ID подключения") from exc
         await _connection(db, current, connection_id, edit=True)
+        # Запуск браузера может висеть до двух минут на мёртвом прокси.
+        # Транзакцию, открытую авторизацией и проверкой доступа, закрываем
+        # до этой работы: иначе она держит соединение пула всё это время,
+        # и несколько попыток подряд осушают пул целиком.
+        await db.commit()
     manager = get_session_manager()
     try:
         state = await asyncio.wait_for(
@@ -516,6 +532,8 @@ async def session_start(
     except Exception as exc:
         logger.exception("meta session start failed")
         raise HTTPException(status_code=500, detail=f"Failed to start session: {exc}") from exc
+    if not getattr(state, "owner_id", None):
+        state.owner_id = current.id
     return {
         "session_id": state.id,
         "status": state.status,
@@ -529,11 +547,35 @@ async def session_start(
     }
 
 
+async def _session_guard(db: AsyncSession, current: User, session_id: str) -> None:
+    """Браузерная сессия — это вход в чужой Facebook и его EAAB-токен.
+
+    Сессия повторного входа названа id подключения: к ней пускаем тех, кто
+    может править это подключение. Сессию мастера видит только тот, кто её
+    запустил, и администратор. Чужая отвечает так же, как несуществующая —
+    иначе id можно было бы подбирать.
+    """
+    try:
+        connection_id = uuid.UUID(session_id)
+    except ValueError:
+        connection_id = None
+    if connection_id is not None:
+        await _connection(db, current, connection_id, edit=True)
+        return
+    if await has_full_access(db, current):
+        return
+    state = get_session_manager().get(session_id)
+    if not state or getattr(state, "owner_id", None) != current.id:
+        raise HTTPException(status_code=404, detail="Сессия браузера не найдена")
+
+
 @router.get("/session/{session_id}/status")
 async def session_status(
     session_id: str,
+    db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> dict:
+    await _session_guard(db, current, session_id)
     state = get_session_manager().get(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Сессия браузера не найдена")
@@ -543,9 +585,13 @@ async def session_status(
 @router.post("/session/{session_id}/token")
 async def session_token(
     session_id: str,
+    db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> dict:
     """Извлекает EAAB-токен из живой браузерной сессии."""
+    await _session_guard(db, current, session_id)
+    # Извлечение ходит по страницам Facebook долго — соединение пула не держим.
+    await db.commit()
     manager = get_session_manager()
     try:
         result = await manager.extract_token(session_id)
@@ -592,6 +638,9 @@ async def session_attach(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Неверный ID подключения") from exc
     await _connection(db, current, connection_id, edit=True)
+    # Привязать можно только свою сессию: иначе к своему подключению
+    # цеплялся бы чужой вход в Facebook.
+    await _session_guard(db, current, session_id)
     manager = get_session_manager()
     try:
         return await manager.attach(session_id, payload.connection_id)
@@ -602,15 +651,30 @@ async def session_attach(
 @router.post("/session/{session_id}/close")
 async def session_close(
     session_id: str,
+    db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> dict:
+    await _session_guard(db, current, session_id)
     await get_session_manager().close(session_id)
     return {"session_id": session_id, "status": "closed"}
 
 
 @router.get("/sessions")
-async def sessions_list(current: User = Depends(require_permission("meta.manage"))) -> dict:
-    return {"sessions": get_session_manager().list_sessions()}
+async def sessions_list(
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.manage")),
+) -> dict:
+    manager = get_session_manager()
+    if await has_full_access(db, current):
+        return {"sessions": manager.list_sessions()}
+    # В строке сессии лежит адрес прокси с логином и паролем — чужие не отдаём.
+    return {
+        "sessions": [
+            state.to_dict()
+            for state in manager.sessions.values()
+            if getattr(state, "owner_id", None) == current.id
+        ]
+    }
 
 
 @router.post("/proxy/check")
@@ -697,7 +761,7 @@ async def list_runs(
             await db.execute(
                 select(SyncRun)
                 .where(SyncRun.connection_id == connection.id)
-                .order_by(SyncRun.started_at.desc())
+                .order_by(SyncRun.created_at.desc())
                 .limit(min(limit, 100))
                 .offset(offset)
             )
@@ -719,9 +783,7 @@ async def update_account(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.manage")),
 ) -> dict:
-    account = await db.get(MetaAdAccount, account_id)
-    if not account or account.workspace_id != current.workspace_id:
-        raise HTTPException(status_code=404, detail="Кабинет не найден")
+    account = await _account(db, current, account_id)
     changes = payload.model_dump(exclude_unset=True)
     if "owner_id" in changes:
         owner_id = changes["owner_id"]
@@ -729,6 +791,7 @@ async def update_account(
             owner = await db.get(User, owner_id)
             if not owner or owner.workspace_id != current.workspace_id:
                 raise HTTPException(status_code=422, detail="Такого пользователя нет")
+            await _require_person_in_scope(db, current, owner_id)
         account.owner_id = owner_id
     if "status" in changes and changes["status"] is not None:
         account.status = changes["status"]
@@ -1062,6 +1125,9 @@ async def spend_window(
     hour_from: int = 0,
     hour_to: int = 24,
     account_id: uuid.UUID | None = None,
+    # Отметить можно и кабинеты целиком: тогда в окно идут все их кампании,
+    # у которых в эти дни был расход, — перечислять их руками незачем.
+    account_ids: list[uuid.UUID] | None = Query(default=None),
     date_from: date | None = Query(default=None, alias="from"),
     date_to: date | None = Query(default=None, alias="to"),
     campaign_ids: list[str] | None = Query(default=None),
@@ -1099,6 +1165,11 @@ async def spend_window(
         account.id: account
         for account in await _visible_accounts(db, current, account_id, None)
     }
+    if account_ids:
+        wanted_accounts = set(account_ids)
+        accounts = {
+            key: value for key, value in accounts.items() if key in wanted_accounts
+        }
     if not accounts:
         return {
             "day": start_day.isoformat(),
@@ -1183,6 +1254,26 @@ async def spend_window(
                 if day_spend
                 else []
             )
+            # Часы кабинета пересобираются в московские: окно человек задаёт по
+            # Москве, а Meta считает по зоне кабинета. Соседние сутки нужны для
+            # краёв — без них час 00:00 по Москве взялся бы не оттуда.
+            offset = meta_spend.account_offset(
+                accounts[entity.account_id].timezone_name, part_day
+            )
+            if hours and offset:
+                neighbours = {}
+                for shift in (-1, 1):
+                    side = part_day + timedelta(days=shift)
+                    neighbours[shift] = (
+                        await _campaign_hours(
+                            db, current, accounts, entity, side, refresh
+                        )
+                        if day_spend_map.get((campaign_id, side))
+                        else []
+                    )
+                hours = meta_spend.shift_hours(
+                    neighbours[-1], hours, neighbours[1], offset
+                )
             amount_total += meta_spend.window_spend(hours, part_from, part_to)
         total += amount_total
         account = accounts[entity.account_id]
@@ -1232,6 +1323,11 @@ async def spend_commits(
     if not start_day:
         raise HTTPException(status_code=422, detail="Укажите день или границы периода")
     commits = await meta_spend.commits_for_range(db, current.workspace_id, start_day, end_day)
+    scope = await _people_scope(db, current)
+    if scope is not None:
+        # Фиксация пишет расход в Медиаборд баера — видна она тем же, кому
+        # виден он.
+        commits = [commit for commit in commits if commit.buyer_id in scope]
     if not commits:
         return {"items": []}
     offers = dict(
@@ -1306,6 +1402,7 @@ async def commit_spend(
     расход на чужой день. Отнести на другого человека может тот, кто и так ведёт
     чужие кабинеты (`meta.manage`).
     """
+    await finance_spend.lock_workspace(db, current.workspace_id)
     if payload.buyer_id != current.id and not has_permission(current, "meta.manage"):
         raise HTTPException(status_code=403, detail="Расход фиксируется на себя")
     parts = meta_spend.split_into_days(
@@ -1443,6 +1540,10 @@ async def commit_spend(
         total += await _apply_provider_spend(
             db, records[part_day], provider, added_by_day[part_day]
         )
+    for year, month in sorted({(day.year, day.month) for day in records}):
+        await finance_spend.pull_spend_to_books(
+            db, current.workspace_id, payload.buyer_id, year, month
+        )
     added = sum(added_by_day.values(), Decimal("0"))
     await audit(
         db,
@@ -1476,13 +1577,20 @@ async def delete_commit(
     Без этого ошибочную фиксацию нельзя было бы отменить — только вычитать
     руками из чужой записи Медиаборда.
     """
+    await finance_spend.lock_workspace(db, current.workspace_id)
     commit = await db.get(MetaSpendCommit, commit_id)
     if not commit or commit.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Привязка не найдена")
+    scope = await _people_scope(db, current)
+    if scope is not None and commit.buyer_id not in scope:
         raise HTTPException(status_code=404, detail="Привязка не найдена")
     record = await db.get(MediaRecord, commit.media_record_id)
     provider = await db.get(SpendProvider, commit.provider_id)
     if record and provider:
         await _apply_provider_spend(db, record, provider, -commit.base_amount)
+        await finance_spend.refresh_for_record(
+            db, record.workspace_id, record.buyer_id, record.record_date
+        )
     await db.delete(commit)
     await audit(
         db, current, "meta.spend_commit_removed",
@@ -1583,6 +1691,9 @@ async def reference(
         "bid_strategies": BID_STRATEGIES,
         "call_to_actions": CALL_TO_ACTIONS,
         "publisher_platforms": PUBLISHER_PLATFORMS,
+        # Места размещения внутри платформ: форма связки показывает их
+        # группами, когда автоматические плейсменты выключены.
+        "placement_groups": placement_catalog(),
         "custom_event_types": CUSTOM_EVENT_TYPES,
         "metrics": METRIC_LABELS,
         "rule_actions": RULE_ACTIONS,
@@ -1591,6 +1702,9 @@ async def reference(
         "rule_windows": RULE_WINDOWS,
         "rule_operators": OPERATORS,
         "rule_frequencies": {str(key): value for key, value in FREQUENCIES.items()},
+        # Как часто сервер сам прогоняет правила — подпись под «Частотой».
+        "rules_step_minutes": meta_rules_step_minutes(),
+        "rules_enabled": settings.meta_rules_enabled,
         "comment_statuses": meta_comments.COMMENT_STATUSES,
         "comment_actions": {
             key: value
@@ -1789,17 +1903,42 @@ async def _account_pages(
 # --- Шаблоны (ТЗ 3.5) ---------------------------------------------------------
 
 
+async def _template_name_free(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    owner_id: uuid.UUID | None,
+    name: str,
+    exclude_id: uuid.UUID | None = None,
+) -> None:
+    """Название связки уникально у одного владельца — чужие названия не мешают."""
+    filters = [
+        MetaTemplate.workspace_id == workspace_id,
+        MetaTemplate.name == name,
+        MetaTemplate.created_by_id.is_(None)
+        if owner_id is None
+        else MetaTemplate.created_by_id == owner_id,
+    ]
+    if exclude_id is not None:
+        filters.append(MetaTemplate.id != exclude_id)
+    if await db.scalar(select(MetaTemplate.id).where(*filters).limit(1)):
+        raise HTTPException(status_code=422, detail="Связка с таким названием уже есть")
+
+
 @router.get("/templates", response_model=Page)
 async def list_templates(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> Page:
+    filters = [MetaTemplate.workspace_id == current.workspace_id]
+    scope = await _people_scope(db, current)
+    if scope is not None:
+        # Связка личная: чужие видит только тот, кому роль открывает данные
+        # её автора, — тимлид своих баеров, администратор всех.
+        filters.append(MetaTemplate.created_by_id.in_(scope))
     rows = list(
         (
             await db.execute(
-                select(MetaTemplate)
-                .where(MetaTemplate.workspace_id == current.workspace_id)
-                .order_by(MetaTemplate.name)
+                select(MetaTemplate).where(*filters).order_by(MetaTemplate.name)
             )
         ).scalars()
     )
@@ -1815,14 +1954,7 @@ async def create_template(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
-    duplicate = await db.scalar(
-        select(MetaTemplate).where(
-            MetaTemplate.workspace_id == current.workspace_id,
-            MetaTemplate.name == payload.name,
-        )
-    )
-    if duplicate:
-        raise HTTPException(status_code=422, detail="Шаблон с таким названием уже есть")
+    await _template_name_free(db, current.workspace_id, current.id, payload.name)
     values = payload.model_dump()
     template = MetaTemplate(
         workspace_id=current.workspace_id,
@@ -1848,10 +1980,13 @@ async def update_template(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
-    template = await db.get(MetaTemplate, template_id)
-    if not template or template.workspace_id != current.workspace_id:
-        raise HTTPException(status_code=404, detail="Шаблон не найден")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    template = await _visible_template(db, current, template_id)
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("name") and changes["name"] != template.name:
+        await _template_name_free(
+            db, current.workspace_id, template.created_by_id, changes["name"], template.id
+        )
+    for field, value in changes.items():
         if field == "settings" and value is None:
             continue
         setattr(template, field, value)
@@ -1872,9 +2007,7 @@ async def delete_template(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
-    template = await db.get(MetaTemplate, template_id)
-    if not template or template.workspace_id != current.workspace_id:
-        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    template = await _visible_template(db, current, template_id)
     name = template.name
     # У заливов template_id обнулится (SET NULL) — уже опубликованные кампании
     # это не затрагивает, шаблон нужен только в момент публикации.
@@ -2014,7 +2147,11 @@ async def delete_creative(
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
     creative = await db.get(MetaCreative, creative_id)
-    if not creative or creative.workspace_id != current.workspace_id:
+    if (
+        not creative
+        or creative.workspace_id != current.workspace_id
+        or not await _visible_accounts(db, current, creative.account_id, None)
+    ):
         raise HTTPException(status_code=404, detail="Креатив не найден")
     used = await db.scalar(
         select(func.count())
@@ -2084,7 +2221,13 @@ async def create_launch(
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
     account = await _account(db, current, payload.account_id)
+    await _check_launch_refs(
+        db, current, template_id=payload.template_id, owner_id=payload.owner_id,
+        rule_ids=payload.rule_ids,
+    )
     changes = payload.model_dump(exclude={"creative_ids"})
+    # Колонка JSON: UUID в ней не сериализуется, храним строками.
+    changes["rule_ids"] = [str(value) for value in payload.rule_ids]
     launch = MetaLaunch(
         workspace_id=current.workspace_id,
         owner_id=changes.pop("owner_id", None) or current.id,
@@ -2143,6 +2286,10 @@ async def create_launch_batch(
     accounts = {}
     for account_id in dict.fromkeys(payload.account_ids):
         accounts[account_id] = await _account(db, current, account_id)
+    await _check_launch_refs(
+        db, current, template_id=payload.template_id, owner_id=payload.owner_id,
+        rule_ids=payload.rule_ids,
+    )
     shared = payload.model_dump(
         exclude={
             "account_ids",
@@ -2154,6 +2301,7 @@ async def create_launch_batch(
         }
     )
     owner_id = shared.pop("owner_id", None) or current.id
+    shared["rule_ids"] = [str(value) for value in payload.rule_ids]
     base_at = shared.pop("publish_at", None)
     now = datetime.now(UTC)
     if base_at is not None and base_at.tzinfo is None:
@@ -2302,6 +2450,11 @@ async def list_operations(
             "status": operation.status,
             "target_external_id": operation.target_external_id,
             "error": operation.error,
+            "diagnostics": {
+                key: (operation.response or {}).get("error", {}).get(key)
+                for key in ("code", "error_subcode", "fbtrace_id", "error_user_title")
+            } if operation.status == "failed" else None,
+            "connection_name": (operation.response or {}).get("context", {}).get("connection_name"),
             "created_at": operation.created_at.isoformat() if operation.created_at else None,
             "created_by": authors.get(operation.created_by_id),
             "launch_status": launch.status.value,
@@ -2322,6 +2475,14 @@ async def update_launch(
     launch = await _launch(db, current, launch_id)
     changes = payload.model_dump(exclude_unset=True)
     creative_ids = changes.pop("creative_ids", None)
+    # Перенос в другой кабинет — это залив в него: кабинет должен быть виден
+    # так же, как при создании, иначе по id уходили бы в чужой.
+    if changes.get("account_id") and changes["account_id"] != launch.account_id:
+        await _account(db, current, changes["account_id"])
+    await _check_launch_refs(
+        db, current, template_id=changes.get("template_id"),
+        owner_id=changes.get("owner_id"),
+    )
     if launch.campaign_external_id:
         # После публикации менять параметры таргета бессмысленно: в Meta уже
         # создан adset, и наши поля с ним больше не связаны.
@@ -2526,18 +2687,68 @@ async def launch_operations(
 # --- Автоправила (ТЗ 3.8) -----------------------------------------------------
 
 
+async def _rule_scope(
+    db: AsyncSession, current: User
+) -> tuple[set[uuid.UUID], set[uuid.UUID]] | None:
+    """Чьи автоправила и срабатывания человеку видны. `None` — все.
+
+    Область та же, что у данных роли: «Все данные» и полный доступ видят всё,
+    остальные — правила, которые завели они сами или доступные им люди, и
+    правила на доступные им кабинеты. Иначе баер видел в «Срабатываниях»
+    остановки чужих кампаний.
+    """
+    scope = getattr(current.role, "data_scope", None) or "team"
+    if scope == "all" or await has_full_access(db, current):
+        return None
+    users = await accessible_user_ids(db, current)
+    accounts = {account.id for account in await _visible_accounts(db, current, None, None)}
+    return users, accounts
+
+
+def _rule_clause(scope: tuple[set[uuid.UUID], set[uuid.UUID]]):
+    users, accounts = scope
+    return or_(MetaRule.created_by_id.in_(users), MetaRule.account_id.in_(accounts))
+
+
+def _event_clause(scope: tuple[set[uuid.UUID], set[uuid.UUID]]):
+    users, accounts = scope
+    # Срабатывание по кабинету видно тому, кому виден кабинет; без кабинета —
+    # тому, кому видно само правило.
+    visible_rules = select(MetaRule.id).where(_rule_clause(scope))
+    return or_(
+        MetaRuleEvent.account_id.in_(accounts),
+        and_(
+            MetaRuleEvent.account_id.is_(None),
+            MetaRuleEvent.rule_id.in_(visible_rules),
+        ),
+    )
+
+
+async def _visible_rule(db: AsyncSession, current: User, rule_id: uuid.UUID) -> MetaRule:
+    rule = await db.get(MetaRule, rule_id)
+    if not rule or rule.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Правило не найдено")
+    scope = await _rule_scope(db, current)
+    if scope is not None:
+        users, accounts = scope
+        if rule.created_by_id not in users and rule.account_id not in accounts:
+            # Чужое правило отвечает так же, как несуществующее.
+            raise HTTPException(status_code=404, detail="Правило не найдено")
+    return rule
+
+
 @router.get("/rules", response_model=Page)
 async def list_rules(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> Page:
+    filters = [MetaRule.workspace_id == current.workspace_id]
+    scope = await _rule_scope(db, current)
+    if scope is not None:
+        filters.append(_rule_clause(scope))
     rows = list(
         (
-            await db.execute(
-                select(MetaRule)
-                .where(MetaRule.workspace_id == current.workspace_id)
-                .order_by(MetaRule.name)
-            )
+            await db.execute(select(MetaRule).where(*filters).order_by(MetaRule.name))
         ).scalars()
     )
     accounts = {
@@ -2591,9 +2802,7 @@ async def update_rule(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
-    rule = await db.get(MetaRule, rule_id)
-    if not rule or rule.workspace_id != current.workspace_id:
-        raise HTTPException(status_code=404, detail="Правило не найдено")
+    rule = await _visible_rule(db, current, rule_id)
     changes = payload.model_dump(exclude_unset=True)
     if "conditions" in changes:
         changes["conditions"] = _rule_conditions(changes["conditions"])
@@ -2633,9 +2842,7 @@ async def delete_rule(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
-    rule = await db.get(MetaRule, rule_id)
-    if not rule or rule.workspace_id != current.workspace_id:
-        raise HTTPException(status_code=404, detail="Правило не найдено")
+    rule = await _visible_rule(db, current, rule_id)
     name = rule.name
     await db.delete(rule)
     await audit(
@@ -2647,6 +2854,205 @@ async def delete_rule(
 
 
 # --- Группы правил -----------------------------------------------------------
+
+
+ENTITY_LEVELS = {"campaigns": "campaign", "adsets": "adset", "ads": "ad"}
+# Во что превращается статус объекта у нас после действия — до следующей синхронизации.
+ENTITY_STATUS_AFTER = {
+    "start": "ACTIVE",
+    "pause": "PAUSED",
+    "archive": "ARCHIVED",
+    "unarchive": "PAUSED",
+    "delete": "DELETED",
+}
+ENTITY_ACTION_TITLES = {
+    "start": "Старт", "pause": "Пауза", "archive": "Архивировать",
+    "unarchive": "Разархивировать", "delete": "Удалить в FB", "duplicate": "Дублировать",
+    "rename": "Переименовать в FB", "budget": "Бюджет и ставка",
+}
+
+
+async def _entities_for(
+    db: AsyncSession, current: User, level: str, external_ids: list[str]
+) -> tuple[dict[str, MetaEntity], dict[uuid.UUID, MetaAdAccount]]:
+    """Объекты структуры из доступных кабинетов — по id в Meta."""
+    accounts = {
+        account.id: account for account in await _visible_accounts(db, current, None, None)
+    }
+    if not accounts or not external_ids:
+        return {}, accounts
+    rows = (
+        await db.execute(
+            select(MetaEntity).where(
+                MetaEntity.workspace_id == current.workspace_id,
+                MetaEntity.level == ENTITY_LEVELS[level],
+                MetaEntity.external_id.in_(external_ids),
+                MetaEntity.account_id.in_(list(accounts)),
+            )
+        )
+    ).scalars()
+    return {row.external_id: row for row in rows}, accounts
+
+
+@router.get("/entities/details")
+async def entity_details(
+    level: Literal["campaigns", "adsets", "ads"],
+    ids: list[str] = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    """Бюджет и ставка отмеченных объектов — для окна «Бюджет и ставка».
+
+    Значения берём у Meta: стратегию ставки синхронизация раньше не хранила, а
+    бюджет могли поменять в Ads Manager после последней синхронизации. Если
+    Meta не ответила — показываем то, что есть у нас.
+    """
+    entities, accounts = await _entities_for(db, current, level, ids[:100])
+    live: dict[str, dict] = {}
+    by_connection: dict[uuid.UUID, list[MetaEntity]] = {}
+    for entity in entities.values():
+        by_connection.setdefault(entity.connection_id, []).append(entity)
+    for connection_id, rows in by_connection.items():
+        connection = await db.get(IntegrationConnection, connection_id)
+        try:
+            client = await client_for(connection, db)
+            for row in await client.entities_by_ids(
+                ENTITY_LEVELS[level], [item.external_id for item in rows]
+            ):
+                live[str(row.get("id"))] = row
+        except Exception:  # noqa: BLE001 — окно откроется с сохранёнными значениями
+            continue
+    items = []
+    for external_id in ids[:100]:
+        entity = entities.get(external_id)
+        if not entity:
+            continue
+        account = accounts.get(entity.account_id)
+        fresh = live.get(external_id) or {}
+        stored = entity.external_payload or {}
+        daily = (
+            money_from_minor(fresh["daily_budget"])
+            if fresh.get("daily_budget") else entity.daily_budget
+        )
+        bid_amount = fresh.get("bid_amount", stored.get("bid_amount"))
+        items.append({
+            "id": entity.external_id,
+            "name": entity.name,
+            "account": account.name if account else None,
+            "currency": account.currency if account else "USD",
+            "status": fresh.get("effective_status") or entity.effective_status,
+            "daily_budget": float(daily) if daily else None,
+            "has_lifetime_budget": bool(fresh.get("lifetime_budget") or entity.lifetime_budget),
+            "bid_strategy": fresh.get("bid_strategy") or stored.get("bid_strategy"),
+            "bid_amount": float(money_from_minor(bid_amount)) if bid_amount else None,
+            "live": external_id in live,
+        })
+    return {"items": items, "bid_strategies": BID_STRATEGIES}
+
+
+@router.post("/entities/actions")
+async def entity_actions(
+    payload: MetaEntityActionIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    """Старт, пауза, бюджет, дубль и прочее — над отмеченными объектами структуры.
+
+    Каждый объект обрабатывается отдельно, и ответ говорит, что с каким
+    получилось: один упавший кабинет не должен отменять остальные. Статус,
+    название и бюджет у нас меняются сразу — до синхронизации таблица иначе
+    показывала бы старое.
+    """
+    level = ENTITY_LEVELS[payload.level]
+    if payload.action == "budget" and level == "ad":
+        raise HTTPException(status_code=422, detail="У объявления нет бюджета")
+    wanted = [item.id for item in payload.items]
+    entities, accounts = await _entities_for(db, current, payload.level, wanted)
+    user_id = current.id
+    clients: dict[uuid.UUID, MetaClient | Exception] = {}
+    results = []
+    for item in payload.items:
+        entity = entities.get(item.id)
+        if not entity:
+            results.append(
+                {"id": item.id, "ok": False, "error": "Объект не найден или недоступен"}
+            )
+            continue
+        if entity.connection_id not in clients:
+            connection = await db.get(IntegrationConnection, entity.connection_id)
+            try:
+                clients[entity.connection_id] = await client_for(connection, db)
+            except Exception as exc:  # noqa: BLE001 — ошибка уходит в строку объекта
+                clients[entity.connection_id] = exc
+        client = clients[entity.connection_id]
+        if isinstance(client, Exception):
+            results.append({
+                "id": item.id, "ok": False,
+                "error": "Нет доступа к Meta: " + " ".join(str(client).split())[:300],
+            })
+            continue
+        account = accounts.get(entity.account_id)
+        currency = account.currency if account else None
+        result = {"id": item.id, "ok": True, "error": None}
+        try:
+            if payload.action in ENTITY_STATUS_AFTER and payload.action != "delete":
+                await client.set_status(entity.external_id, ENTITY_STATUS_AFTER[payload.action])
+                entity.effective_status = ENTITY_STATUS_AFTER[payload.action]
+            elif payload.action == "delete":
+                await client.delete_object(entity.external_id)
+                entity.effective_status = "DELETED"
+            elif payload.action == "duplicate":
+                copied = await client.copy_object(entity.external_id, deep=level != "ad")
+                result["new_id"] = next(
+                    (str(value) for key, value in copied.items() if key.startswith("copied_")),
+                    None,
+                )
+            elif payload.action == "rename":
+                name = (item.name or "").strip()
+                if not name:
+                    raise ValueError("Укажите название")
+                await client.update_object(entity.external_id, {"name": name})
+                entity.name = name
+            elif payload.action == "budget":
+                if item.bid_strategy and item.bid_strategy not in BID_STRATEGIES:
+                    raise ValueError("Неизвестная стратегия ставок")
+                capped = item.bid_strategy in {"LOWEST_COST_WITH_BID_CAP", "COST_CAP"}
+                if capped and not item.bid_amount:
+                    raise ValueError("Для этой стратегии укажите размер ставки")
+                data = {}
+                if item.daily_budget is not None:
+                    data["daily_budget"] = money_to_minor(item.daily_budget, currency)
+                if item.bid_strategy:
+                    data["bid_strategy"] = item.bid_strategy
+                if item.bid_amount is not None:
+                    data["bid_amount"] = money_to_minor(item.bid_amount, currency)
+                if data:
+                    await client.update_object(entity.external_id, data)
+                    if item.daily_budget is not None:
+                        entity.daily_budget = item.daily_budget
+                    stored = dict(entity.external_payload or {})
+                    if item.bid_strategy:
+                        stored["bid_strategy"] = item.bid_strategy
+                    if item.bid_amount is not None:
+                        stored["bid_amount"] = data["bid_amount"]
+                    entity.external_payload = stored
+        except (MetaError, ValueError) as exc:
+            result = {"id": item.id, "ok": False, "error": " ".join(str(exc).split())[:500]}
+        except Exception as exc:  # noqa: BLE001 — сеть, прокси: ошибка уходит в строку
+            result = {"id": item.id, "ok": False, "error": " ".join(str(exc).split())[:500]}
+        results.append(result)
+    done = sum(1 for row in results if row["ok"])
+    await audit(
+        db,
+        await db.get(User, user_id),
+        "meta.entities_action",
+        f"{ENTITY_ACTION_TITLES[payload.action]}: {payload.level}, "
+        f"успешно {done} из {len(results)}",
+        request=request,
+    )
+    await db.commit()
+    return {"results": results, "done": done, "failed": len(results) - done}
 
 
 @router.get("/entities/campaigns")
@@ -2698,33 +3104,61 @@ def _group_row(group: MetaRuleGroup, rules: list[MetaRule]) -> dict:
     }
 
 
+async def _group_rules(
+    db: AsyncSession,
+    current: User,
+    scope: tuple[set[uuid.UUID], set[uuid.UUID]] | None,
+    *filters,
+) -> list[MetaRule]:
+    """Правила воркспейса, видимые человеку, — с дополнительными условиями."""
+    where = [MetaRule.workspace_id == current.workspace_id, *filters]
+    if scope is not None:
+        where.append(_rule_clause(scope))
+    return list((await db.execute(select(MetaRule).where(*where))).scalars())
+
+
+async def _visible_group(
+    db: AsyncSession,
+    current: User,
+    group_id: uuid.UUID,
+    scope: tuple[set[uuid.UUID], set[uuid.UUID]] | None,
+) -> MetaRuleGroup:
+    """Группа видна своему автору, его руководителям и тем, чьи правила в ней.
+
+    Состав группы при этом каждый видит только в пределах своих правил: чужие
+    автоправила из общей группы не показываются и не отвязываются.
+    """
+    group = await db.get(MetaRuleGroup, group_id)
+    if not group or group.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    if scope is not None and group.created_by_id not in scope[0]:
+        if not await _group_rules(db, current, scope, MetaRule.group_id == group.id):
+            raise HTTPException(status_code=404, detail="Группа не найдена")
+    return group
+
+
 @router.get("/rule-groups", response_model=Page)
 async def list_rule_groups(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.view")),
 ) -> Page:
-    groups = list(
-        (
-            await db.execute(
-                select(MetaRuleGroup)
-                .where(MetaRuleGroup.workspace_id == current.workspace_id)
-                .order_by(MetaRuleGroup.name)
-            )
-        ).scalars()
-    )
-    members = list(
-        (
-            await db.execute(
-                select(MetaRule).where(
-                    MetaRule.workspace_id == current.workspace_id,
-                    MetaRule.group_id.is_not(None),
-                )
-            )
-        ).scalars()
-    )
+    scope = await _rule_scope(db, current)
+    members = await _group_rules(db, current, scope, MetaRule.group_id.is_not(None))
     by_group: dict[uuid.UUID, list[MetaRule]] = {}
     for rule in members:
         by_group.setdefault(rule.group_id, []).append(rule)
+    filters = [MetaRuleGroup.workspace_id == current.workspace_id]
+    if scope is not None:
+        filters.append(
+            or_(MetaRuleGroup.created_by_id.in_(scope[0]), MetaRuleGroup.id.in_(set(by_group)))
+        )
+    groups = list(
+        (
+            await db.execute(
+                select(MetaRuleGroup).where(*filters).order_by(MetaRuleGroup.name)
+            )
+        ).scalars()
+    )
     items = [_group_row(group, by_group.get(group.id, [])) for group in groups]
     return Page(items=items, total=len(items), limit=len(items), offset=0)
 
@@ -2739,6 +3173,7 @@ async def create_rule_group(
     duplicate = await db.scalar(
         select(MetaRuleGroup).where(
             MetaRuleGroup.workspace_id == current.workspace_id,
+            MetaRuleGroup.created_by_id == current.id,
             MetaRuleGroup.name == payload.name,
         )
     )
@@ -2749,27 +3184,20 @@ async def create_rule_group(
     )
     db.add(group)
     await db.flush()
+    rules: list[MetaRule] = []
     if payload.rule_ids:
-        rules = list(
-            (
-                await db.execute(
-                    select(MetaRule).where(
-                        MetaRule.id.in_(payload.rule_ids),
-                        MetaRule.workspace_id == current.workspace_id,
-                    )
-                )
-            ).scalars()
-        )
+        scope = await _rule_scope(db, current)
+        rules = await _group_rules(db, current, scope, MetaRule.id.in_(payload.rule_ids))
         for rule in rules:
             rule.group_id = group.id
     await audit(
         db, current, "meta.rule_group_created",
-        f"Создана группа автоправил «{group.name}»: правил {len(payload.rule_ids)}",
+        f"Создана группа автоправил «{group.name}»: правил {len(rules)}",
         request=request, entity_id=str(group.id),
     )
     await db.commit()
     await db.refresh(group)
-    return _group_row(group, rules) if payload.rule_ids else _group_row(group, [])
+    return _group_row(group, rules)
 
 
 @router.patch("/rule-groups/{group_id}")
@@ -2779,47 +3207,22 @@ async def update_rule_group(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
-    group = await db.get(MetaRuleGroup, group_id)
-    if not group or group.workspace_id != current.workspace_id:
-        raise HTTPException(status_code=404, detail="Группа не найдена")
+    scope = await _rule_scope(db, current)
+    group = await _visible_group(db, current, group_id, scope)
     changes = payload.model_dump(exclude_unset=True)
     if "name" in changes and changes["name"]:
         group.name = changes["name"]
     if "rule_ids" in changes and changes["rule_ids"] is not None:
-        # Сначала снять текущие правила группы, потом назначить новые.
-        current_rules = list(
-            (
-                await db.execute(
-                    select(MetaRule).where(
-                        MetaRule.workspace_id == current.workspace_id,
-                        MetaRule.group_id == group.id,
-                    )
-                )
-            ).scalars()
-        )
-        for rule in current_rules:
+        # Сначала снять текущие правила группы, потом назначить новые. Снимаем
+        # только видимые: чужие правила общей группы остаются на месте.
+        for rule in await _group_rules(db, current, scope, MetaRule.group_id == group.id):
             rule.group_id = None
-        wanted = list(
-            (
-                await db.execute(
-                    select(MetaRule).where(
-                        MetaRule.id.in_(changes["rule_ids"]),
-                        MetaRule.workspace_id == current.workspace_id,
-                    )
-                )
-            ).scalars()
-        )
+        wanted = await _group_rules(db, current, scope, MetaRule.id.in_(changes["rule_ids"]))
         for rule in wanted:
             rule.group_id = group.id
     await db.commit()
     await db.refresh(group)
-    members = list(
-        (
-            await db.execute(
-                select(MetaRule).where(MetaRule.group_id == group.id)
-            )
-        ).scalars()
-    )
+    members = await _group_rules(db, current, scope, MetaRule.group_id == group.id)
     return _group_row(group, members)
 
 
@@ -2830,9 +3233,12 @@ async def delete_rule_group(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
-    group = await db.get(MetaRuleGroup, group_id)
-    if not group or group.workspace_id != current.workspace_id:
-        raise HTTPException(status_code=404, detail="Группа не найдена")
+    scope = await _rule_scope(db, current)
+    group = await _visible_group(db, current, group_id, scope)
+    if scope is not None and group.created_by_id not in scope[0]:
+        # В чужой группе лежат и чужие правила — удалить её целиком может
+        # только автор или тот, кому видны его данные.
+        raise HTTPException(status_code=403, detail="Удалить группу может только её автор")
     name = group.name
     # Правила из группы не удаляются — только отвязываются (SET NULL).
     await db.delete(group)
@@ -2856,9 +3262,7 @@ async def preview_rule(
     Ничего не выполняет и не пишет в журнал — до включения правила с действием
     это единственный способ увидеть его последствия заранее.
     """
-    rule = await db.get(MetaRule, rule_id)
-    if not rule or rule.workspace_id != current.workspace_id:
-        raise HTTPException(status_code=404, detail="Правило не найдено")
+    rule = await _visible_rule(db, current, rule_id)
     rows = await collect_candidates(db, rule)
     hits = [row for row in rows if matches(rule, row["metrics"])]
     wanted = [str(item.get("metric") or "") for item in (rule.conditions or [])]
@@ -2900,6 +3304,9 @@ async def list_rule_events(
     current: User = Depends(require_permission("meta.view")),
 ) -> Page:
     filters = [MetaRuleEvent.workspace_id == current.workspace_id]
+    scope = await _rule_scope(db, current)
+    if scope is not None:
+        filters.append(_event_clause(scope))
     if unread:
         filters.append(MetaRuleEvent.acknowledged_at.is_(None))
     rows = list(
@@ -2945,6 +3352,11 @@ async def acknowledge_rule_events(
         MetaRuleEvent.workspace_id == current.workspace_id,
         MetaRuleEvent.acknowledged_at.is_(None),
     ]
+    # «Прочитать все» отмечает только свои срабатывания, чужие остаются
+    # непрочитанными у тех, кому они видны.
+    scope = await _rule_scope(db, current)
+    if scope is not None:
+        filters.append(_event_clause(scope))
     if ids:
         filters.append(MetaRuleEvent.id.in_(ids))
     rows = list((await db.execute(select(MetaRuleEvent).where(*filters))).scalars())
@@ -3589,13 +4001,83 @@ def _job_row(job: MetaCommentJob) -> dict:
 async def _account(
     db: AsyncSession, current: User, account_id: uuid.UUID
 ) -> MetaAdAccount:
-    account = await db.get(MetaAdAccount, account_id)
-    if not account or account.workspace_id != current.workspace_id:
+    # Та же область, что у обзора: кабинет виден через своё подключение или
+    # через назначенного ответственного. Иначе кабинет из таблицы «Структура»
+    # не открывался бы в заливе, а чужой — наоборот, открывался по id.
+    accounts = await _visible_accounts(db, current, account_id, None)
+    if not accounts:
         raise HTTPException(status_code=404, detail="Кабинет не найден")
-    if not await has_full_access(db, current):
-        if account.owner_id not in await accessible_user_ids(db, current):
-            raise HTTPException(status_code=404, detail="Кабинет не найден")
-    return account
+    return accounts[0]
+
+
+async def _people_scope(db: AsyncSession, current: User) -> set[uuid.UUID] | None:
+    """Чьи личные заготовки Meta видны человеку. `None` — всех.
+
+    Связки, группы правил и фиксации расхода принадлежат тому, кто их завёл.
+    Видят их он сам и те, кому роль открывает его данные; полный доступ — всё.
+    """
+    if await has_full_access(db, current):
+        return None
+    return await accessible_user_ids(db, current)
+
+
+async def _require_person_in_scope(
+    db: AsyncSession, current: User, user_id: uuid.UUID | None
+) -> None:
+    if user_id is None:
+        return
+    scope = await _people_scope(db, current)
+    if scope is not None and user_id not in scope:
+        raise HTTPException(
+            status_code=422,
+            detail="Ответственным можно назначить только себя или людей своей команды",
+        )
+
+
+async def _visible_template(
+    db: AsyncSession, current: User, template_id: uuid.UUID | None
+) -> MetaTemplate | None:
+    if template_id is None:
+        return None
+    template = await db.get(MetaTemplate, template_id)
+    if not template or template.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Связка не найдена")
+    scope = await _people_scope(db, current)
+    if scope is not None and template.created_by_id not in scope:
+        # Чужая связка отвечает так же, как несуществующая.
+        raise HTTPException(status_code=404, detail="Связка не найдена")
+    return template
+
+
+async def _check_launch_refs(
+    db: AsyncSession,
+    current: User,
+    *,
+    template_id: uuid.UUID | None = None,
+    owner_id: uuid.UUID | None = None,
+    rule_ids: list | None = None,
+) -> None:
+    """Всё, на что ссылается залив, должно быть видно его автору.
+
+    Без этого по id можно было залить чужую связку, записать залив на человека
+    из другой команды или забрать себе чужие автоправила: привязка правила к
+    заливу переписывает его `launch_id`.
+    """
+    await _visible_template(db, current, template_id)
+    if owner_id is not None:
+        owner = await db.get(User, owner_id)
+        if not owner or owner.workspace_id != current.workspace_id:
+            raise HTTPException(status_code=422, detail="Такого пользователя нет")
+        await _require_person_in_scope(db, current, owner_id)
+    wanted = {uuid.UUID(str(value)) for value in (rule_ids or []) if str(value)}
+    if wanted:
+        filters = [MetaRule.workspace_id == current.workspace_id, MetaRule.id.in_(wanted)]
+        scope = await _rule_scope(db, current)
+        if scope is not None:
+            filters.append(_rule_clause(scope))
+        found = await db.scalar(select(func.count()).select_from(MetaRule).where(*filters))
+        if found != len(wanted):
+            raise HTTPException(status_code=422, detail="Одно из автоправил не найдено")
 
 
 async def _launch(db: AsyncSession, current: User, launch_id: uuid.UUID) -> MetaLaunch:
@@ -3978,7 +4460,7 @@ async def _with_latest_runs(
             await db.execute(
                 select(SyncRun)
                 .where(SyncRun.connection_id.in_([item.id for item in connections]))
-                .order_by(SyncRun.started_at.desc())
+                .order_by(SyncRun.created_at.desc())
             )
         ).scalars()
     )
@@ -4287,7 +4769,7 @@ async def _campaign_rows(
 
 
 def _period(date_from: date | None, date_to: date | None) -> tuple[date, date]:
-    today = datetime.now(UTC).date()
+    today = business_today()
     end = date_to or today
     start = date_from or (end - timedelta(days=6))
     if start > end:

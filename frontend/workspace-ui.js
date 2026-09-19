@@ -135,8 +135,7 @@
   }
 
   function today() {
-    var now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return window.CelestialTime.today();
   }
 
   function formatDay(value) {
@@ -150,7 +149,7 @@
     if (!value) return "—";
     var moment = new Date(value);
     if (isNaN(moment.getTime())) return "—";
-    return moment.toLocaleString("ru-RU", {
+    return window.CelestialTime.format(moment, {
       day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
     });
   }
@@ -209,7 +208,16 @@
   function showModal(id) {
     var modal = byId(id);
     if (!modal) return;
-    state.focusStack.push({ modal: modal, focus: document.activeElement });
+    /* Одно окно — одна запись в стеке. «Настроить доступ» открывается кнопкой
+       внутри уже открытой формы раздела, и повторный показ клал сюда второй
+       слепок того же окна. Закрытие снимало один, стек оставался непустым, и
+       прокрутка страницы так и не возвращалась. */
+    var known = state.focusStack.some(function (entry) {
+      return entry.modal === modal;
+    });
+    if (!known) {
+      state.focusStack.push({ modal: modal, focus: document.activeElement });
+    }
     modal.style.display = "flex";
     modal.setAttribute("aria-hidden", "false");
     document.body.style.overflow = "hidden";
@@ -298,6 +306,11 @@
       return '<div class="' + fieldClass(field) + '" style="' + span + '"' + whenAttr(field) + '>' +
         labelHtml(field) + filesControlHtml(field) +
         hintHtml(field) + "</div>";
+    } else if (field.type === "static") {
+      // Значение, которое ставит сама система (даты задачи): видно, но не правится.
+      return '<div class="' + fieldClass(field) + '" style="' + span + '">' + labelHtml(field) +
+        '<div class="ws-control ws-static' + (field.value ? "" : " ws-static--empty") + '">' +
+        escapeHtml(field.value || field.empty || "—") + "</div>" + hintHtml(field) + "</div>";
     } else if (field.type === "fieldpicker") {
       // Список полей выше обычного чек-листа: перетаскивать в окошко на три
       // строки неудобно, а полей в брифе обычно семь-десять.
@@ -356,6 +369,10 @@
         'white-space:nowrap">' + escapeHtml(meta.file_name) + "</a>" +
         '<span style="font-size:11px;color:#9B9292;font-weight:600">' +
         fileSize(meta.byte_size) + "</span>" +
+        (meta.url
+          ? '<a class="ws-action" href="' + escapeHtml(meta.url) + '" download="' +
+            escapeHtml(meta.file_name) + '" title="Скачать файл">Скачать</a>'
+          : "") +
         '<button class="ws-action ws-action--danger" type="button" data-file-remove="' +
         escapeHtml(id) + '">Убрать</button></div>';
     }).join("");
@@ -515,7 +532,9 @@
     return '<div id="' + id + '" data-inline-field style="display:none;' +
       'border:1px solid #EBE6E6;' +
       'border-radius:12px;padding:14px 15px;margin-top:10px;background:#FCFBFB">' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+      // «Обязательное» — третьей колонкой справа от названия и типа: отдельной
+      // строкой под ними оно выглядело настройкой всей формы, а не поля.
+      '<div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end">' +
       '<label class="ws-field"><span>Название поля</span>' +
       '<input class="ws-control" data-field="new_field_name" style="padding:0 13px" value="' +
       escapeHtml(field ? field.name : "") + '"></label>' +
@@ -541,9 +560,9 @@
         return '<option value="' + code + '"' + (code === currency ? " selected" : "") +
           ">" + code + "</option>";
       }).join("") + "</select></label>" +
-      '<label class="ws-pick" style="grid-column:1/-1">' +
+      '<label class="ws-pick" style="grid-column:3;grid-row:1;align-self:end;white-space:nowrap;height:42px;box-sizing:border-box">' +
       '<input type="checkbox" data-field="new_field_required"' +
-      (field && field.is_required ? " checked" : "") + "><span>Обязательное поле</span></label>" +
+      (field && field.is_required ? " checked" : "") + "><span>Обязательное</span></label>" +
       "</div>" +
       '<div style="display:flex;gap:9px;margin-top:12px">' +
       '<button class="ws-btn ws-btn--primary" type="button" data-inline-save ' +
@@ -736,7 +755,7 @@
    * перестановки двадцати карточек незачем. */
   var SORTS = [
     { code: "position", label: "Мой порядок" },
-    { code: "due_date", label: "По сроку" },
+    { code: "due_date", label: "По дате выполнения" },
     { code: "priority", label: "По приоритету" },
     { code: "created", label: "Сначала новые" },
     { code: "created_asc", label: "Сначала старые" },
@@ -1161,8 +1180,9 @@
     // колонке. Порядок внутри неё считает сортировка, поэтому туда карточка
     // просто добавляется в конец — но переносу это не мешает.
     var canDrag = canEdit;
-    var overdue = task.due_date && !task.is_done &&
-      new Date(task.due_date + "T00:00:00") < today();
+    // Дата выполнения ставится сама при переходе в «Готово», поэтому
+    // просроченной задача быть не может — чип показывает, когда её закрыли.
+    var overdue = false;
     return '<div class="ws-card' + (overdue ? " ws-card--overdue" : "") +
       (canEdit ? "" : " ws-card--readonly") + '" draggable="' + (canDrag ? "true" : "false") +
       '" role="button" tabindex="0" aria-label="Открыть задачу ' + escapeHtml(task.title) +
@@ -1180,18 +1200,21 @@
       // Значения полей брифа на карточку не выносим: доска нужна, чтобы окинуть
       // взглядом колонку, а не прочитать каждую задачу целиком.
       '<div style="display:flex;align-items:center;gap:7px;margin-top:11px;flex-wrap:wrap">' +
-      '<span class="ws-chip" style="color:' + priority.color + ";background:" +
-      priority.background + '">' + escapeHtml(priority.label) + "</span>" +
-      (task.due_date
-        ? '<span class="ws-chip" style="color:' + (overdue ? "#C41616" : "#6A6161") +
-          ";background:" + (overdue ? "#FCF1F1" : "#F2EDED") + '">' +
-          (overdue ? "просрочено " : "") + escapeHtml(formatDay(task.due_date)) + "</span>"
+      (state.canSeeDetails
+        ? '<span class="ws-chip" style="color:' + priority.color + ";background:" +
+          priority.background + '">' + escapeHtml(priority.label) + "</span>"
+        : "") +
+      (task.due_date && task.is_done
+        ? '<span class="ws-chip" style="color:#0E7350;background:#E4F7F0">готово ' +
+          escapeHtml(formatDay(task.due_date)) + "</span>"
         : "") +
       '<span style="flex:1"></span>' +
       (!canEdit ? '<span class="ws-card__lock" title="Только просмотр">Только просмотр</span>' : "") +
+      // Исполнителя подписываем логином: по одной букве аватарки не понять, кто это.
       task.assignees.map(function (person) {
-        return '<span class="ws-avatar" title="' + escapeHtml(person.name) + '">' +
-          escapeHtml(initials(person.name)) + "</span>";
+        var login = person.login || person.name;
+        return '<span class="ws-login" title="' + escapeHtml(person.name) + '">@' +
+          escapeHtml(login) + "</span>";
       }).join("") +
       "</div></div>";
   }
@@ -1301,8 +1324,8 @@
     var canDelete = task.can_delete !== false;
     var html = menuItem("open", task.id, "Открыть");
     if (!canEdit) return html;
-    html += menuLabel("Приоритет");
-    html += Object.keys(PRIORITIES).map(function (key) {
+    if (state.canSeeDetails) html += menuLabel("Приоритет");
+    html += (state.canSeeDetails ? Object.keys(PRIORITIES) : []).map(function (key) {
       var meta = PRIORITIES[key];
       return menuItem("priority", key,
         '<span class="ws-dot" style="background:' + meta.color + '"></span>' +
@@ -1648,22 +1671,31 @@
         options: statuses.map(function (row) {
           return { value: row.id, label: row.name, selected: row.id === task.status_id };
         }) },
+    ].concat(state.canSeeDetails ? detailFields(task) : []));
+  }
+
+  /* Приоритет, даты и исполнители — по праву роли «Задачи · приоритет, сроки,
+     исполнители». Даты ставятся сами: начало — день создания, выполнение —
+     день перехода в «Готово». */
+  function detailFields(task) {
+    return [
       { name: "priority", label: "Приоритет", type: "select", half: true,
         options: Object.keys(PRIORITIES).map(function (key) {
           return { value: key, label: PRIORITIES[key].label,
             selected: key === (task.priority || "medium") };
         }) },
-      { name: "start_date", label: "Дата начала", type: "date", half: true,
-        value: task.start_date || "" },
-      { name: "due_date", label: "Срок выполнения", type: "date", half: true,
-        value: task.due_date || "" },
+      { type: "static", label: "Дата начала", half: true,
+        value: task.start_date ? fullDay(task.start_date) : (task.id ? "" : "Сегодня") },
+      { type: "static", label: "Дата выполнения", half: true,
+        value: task.due_date ? fullDay(task.due_date) : "",
+        empty: "Ещё не готово" },
       { name: "assignee_ids", label: "Исполнители", type: "checklist",
         empty: "В команде пока некому поручить",
         options: state.people.map(function (person) {
           return { value: person.id, label: person.name,
             selected: (task.assignee_ids || []).indexOf(person.id) >= 0 };
         }) }
-    ]);
+    ];
   }
 
   // Блок пользовательских полей карточки — отдельным контейнером, потому что
@@ -1814,9 +1846,11 @@
     var canDelete = editing && task.can_delete !== false;
 
     byId("wsTaskTitle").textContent = editing ? "Задача" : "Новая задача";
-    byId("wsTaskSubtitle").textContent = editing
-      ? "Создана " + formatMoment(task.created_at)
-      : "";
+    // У существующей задачи «Создана» — первая строка журнала статусов, в том
+    // же виде, что и переходы; до его загрузки показываем её одну.
+    byId("wsTaskSubtitle").textContent = "";
+    byId("wsTaskSubtitle").hidden = editing;
+    loadTaskHistory(editing ? taskId : null);
     var body = byId("wsTaskBody");
     // У существующей задачи набор полей приходит с сервера, у новой — считается
     // по выбранному шаблону здесь же и пересобирается при его смене.
@@ -1844,6 +1878,9 @@
     byId("wsTaskModal").setAttribute("data-can-edit", canEdit ? "true" : "false");
     byId("wsTaskModal").setAttribute(
       "data-template-id", editing ? (task.template_id || "") : (defaultTemplateId() || "")
+    );
+    byId("wsTaskModal").setAttribute(
+      "data-field-ids", (task.local_field_ids || []).join(",")
     );
     showModal("wsTaskModal");
     var first = body.querySelector("[data-field]");
@@ -1888,9 +1925,17 @@
 
   // Шаблон по умолчанию подставляется сам: команда работает по одному брифу,
   // и выбирать его вручную в самом частом действии раздела — лишний шаг.
+  /* У каждого раздела свой шаблон по умолчанию: дизайнеру нужен бриф на крео,
+     баеру — совсем другой. Без открытого раздела (все разделы сразу) остаётся
+     общий шаблон воркспейса. */
   function defaultTemplateId() {
-    var found = state.templates.filter(function (row) { return row.is_default; })[0];
-    return found ? found.id : null;
+    var section = currentSection();
+    var wanted = section
+      ? section.default_template_id
+      : (state.templates.filter(function (row) { return row.is_default; })[0] || {}).id;
+    return wanted && state.templates.some(function (row) { return row.id === wanted; })
+      ? wanted
+      : null;
   }
 
   function templatePickerHtml() {
@@ -1902,8 +1947,49 @@
         return '<option value="' + escapeHtml(template.id) + '"' +
           (template.id === current ? " selected" : "") + ">" +
           escapeHtml(template.name) +
-          (template.is_default ? " — по умолчанию" : "") + "</option>";
+          (template.id === current ? " — по умолчанию" : "") + "</option>";
       }).join("") + "</select></label>";
+  }
+
+  /* Журнал статусов под заголовком: в какую колонку, когда и кем. */
+  async function loadTaskHistory(taskId) {
+    var host = byId("wsTaskHistory");
+    if (!host) return;
+    host.hidden = true;
+    host.innerHTML = "";
+    host.setAttribute("data-task", taskId || "");
+    if (!taskId) return;
+    var task = findTask(taskId) || {};
+    var created = function (info) {
+      return '<li style="--dot:#C9BFBF"><b>Создана</b> — ' +
+        escapeHtml(formatMoment((info && info.at) || task.created_at)) +
+        (info && info.user ? " · " + escapeHtml(info.user) : "") + "</li>";
+    };
+    host.innerHTML = created(null);
+    host.hidden = false;
+    var payload;
+    try {
+      payload = await api.get("/workspace/tasks/" + taskId + "/history");
+    } catch (error) {
+      return;
+    }
+    // Окно успели закрыть или открыть другую задачу — чужой журнал не рисуем.
+    if (host.getAttribute("data-task") !== taskId) return;
+    var items = (payload && payload.items) || [];
+    var colors = {};
+    (state.statuses || []).forEach(function (row) { colors[row.id] = row.color; });
+    host.innerHTML = created(payload && payload.created) + items.map(function (item) {
+      return '<li style="--dot:' + escapeHtml(colors[item.status_id] || "#C9BFBF") + '"><b>' +
+        escapeHtml(item.status_name) + "</b> — " + escapeHtml(formatMoment(item.at)) +
+        (item.user ? " · " + escapeHtml(item.user) : "") + "</li>";
+    }).join("");
+    host.hidden = false;
+  }
+
+  function fullDay(value) {
+    var date = new Date(value + "T00:00:00");
+    if (isNaN(date.getTime())) return value;
+    return date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
   }
 
   function findTask(taskId) {
@@ -1941,13 +2027,15 @@
       // который сейчас открыт на доске.
       section_id: values.section_id || state.sectionId || null,
       status_id: values.status_id || null,
-      priority: values.priority,
-      start_date: values.start_date || null,
-      due_date: values.due_date || null,
-      assignee_ids: values.assignee_ids || [],
-      custom_values: collectCustomValues(values)
+      custom_values: collectCustomValues(values),
+      field_ids: String(byId("wsTaskModal").getAttribute("data-field-ids") || "")
+        .split(",").filter(Boolean)
     };
     if (!taskId && values.template_id) payload.template_id = values.template_id;
+    if (state.canSeeDetails) {
+      payload.priority = values.priority;
+      payload.assignee_ids = values.assignee_ids || [];
+    }
 
     taskError("");
     byId("wsTaskSave").disabled = true;
@@ -2042,7 +2130,7 @@
       ? '<div style="display:grid;gap:9px">' + state.templates.map(function (template) {
         return '<div class="ws-settings-row">' +
           '<span style="font-size:13px;font-weight:700;flex:1">' + escapeHtml(template.name) +
-          (template.is_default
+          (template.id === defaultTemplateId()
             ? '<span class="ws-chip" style="color:#0E7350;background:#E4F7F0;' +
               'margin-left:7px">по умолчанию</span>'
             : "") + "</span>" +
@@ -2053,10 +2141,13 @@
                 return field ? field.name : null;
               }).filter(Boolean).join(" · ")
             : "полей нет") + "</span>" +
+          // Кнопки одной группой: при переносе строки «Удалить» уезжала
+          // вниз одна и выглядела действием над всей строкой.
+          '<span style="display:flex;gap:8px;flex-shrink:0;margin-left:auto">' +
           '<button class="ws-action" data-template-edit="' + escapeHtml(template.id) +
           '">Изменить</button>' +
           '<button class="ws-action ws-action--danger" data-template-delete="' +
-          escapeHtml(template.id) + '">Удалить</button></div>';
+          escapeHtml(template.id) + '">Удалить</button></span></div>';
       }).join("") + "</div>"
       : '<div class="ws-note">Шаблонов нет. Шаблон задаёт, какие поля появятся ' +
         "в карточке и в каком порядке — например, бриф на креатив: вид, ГЕО, " +
@@ -2139,6 +2230,7 @@
       ? state.templates.filter(function (row) { return row.id === templateId; })[0]
       : { name: "", custom_values: {}, field_ids: [], is_default: false };
     if (!template) return;
+    var section = currentSection();
     openForm({
       title: templateId ? "Шаблон задачи" : "Новый шаблон",
       subtitle: "Какие поля появятся в карточке и в каком порядке",
@@ -2149,10 +2241,17 @@
           footer: '<div class="ws-pick-tools">' +
             '<button class="ws-action" type="button" id="wsFieldNew">+ Создать поле</button>' +
             "</div>" + inlineFieldHtml(null, "wsFieldInline") },
-        { name: "is_default", label: "Ставить по умолчанию", type: "checkbox",
-          value: !!template.is_default,
-          hint: "Новая задача сразу открывается с этим шаблоном. По умолчанию " +
-            "может быть только один — отметка снимется с прежнего." }
+        { name: "is_default",
+          label: section
+            ? "Ставить по умолчанию в разделе «" + section.title + "»"
+            : "Ставить по умолчанию",
+          type: "checkbox",
+          value: !!templateId && template.id === defaultTemplateId(),
+          hint: section
+            ? "Новая задача в этом разделе сразу открывается с этим шаблоном. " +
+              "У других разделов свой шаблон по умолчанию."
+            : "Новая задача сразу открывается с этим шаблоном. По умолчанию " +
+              "может быть только один — отметка снимется с прежнего." }
       ],
       after: function (body) {
         var picker = body.querySelector("[data-fieldpicker]");
@@ -2162,7 +2261,9 @@
         var payload = {
           name: String(values.name || "").trim(),
           field_ids: values.field_ids || [],
-          is_default: !!values.is_default,
+          // В разделе отметка относится к разделу, а общий шаблон воркспейса
+          // остаётся как был.
+          is_default: section ? !!template.is_default : !!values.is_default,
           // Значения по умолчанию задавались прямо здесь и путались с полями
           // самого шаблона: список «Вид крео / GEO / NTRCN» шёл дважды подряд,
           // сверху как состав, снизу как значения. Состав шаблона — это одно,
@@ -2170,10 +2271,18 @@
           custom_values: template.custom_values || {}
         };
         if (!payload.name) throw new Error("Укажите название шаблона");
-        if (templateId) {
-          await api.patch("/workspace/task-templates/" + templateId, payload);
-        } else {
-          await api.post("/workspace/task-templates", payload);
+        var saved = templateId
+          ? await api.patch("/workspace/task-templates/" + templateId, payload)
+          : await api.post("/workspace/task-templates", payload);
+        var savedId = templateId || (saved && saved.id);
+        if (section && savedId) {
+          var wants = !!values.is_default;
+          var next = wants ? savedId
+            : section.default_template_id === savedId ? null : section.default_template_id;
+          if (next !== (section.default_template_id || null)) {
+            await api.patch("/workspace/sections/" + section.id, { default_template_id: next });
+            section.default_template_id = next;
+          }
         }
         await loadTemplates();
         renderSettings();
@@ -2268,15 +2377,14 @@
       error.textContent = "Укажите название поля";
       return;
     }
-    // Поле, заведённое в шаблоне, принадлежит этому шаблону. Заведённое прямо
-    // в карточке — общее для доски: его только что попросили в конкретной
-    // задаче, но привязывать его не к чему.
+    // Поле, заведённое в шаблоне, принадлежит шаблону. Поле из карточки
+    // прикрепляется только к открытой задаче и не появляется в следующих.
     var inTemplate = !!byId("wsFormBody").querySelector("[data-fieldpicker]") &&
       host.closest("#wsFormBody");
     var payload = {
       name: name,
       is_required: host.querySelector('[data-field="new_field_required"]').checked,
-      show_always: !inTemplate
+      show_always: false
     };
     if (OPTION_KINDS.indexOf(kind) >= 0) {
       if (!options.length) {
@@ -2304,6 +2412,11 @@
         redrawPicker(existing ? null : saved.id);
         closeInlineField(byId(host.id));
       } else {
+        var modal = byId("wsTaskModal");
+        var localIds = String(modal.getAttribute("data-field-ids") || "")
+          .split(",").filter(Boolean);
+        if (localIds.indexOf(saved.id) < 0) localIds.push(saved.id);
+        modal.setAttribute("data-field-ids", localIds.join(","));
         redrawTaskFields();
       }
     } catch (requestError) {
@@ -2341,7 +2454,13 @@
     if (!host) return;
     var previous = collectCustomValues(readFields(host), state.fields);
     var picker = byId("wsTaskModal").getAttribute("data-template-id") || null;
+    var localIds = String(byId("wsTaskModal").getAttribute("data-field-ids") || "")
+      .split(",").filter(Boolean);
     var fields = visibleFields(picker, previous);
+    localIds.forEach(function (id) {
+      var field = state.fields.filter(function (row) { return row.id === id; })[0];
+      if (field && !fields.some(function (row) { return row.id === id; })) fields.push(field);
+    });
     host.outerHTML = customBlockHtml(fields, previous);
   }
 
@@ -3864,6 +3983,13 @@
 
   async function initTasks(user) {
     state.canManageBoard = hasPermission(user, "workspace.manage");
+    state.canSeeDetails = hasPermission(user, "workspace.details");
+    // Без права на детали задачи прячем и фильтры по ним — иначе приоритет и
+    // исполнители всплывали бы в панели над доской.
+    ["wsPriorityFilter", "wsAssigneeFilter"].forEach(function (id) {
+      var control = byId(id);
+      if (control && !state.canSeeDetails) control.style.display = "none";
+    });
     byId("wsBoardSettings").style.display = state.canManageBoard ? "" : "none";
     bindTasks();
     bindShared();

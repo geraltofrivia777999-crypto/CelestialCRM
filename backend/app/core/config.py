@@ -14,16 +14,22 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     frontend_url: str = "http://localhost:5173"
     cookie_secure: bool = False
-    default_timezone: str = "Asia/Qyzylorda"
+    default_timezone: str = "Europe/Moscow"
     default_currency: str = "USD"
     keitaro_sync_enabled: bool = False
     keitaro_sync_interval_minutes: int = 15
+    # Журнал конверсий опрашивается отдельно от общей синхронизации: депозит
+    # должен доехать до чата за минуту, а полный круг идёт четверть часа.
+    keitaro_conversions_interval_minutes: int = 1
     # The Keitaro offer group the "Оффера" module is limited to.
     keitaro_offers_group: str = "OFFERS"
     # Вложения базы знаний (ТЗ 8.2). Каталог обязан быть на постоянном томе —
     # в контейнере без него статьи потеряют картинки при первом же пересоздании.
     upload_dir: str = "/app/uploads"
-    upload_max_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
+    # Через Cloudflare один HTTP-запрос ограничен примерно сотней мегабайт.
+    # Оставляем запас под multipart-заголовки, чтобы файл до 90 МБ стабильно
+    # проходил внешний прокси и уже проверялся приложением.
+    upload_max_bytes: int = Field(default=90 * 1024 * 1024, gt=0)
     # Общий лимит файлов базы знаний на один воркспейс. При загрузке строка
     # воркспейса блокируется, поэтому параллельные запросы не обойдут квоту.
     upload_workspace_quota_bytes: int = Field(default=2 * 1024 * 1024 * 1024, gt=0)
@@ -41,7 +47,7 @@ class Settings(BaseSettings):
     # пустых правилах молчит, но включённое на непроверенных — пишет в чат
     # команды, и первое же ложное срабатывание стоит доверия к разделу.
     alerts_enabled: bool = False
-    alerts_interval_minutes: int = 5
+    alerts_interval_minutes: int = 1
     # --- Модерация комментариев ---
     # Пауза между вызовами Graph внутри одного задания. Комментарии Meta
     # считает пользовательским действием, и пачка удалений без пауз — самый
@@ -56,6 +62,21 @@ class Settings(BaseSettings):
     # Постов за одно задание на загрузку.
     meta_comments_max_posts: int = 50
     meta_api_base: str = "https://graph.facebook.com"
+    # --- Partner Integration Service (раздел «Интеграция ПП») ---
+    # Сервис живёт рядом с CRM и сам ходит в партнёрские программы. Его адрес и
+    # общий ключ — настройка развёртывания, а не воркспейса: в интерфейсе их не
+    # вводят и не видят. В карточке интеграции указывают доступы к самой ПП.
+    partner_service_base_url: str = "http://partner-integrations:8000"
+    partner_service_token: str = ""
+    # Платформа ПП → шаблон коннектора на сервисе. Сервис хранит их под
+    # числовыми id; актуальные видно в его GET /api/v1/integrations. Если id
+    # разъедутся, переопределяется через .env одной строкой JSON.
+    partner_platform_templates: dict[str, int] = {
+        "affise": 1,
+        "alanbase": 2,
+        "afftech": 3,
+    }
+
     # --- Recruitment Service (раздел «Рекрутинг») ---
     # Отдельный сервис команды на той же VPS: шаблоны поиска HH, автопоиск,
     # скоринг кандидатов. CRM только читает и пишет через его HTTP API —

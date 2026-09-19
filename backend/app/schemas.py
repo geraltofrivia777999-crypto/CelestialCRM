@@ -29,6 +29,10 @@ class RoleOut(ORMModel):
     id: uuid.UUID
     name: str
     description: str | None
+    data_scope: str = "team"
+    show_finance_summaries: bool = True
+    # Системную роль (администратора) нельзя удалить — кнопке это нужно знать.
+    is_system: bool = False
     permissions: list[PermissionOut] = Field(default_factory=list)
 
 
@@ -80,12 +84,19 @@ class UserUpdate(BaseModel):
 class RoleCreate(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     description: str = Field(default="", max_length=255)
+    # Чьи данные видит роль: весь воркспейс, своя ветка подчинённых или только
+    # свои строки.
+    data_scope: Literal["all", "team", "own"] = "team"
+    # Видит ли роль сводки «Общая», «Tier1», «Tier2/3» в Финансах.
+    show_finance_summaries: bool = True
     permission_codes: list[str] = Field(default_factory=list)
 
 
 class RoleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=80)
     description: str | None = Field(default=None, max_length=255)
+    data_scope: Literal["all", "team", "own"] | None = None
+    show_finance_summaries: bool | None = None
     permission_codes: list[str] | None = None
 
 
@@ -124,7 +135,7 @@ class ConnectionCreate(BaseModel):
     base_url: str
     api_key: str
     sync_interval_minutes: int = Field(default=15, ge=5, le=1440)
-    timezone: str = Field(default="UTC", min_length=1, max_length=64)
+    timezone: str = Field(default="Europe/Moscow", min_length=1, max_length=64)
     buyer_sub_id: int = Field(default=1, ge=1, le=10)
     lookback_days: int = Field(default=2, ge=1, le=14)
 
@@ -363,9 +374,10 @@ class MetaBundleCampaign(BaseModel):
     budget_kind: Literal["daily", "lifetime"] = "daily"
     budget_level: Literal["campaign", "adset"] = "campaign"
     budget_currency: str = Field(default="USD", min_length=3, max_length=3)
-    # Рандомизация бюджета: каждому кабинету достаётся сумма в пределах ±10 %.
+    # Рандомизация бюджета: каждому кабинету достаётся сумма в пределах ±N %.
     # Одинаковая цифра на двадцати кабинетах — заметный след, и Meta это видит.
     budget_randomize: bool = False
+    budget_randomize_pct: Decimal = Field(default=Decimal("10"), gt=0, le=90)
     adset_budget_limit: Decimal | None = Field(default=None, ge=0)
     bid_amount: Decimal | None = Field(default=None, ge=0)
     accelerated_delivery: bool = False
@@ -418,6 +430,40 @@ class MetaBundleAdset(BaseModel):
         return codes
 
 
+class MetaEntityActionItem(BaseModel):
+    """Объект структуры и то, что с ним сделать. `id` — id объекта в Meta."""
+
+    id: str = Field(min_length=1, max_length=100)
+    name: str | None = Field(default=None, max_length=300)
+    daily_budget: Decimal | None = Field(default=None, gt=0)
+    bid_strategy: str | None = Field(default=None, max_length=60)
+    bid_amount: Decimal | None = Field(default=None, gt=0)
+
+
+class MetaEntityActionIn(BaseModel):
+    """Действие над отмеченными кампаниями, адсетами или объявлениями."""
+
+    level: Literal["campaigns", "adsets", "ads"]
+    action: Literal[
+        "start", "pause", "archive", "unarchive", "delete", "duplicate", "rename", "budget"
+    ]
+    items: list[MetaEntityActionItem] = Field(min_length=1, max_length=100)
+
+
+class MetaBundleAdText(BaseModel):
+    """Тексты объявления на одном языке — для мультиязычной связки.
+
+    `language` — локаль Meta («en_GB»), `language_name` — человеческое имя: по
+    нему публикация находит числовой ID локали для правил показа на языке.
+    """
+
+    language: str = Field(min_length=2, max_length=20)
+    language_name: str | None = Field(default=None, max_length=80)
+    headline: str | None = Field(default=None, max_length=600)
+    primary_text: str | None = Field(default=None, max_length=3000)
+    description: str | None = Field(default=None, max_length=600)
+
+
 class MetaBundleAd(BaseModel):
     """Блок «Объявления» связки. Тексты допускают spintax — `{вариант|вариант}`.
 
@@ -427,6 +473,9 @@ class MetaBundleAd(BaseModel):
 
     ad_name: str = Field(default="ad #{{ad.number}}", max_length=200)
     multilingual: bool = False
+    # Мультиязычная связка: свой заголовок, текст и описание на каждый язык.
+    # При заливе из неё сразу включаются «Языки» с этими текстами.
+    texts: list[MetaBundleAdText] = Field(default_factory=list, max_length=30)
     headline: str | None = Field(default=None, max_length=600)
     primary_text: str | None = Field(default=None, max_length=3000)
     description: str | None = Field(default=None, max_length=600)
@@ -472,8 +521,8 @@ class MetaTemplateBase(BaseModel):
         "LOWEST_COST_WITHOUT_CAP", "LOWEST_COST_WITH_BID_CAP", "COST_CAP"
     ] = "LOWEST_COST_WITHOUT_CAP"
     geo: list[str] = Field(default_factory=list, max_length=50)
-    age_min: int = Field(default=18, ge=13, le=65)
-    age_max: int = Field(default=65, ge=13, le=65)
+    age_min: int = Field(default=18, ge=18, le=65)
+    age_max: int = Field(default=65, ge=18, le=65)
     genders: list[int] = Field(default_factory=list)
     languages: list[int] = Field(default_factory=list)
     placements: dict = Field(default_factory=dict)
@@ -517,8 +566,8 @@ class MetaTemplateUpdate(BaseModel):
     billing_event: str | None = Field(default=None, max_length=40)
     bid_strategy: str | None = Field(default=None, max_length=60)
     geo: list[str] | None = None
-    age_min: int | None = Field(default=None, ge=13, le=65)
-    age_max: int | None = Field(default=None, ge=13, le=65)
+    age_min: int | None = Field(default=None, ge=18, le=65)
+    age_max: int | None = Field(default=None, ge=18, le=65)
     genders: list[int] | None = None
     languages: list[int] | None = None
     placements: dict | None = None
@@ -615,6 +664,7 @@ class MetaLaunchFields(BaseModel):
     budget_level: Literal["campaign", "adset"] | None = None
     budget_kind: Literal["daily", "lifetime"] | None = None
     budget_randomize: bool = False
+    budget_randomize_pct: Decimal | None = Field(default=None, gt=0, le=90)
     adset_budget_limit: Decimal | None = Field(default=None, ge=0)
     bid_strategy: str | None = Field(default=None, max_length=40)
     # Автоправила, которые будут привязаны к созданным объектам залива.
@@ -722,6 +772,7 @@ class MetaRuleCondition(BaseModel):
         "result_cr", "sales", "reach", "pixel_leads", "pixel_purchases",
         "actions_total", "entity_name", "campaign_name", "objective", "buying_type",
         "spend_cap", "bid_amount", "daily_budget", "lifetime_budget",
+        "spend_total", "spend_day_pct", "spend_total_pct",
     ] = "roi"
     operator: Literal["lt", "lte", "gt", "gte", "eq", "ne", "in", "nin"] = "lt"
     # Порог числовой у метрик-чисел и строковый у настроек объекта.
@@ -1058,6 +1109,8 @@ class TaskSectionCreate(BaseModel):
 class TaskSectionUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     position: int | None = Field(default=None, ge=0, le=100)
+    # Шаблон по умолчанию этого раздела; `null` снимает его.
+    default_template_id: uuid.UUID | None = None
 
 
 class TaskCreate(BaseModel):
@@ -1070,6 +1123,7 @@ class TaskCreate(BaseModel):
     due_date: date | None = None
     assignee_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     custom_values: dict = Field(default_factory=dict)
+    field_ids: list[uuid.UUID] = Field(default_factory=list, max_length=40)
     template_id: uuid.UUID | None = None
 
 
@@ -1083,6 +1137,7 @@ class TaskUpdate(BaseModel):
     due_date: date | None = None
     assignee_ids: list[uuid.UUID] | None = Field(default=None, max_length=20)
     custom_values: dict | None = None
+    field_ids: list[uuid.UUID] | None = Field(default=None, max_length=40)
     template_id: uuid.UUID | None = None
 
 
@@ -1308,7 +1363,7 @@ class CapRuleIn(BaseModel):
     metric: Literal["sales", "leads", "installs", "spend"] = "sales"
     limit_value: Decimal = Field(gt=0, le=Decimal("100000000"))
     period: Literal["day", "week", "month", "total"] = "day"
-    timezone: str = Field(default="UTC", min_length=1, max_length=64)
+    timezone: str = Field(default="Europe/Moscow", min_length=1, max_length=64)
     notify_at: list[int] = Field(default_factory=lambda: [100], max_length=10)
 
     @model_validator(mode="after")
@@ -1511,6 +1566,27 @@ class MediaValuesIn(BaseModel):
     spend_providers: list[MediaSpendValueIn] | None = None
 
 
+class MediaDaySpendIn(BaseModel):
+    """Расход за день без разбивки по офферам.
+
+    Баер тратит на день, а не на оффер: в кабинете стоит общий бюджет, и
+    раскладывать его по офферам он не может. Поэтому сумма приходит на пару
+    «день — баер», а сервер делит её поровну между офферами этого дня.
+
+    Ровно одно из двух: `spend` — итог дня одной цифрой (ручная фиксация),
+    `providers` — тот же итог, но разложенный по агентам и платёжкам.
+    """
+
+    record_date: date
+    buyer_id: uuid.UUID
+    # Тир, к которому относится расход: «T1», «T23» или пусто — весь день.
+    # Книга в финансах своя на каждый тир, и расход дня, размазанный по обоим,
+    # приезжал бы туда неправильно: баер знает, где потратил.
+    tier: Literal["T1", "T23"] | None = None
+    spend: Decimal | None = None
+    providers: list[MediaSpendValueIn] | None = None
+
+
 class FinanceRecordIn(BaseModel):
     record_date: date
     buyer_id: uuid.UUID
@@ -1545,9 +1621,10 @@ class FinanceValuesIn(BaseModel):
 
 
 class FinanceDayIn(BaseModel):
-    """Один день книги. Всё вводится руками, ничего не приходит из Keitaro."""
+    """Автоматический спенд рассчитывает сервер, manual_spend явно заменяет его."""
 
     spend_buyer: Decimal = Decimal("0")
+    manual_spend: Decimal | None = None
     spend_agent: Decimal = Decimal("0")
     costs: Decimal = Decimal("0")
 
@@ -1586,6 +1663,11 @@ class FinanceBookOfferIn(BaseModel):
     rate_currency: Literal["USD", "EUR"] = "USD"
     # Ссылка на оффер справочника, если строка приехала из «Офферов».
     source_offer_id: uuid.UUID | None = None
+    locked_fields: list[Literal["name", "partner", "geo", "rate", "rate_currency"]] = Field(
+        default_factory=list, max_length=5
+    )
+    # Одноразовая команда замка: при открытии сразу вернуть справочные значения.
+    sync_from_catalog: bool = False
     tags: list[FinanceOfferTagIn] = Field(default_factory=list)
 
 
@@ -1630,6 +1712,7 @@ class DashboardSummary(BaseModel):
     profit: Decimal
     roi: Decimal | None
     working_offers: list[dict] = Field(default_factory=list)
+    working_offers_total: int = 0
     series: list[dict] = Field(default_factory=list)
 
 

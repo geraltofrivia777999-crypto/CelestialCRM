@@ -28,7 +28,14 @@ from app.models import (
     MetaStatDaily,
     User,
 )
-from app.services.meta_metrics import ZERO, metrics
+from app.services.meta_metrics import (
+    INSTALL_ACTION_TYPES,
+    LANDING_VIEW_ACTION_TYPES,
+    REGISTRATION_ACTION_TYPES,
+    ZERO,
+    action_count,
+    metrics,
+)
 
 # Порядок здесь — сама иерархия обзора: отметки на любом уровне сужают всё, что
 # ниже него. Пользователь → его аккаунты → БМы этих аккаунтов → фан-пейджи этих
@@ -73,6 +80,11 @@ class Bucket:
     clicks: int = 0
     link_clicks: int = 0
     results: int = 0
+    pixel_leads: int = 0
+    pixel_purchases: int = 0
+    registrations: int = 0
+    landing_views: int = 0
+    installs: int = 0
     campaign_ids: set[str] = field(default_factory=set)
     extra: dict = field(default_factory=dict)
 
@@ -82,6 +94,11 @@ class Bucket:
         self.clicks += row.clicks or 0
         self.link_clicks += row.link_clicks or 0
         self.results += (row.pixel_leads or 0) + (row.pixel_purchases or 0)
+        self.pixel_leads += row.pixel_leads or 0
+        self.pixel_purchases += row.pixel_purchases or 0
+        self.registrations += action_count(row.actions, REGISTRATION_ACTION_TYPES)
+        self.landing_views += action_count(row.actions, LANDING_VIEW_ACTION_TYPES)
+        self.installs += action_count(row.actions, INSTALL_ACTION_TYPES)
         if row.campaign_external_id:
             self.campaign_ids.add(row.campaign_external_id)
 
@@ -447,6 +464,11 @@ def rows_for(
                     sales,
                     link_clicks=bucket.link_clicks,
                     results=bucket.results,
+                    pixel_leads=bucket.pixel_leads,
+                    pixel_purchases=bucket.pixel_purchases,
+                    registrations=bucket.registrations,
+                    landing_views=bucket.landing_views,
+                    installs=bucket.installs,
                 ),
             }
         )
@@ -503,6 +525,18 @@ def empty_rows(level: str, graph: Graph) -> list[dict]:
             {"id": row.external_id, "name": row.name, "external_id": row.external_id,
              **_structure(level, row.external_id, graph), **blank}
             for row in graph.pages.values()
+        ]
+    if level in _ENTITY_LEVEL:
+        # Кампания, созданная только что, показов ещё не набрала — ни одной
+        # строки статистики у неё нет. Без этого она пропадала из раздела до
+        # первой открутки: в Ads Manager есть, у нас нет, и правило на неё не
+        # поставить. То же и с объектом на модерации, и с остановленным.
+        wanted = _ENTITY_LEVEL[level]
+        return [
+            {"id": key, "name": entity.name, "external_id": key,
+             **_structure(level, key, graph), **blank}
+            for (entity_level, key), entity in graph.entities.items()
+            if entity_level == wanted
         ]
     return []
 

@@ -25,8 +25,10 @@ REPORT_MEASURES = [
     "cost",
     "revenue",
 ]
-# Колонки журнала конверсий. Просим то, что есть во всех версиях трекера:
-# лишняя колонка роняет запрос целиком, а недостающую мы просто не покажем.
+# Колонки журнала конверсий из текущего контракта Admin API. Некоторые версии
+# возвращают для этих полей алиасы (`event_id`, `datetime`) — обработчик ниже
+# принимает оба варианта. Неизвестная колонка роняет весь запрос, поэтому
+# `payout` здесь быть не должно: сумма конверсии в журнале называется revenue.
 CONVERSION_COLUMNS = [
     "conversion_id",
     "status",
@@ -38,9 +40,12 @@ CONVERSION_COLUMNS = [
     "offer_id",
     "country",
     "revenue",
-    "payout",
+    "sub_id",
     *[f"sub_id_{index}" for index in range(1, 11)],
 ]
+CLICK_COLUMNS = ["sub_id", "datetime"]
+MAX_CONVERSION_PAGES = 100
+CLICK_LOOKBACK_DAYS = 90
 RETRYABLE_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 # What the tracker's HTTP code actually means for whoever is filling in the form.
 # Without these the UI only ever showed "HTTP 404", which tells nobody anything.
@@ -189,7 +194,7 @@ class KeitaroClient:
         start: date,
         end: date,
         *,
-        timezone: str = "UTC",
+        timezone: str = "Europe/Moscow",
     ) -> list[dict]:
         payload = {
             "range": {
@@ -211,7 +216,7 @@ class KeitaroClient:
         start: date,
         end: date,
         *,
-        timezone: str = "UTC",
+        timezone: str = "Europe/Moscow",
         limit: int = 1000,
     ) -> list[dict]:
         """Журнал конверсий за период — по строке на конверсию.
@@ -223,21 +228,98 @@ class KeitaroClient:
         Набор колонок у разных версий трекера отличается, поэтому мы просим
         то, что есть везде, и разбираем ответ по факту, а не по ожиданиям.
         """
-        payload = {
-            "range": {
-                "from": start.isoformat(),
-                "to": end.isoformat(),
-                "timezone": timezone,
-            },
-            "columns": CONVERSION_COLUMNS,
-            "filters": [],
-            "sort": [{"name": "postback_datetime", "order": "DESC"}],
-            "limit": limit,
-            "offset": 0,
-        }
-        return _rows(
-            await self._request("POST", "/admin_api/v1/conversions/log", json=payload)
-        )
+        page_size = max(min(limit, 1000), 1)
+        rows: list[dict] = []
+        offset = 0
+
+        for _ in range(MAX_CONVERSION_PAGES):
+            payload = {
+                "range": {
+                    "from": start.isoformat(),
+                    "to": end.isoformat(),
+                    "timezone": timezone,
+                },
+                "columns": CONVERSION_COLUMNS,
+                "filters": [],
+                "sort": [{"name": "postback_datetime", "order": "DESC"}],
+                "limit": page_size,
+                "offset": offset,
+            }
+            data = await self._request(
+                "POST", "/admin_api/v1/conversions/log", json=payload
+            )
+            page = _rows(data)
+            rows.extend(page)
+            offset += len(page)
+
+            total = _total(data)
+            if not page or (total is not None and offset >= total):
+                break
+            # Старые версии могут не вернуть total. В этом случае короткая
+            # страница является последней.
+            if total is None and len(page) < page_size:
+                break
+
+        return rows
+
+    async def click_times(
+        self,
+        sub_ids: list[str],
+        *,
+        start: date,
+        end: date,
+        timezone: str = "Europe/Moscow",
+    ) -> dict[str, str]:
+        """Время исходного клика для конверсий.
+
+        Некоторые сборки Keitaro принимают колонку ``click_datetime`` в
+        журнале конверсий, но не возвращают её. Корневой ``sub_id`` там есть,
+        а журнал кликов надёжно находит по нему исходный ``datetime``. Запросы
+        идут пачками, чтобы один всплеск депозитов не превратился в сотни
+        обращений к трекеру.
+        """
+        unique = list(dict.fromkeys(value for value in sub_ids if value))
+        found: dict[str, str] = {}
+        batch_size = 200
+
+        for batch_offset in range(0, len(unique), batch_size):
+            batch = unique[batch_offset : batch_offset + batch_size]
+            offset = 0
+            while True:
+                payload = {
+                    "range": {
+                        "from": start.isoformat(),
+                        "to": end.isoformat(),
+                        "timezone": timezone,
+                    },
+                    "columns": CLICK_COLUMNS,
+                    "filters": [
+                        {
+                            "name": "sub_id",
+                            "operator": "IN_LIST",
+                            "expression": batch,
+                        }
+                    ],
+                    "limit": min(max(len(batch), 1), 1000),
+                    "offset": offset,
+                }
+                data = await self._request(
+                    "POST", "/admin_api/v1/clicks/log", json=payload
+                )
+                page = _rows(data)
+                for row in page:
+                    sub_id = str(row.get("sub_id") or "").strip()
+                    moment = str(row.get("datetime") or "").strip()
+                    if sub_id and moment:
+                        found[sub_id] = moment
+                offset += len(page)
+                total = _total(data)
+                if not page or (total is not None and offset >= total):
+                    break
+                if total is None and len(page) < payload["limit"]:
+                    break
+
+        return found
 
 
 def stat_dimension_key(row: dict) -> str:
@@ -276,6 +358,15 @@ def _rows(data: Any) -> list[dict]:
         rows = data.get("rows", [])
         return [row for row in rows if isinstance(row, dict)]
     return []
+
+
+def _total(data: Any) -> int | None:
+    if not isinstance(data, dict) or data.get("total") in (None, ""):
+        return None
+    try:
+        return max(int(data["total"]), 0)
+    except (TypeError, ValueError):
+        return None
 
 
 def _status_message(status: int, response: httpx.Response, base_url: str) -> str:

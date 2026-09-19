@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.routers.analytics import invalidate_dashboard_cache
 from app.core.database import get_db
-from app.core.deps import accessible_user_ids, get_current_user, require_permission
+from app.core.deps import accessible_user_ids, get_current_user, has_full_access, require_permission
 from app.core.security import hash_password
 from app.models import (
     AuditEvent,
@@ -54,21 +54,23 @@ router = APIRouter(tags=["team"])
 
 @router.get("/users/options")
 async def user_options(
+    role_name: str | None = None,
     db: AsyncSession = Depends(get_db),
     current: User = Depends(get_current_user),
 ) -> list[dict]:
     visible_users = await accessible_user_ids(db, current)
-    rows = (
-        await db.execute(
-            select(User.id, User.name, User.login, User.keitaro_offer_group)
-            .where(
-                User.workspace_id == current.workspace_id,
-                User.id.in_(visible_users),
-                User.status == Status.active,
-            )
-            .order_by(User.name)
+    query = select(User.id, User.name, User.login, User.keitaro_offer_group).where(
+        User.workspace_id == current.workspace_id,
+        User.id.in_(visible_users),
+        User.status == Status.active,
+    )
+    # Формы назначения могут запросить конкретную роль. Например, в оффере
+    # список «Тимлиды» не должен содержать администраторов и баеров.
+    if role_name and role_name.strip():
+        query = query.join(Role, Role.id == User.role_id).where(
+            func.lower(Role.name) == role_name.strip().lower()
         )
-    ).all()
+    rows = (await db.execute(query.order_by(User.name))).all()
     return [
         {
             "id": str(user_id),
@@ -140,6 +142,7 @@ async def create_user(
     current: User = Depends(require_permission("team.manage")),
 ) -> dict:
     role = await _workspace_role(db, current.workspace_id, payload.role_id)
+    await _ensure_role_assignable(db, current, role)
     login = _normalized_login(payload.login)
     await _ensure_login_available(db, current.workspace_id, login)
     user = User(
@@ -187,9 +190,11 @@ async def update_user(
     current: User = Depends(require_permission("team.manage")),
 ) -> dict:
     user = await _managed_user(db, current, user_id)
+    await _ensure_role_assignable(db, current, user.role)
     changes = payload.model_dump(exclude_unset=True)
     if "role_id" in changes:
         role = await _workspace_role(db, current.workspace_id, changes["role_id"])
+        await _ensure_role_assignable(db, current, role)
         if user.id == current.id and role.id != user.role_id:
             raise HTTPException(status_code=422, detail="You cannot change your own role")
         user.role_id = role.id
@@ -203,6 +208,8 @@ async def update_user(
         if user.id == current.id and changes["status"] != Status.active:
             raise HTTPException(status_code=422, detail="You cannot block your own account")
         user.status = changes["status"]
+        if user.status != Status.active:
+            await db.execute(delete(SessionModel).where(SessionModel.user_id == user.id))
     if "keitaro_company_group" in changes:
         user.keitaro_company_group = _optional_text(changes["keitaro_company_group"])
     if "keitaro_offer_group" in changes:
@@ -245,9 +252,12 @@ async def set_user_status(
     current: User = Depends(require_permission("team.manage")),
 ) -> dict:
     user = await _managed_user(db, current, user_id)
+    await _ensure_role_assignable(db, current, user.role)
     if user.id == current.id and new_status != Status.active:
         raise HTTPException(status_code=422, detail="You cannot block your own account")
     user.status = new_status
+    if new_status != Status.active:
+        await db.execute(delete(SessionModel).where(SessionModel.user_id == user.id))
     await audit(
         db,
         current,
@@ -273,6 +283,7 @@ async def delete_user(
 ) -> Response:
     """Удаляет пустой аккаунт или полностью очищает его данные при ``purge``."""
     user = await _managed_user(db, current, user_id)
+    await _ensure_role_assignable(db, current, user.role)
     if user.id == current.id:
         raise HTTPException(status_code=422, detail="You cannot delete your own account")
 
@@ -451,8 +462,13 @@ async def reset_password(
     current: User = Depends(require_permission("team.manage")),
 ) -> dict:
     user = await _managed_user(db, current, user_id)
+    await _ensure_role_assignable(db, current, user.role)
+    # Login takes the same row lock: a concurrent login with the old password
+    # cannot create a surviving session after this transaction revokes them.
+    await db.execute(select(User.id).where(User.id == user.id).with_for_update())
     temporary = secrets.token_urlsafe(12)
     user.password_hash = hash_password(temporary)
+    await db.execute(delete(SessionModel).where(SessionModel.user_id == user.id))
     await audit(
         db,
         current,
@@ -487,6 +503,7 @@ async def create_role(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("team.manage")),
 ) -> Role:
+    await _require_role_administration(db, current)
     name = payload.name.strip()
     await _ensure_role_name_available(db, current.workspace_id, name)
     permissions = await _permissions(db, payload.permission_codes)
@@ -494,6 +511,8 @@ async def create_role(
         workspace_id=current.workspace_id,
         name=name,
         description=payload.description.strip(),
+        data_scope=payload.data_scope,
+        show_finance_summaries=payload.show_finance_summaries,
         permissions=permissions,
     )
     db.add(role)
@@ -511,6 +530,7 @@ async def update_role(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("team.manage")),
 ) -> Role:
+    await _require_role_administration(db, current)
     role = await db.get(Role, role_id, options=[selectinload(Role.permissions)])
     if not role or role.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Role not found")
@@ -525,6 +545,10 @@ async def update_role(
         role.name = name
     if "description" in changes:
         role.description = changes["description"].strip()
+    if "data_scope" in changes and changes["data_scope"]:
+        role.data_scope = changes["data_scope"]
+    if changes.get("show_finance_summaries") is not None:
+        role.show_finance_summaries = changes["show_finance_summaries"]
     if "permission_codes" in changes:
         role.permissions = await _permissions(db, changes["permission_codes"] or [])
     await audit(
@@ -541,34 +565,85 @@ async def update_role(
     return role
 
 
+async def _role_has_full_access(db: AsyncSession, role: Role) -> bool:
+    codes = {permission.code for permission in role.permissions}
+    if "*" in codes:
+        return True
+    total = await db.scalar(select(func.count()).select_from(Permission))
+    return bool(total) and len(codes) >= total
+
+
 @router.delete("/roles/{role_id}", status_code=204, response_class=Response)
 async def delete_role(
     role_id: uuid.UUID,
     request: Request,
+    replacement_role_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("team.manage")),
 ) -> None:
-    role = await db.get(Role, role_id)
+    """Удалить любую роль, в том числе стандартную.
+
+    Люди с этой ролью переезжают на `replacement_role_id` — без неё роль с
+    пользователями не удаляется: человек без роли не войдёт в CRM. Две защиты
+    от того, чтобы остаться без администратора: нельзя удалить роль, под
+    которой работаешь сам, и последнюю роль с полным доступом.
+    """
+    await _require_role_administration(db, current)
+    role = await db.get(Role, role_id, options=[selectinload(Role.permissions)])
     if not role or role.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Role not found")
-    if role.is_system:
-        raise HTTPException(status_code=422, detail="System role cannot be deleted")
-    assigned = await db.scalar(
-        select(func.count()).select_from(User).where(User.role_id == role.id)
-    )
-    if assigned:
+    if role.id == current.role_id:
         raise HTTPException(
-            status_code=409,
-            detail="Роль назначена пользователям. Сначала переназначьте их.",
+            status_code=422, detail="Нельзя удалить роль, под которой вы сейчас работаете"
         )
+    if await _role_has_full_access(db, role):
+        others = list(
+            (
+                await db.execute(
+                    select(Role)
+                    .options(selectinload(Role.permissions))
+                    .where(Role.workspace_id == current.workspace_id, Role.id != role.id)
+                )
+            ).scalars()
+        )
+        if not any([await _role_has_full_access(db, other) for other in others]):
+            raise HTTPException(
+                status_code=422, detail="Это последняя роль с полным доступом — её удалить нельзя"
+            )
+    assigned = list(
+        (await db.execute(select(User).where(User.role_id == role.id))).scalars()
+    )
+    replacement = None
+    if assigned:
+        if replacement_role_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Роль назначена пользователям — выберите, на какую роль их перенести",
+            )
+        replacement = await db.get(
+            Role, replacement_role_id, options=[selectinload(Role.permissions)]
+        )
+        if (
+            not replacement
+            or replacement.workspace_id != current.workspace_id
+            or replacement.id == role.id
+        ):
+            raise HTTPException(status_code=422, detail="Роль для переноса не найдена")
+        for user in assigned:
+            user.role_id = replacement.id
+        await db.flush()
     await audit(
         db,
         current,
         "role.deleted",
-        f"Deleted role {role.name}",
+        f"Deleted role {role.name}"
+        + (f", users moved to {replacement.name}: {len(assigned)}" if replacement else ""),
         request=request,
         entity_type="role",
         entity_id=str(role.id),
+        # По имени seed понимает, что стандартную роль удалили намеренно, и
+        # не заводит её снова при следующем запуске.
+        data={"role_name": role.name, "system": bool(role.is_system)},
     )
     await db.delete(role)
     await db.commit()
@@ -581,6 +656,7 @@ async def copy_role(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("team.manage")),
 ) -> Role:
+    await _require_role_administration(db, current)
     source = await db.get(Role, role_id, options=[selectinload(Role.permissions)])
     if not source or source.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Role not found")
@@ -683,10 +759,29 @@ async def _managed_user(db: AsyncSession, current: User, user_id: uuid.UUID) -> 
 async def _workspace_role(
     db: AsyncSession, workspace_id: uuid.UUID, role_id: uuid.UUID
 ) -> Role:
-    role = await db.get(Role, role_id)
+    role = await db.get(Role, role_id, options=[selectinload(Role.permissions)])
     if not role or role.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail="Role not found")
     return role
+
+
+async def _require_role_administration(db: AsyncSession, current: User) -> None:
+    # Managing employees is not authority to define or rewrite permissions.
+    # Use capabilities, not a mutable role name, to identify administrators.
+    if not await has_full_access(db, current):
+        raise HTTPException(status_code=403, detail="Only administrators can manage roles")
+
+
+async def _ensure_role_assignable(db: AsyncSession, current: User, role: Role) -> None:
+    if await has_full_access(db, current):
+        return
+    granted = {permission.code for permission in current.role.permissions}
+    target = {permission.code for permission in role.permissions}
+    if not target.issubset(granted):
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot assign or manage a role with permissions you do not hold",
+        )
 
 
 async def _ensure_login_available(
@@ -696,7 +791,9 @@ async def _ensure_login_available(
     *,
     exclude_id: uuid.UUID | None = None,
 ) -> None:
-    filters = [User.workspace_id == workspace_id, User.login == login]
+    # Без учёта регистра: «Dmitry» и «dmitry» — один и тот же человек, и
+    # войти под вторым он всё равно не смог бы.
+    filters = [User.workspace_id == workspace_id, func.lower(User.login) == login.lower()]
     if exclude_id:
         filters.append(User.id != exclude_id)
     if await db.scalar(select(User.id).where(*filters)):
@@ -878,7 +975,13 @@ def _user_payload(user: User, parents: list[dict]) -> dict:
 
 
 def _normalized_login(value: str) -> str:
-    return value.strip().removeprefix("@").lower()
+    """Логин как его написали: «CG_Dmitry» так и останется.
+
+    Регистр раньше сбрасывался в нижний, а логин — он же имя пользователя в
+    CRM, и видеть его хочется в том виде, в каком завели. Сравнивается логин
+    по-прежнему без учёта регистра: и при входе, и при проверке занятости.
+    """
+    return value.strip().removeprefix("@")
 
 
 def _optional_text(value: str | None) -> str | None:

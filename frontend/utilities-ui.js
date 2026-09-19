@@ -28,6 +28,8 @@
     capSummary: null,
     capStatus: "",
     capMetric: "",
+    // Журнал: "" — все записи, "true" — ушедшие, "false" — застрявшие.
+    eventFilter: "",
     form: null,
     // Черновик правила и текущий шаг мастера: форма перерисовывается целиком
     // на каждом шаге, поэтому значения держатся здесь, а не в DOM.
@@ -38,6 +40,15 @@
   };
 
   function byId(id) { return document.getElementById(id); }
+
+  /* Числа приходят с бэкенда как Decimal и сериализуются с хвостом нулей —
+     «50.0000» вместо «50». Читать такое в таблице тяжело, а точность до
+     четвёртого знака в лимитах и порогах не нужна. */
+  function trimNumber(value) {
+    var text = String(value == null ? "" : value);
+    if (!/^-?\d+\.\d+$/.test(text)) return text;
+    return text.replace(/0+$/, "").replace(/\.$/, "");
+  }
 
   function escapeHtml(value) {
     return String(value == null ? "" : value)
@@ -56,7 +67,7 @@
     if (!value) return "—";
     var date = new Date(value);
     if (isNaN(date.getTime())) return "—";
-    return date.toLocaleString("ru-RU", {
+    return window.CelestialTime.format(date, {
       day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
     });
   }
@@ -1022,11 +1033,7 @@
           ' <span style="font-size:11px;font-weight:700;color:#857D7D;background:#F2EDED;' +
           'border-radius:7px;padding:3px 7px;margin-left:6px">' +
           escapeHtml(rule.kind_label) + "</span>",
-        escapeHtml(alertSummary(rule)) +
-          '<br><span style="color:#B4ABAB">канал: ' +
-          escapeHtml(rule.channel_name || "—") +
-          (rule.last_fired_at ? " · последний раз " + escapeHtml(moment(rule.last_fired_at)) : "") +
-          "</span>",
+        escapeHtml(alertSummary(rule)),
         off ? "Выключено" : "Активно", off,
         state.canManage
           ? '<button type="button" data-alert-edit="' + escapeHtml(rule.id) +
@@ -1054,7 +1061,7 @@
     }).join("");
 
     if (!state.caps.length) {
-      host.innerHTML = '<tr><td colspan="7" style="padding:40px 20px;text-align:center;' +
+      host.innerHTML = '<tr><td colspan="9" style="padding:40px 20px;text-align:center;' +
         'color:#9B9292;font-size:12.5px">' +
         (state.capStatus || state.capMetric
           ? "Под фильтр ничего не подошло"
@@ -1073,28 +1080,22 @@
         : progress.percent >= 80 ? " cap-bar--warn" : "";
       return '<tr style="border-bottom:1px solid #F7F4F4">' +
         '<td class="cap-cell" style="padding-left:20px">' +
-        '<div style="font-weight:700;font-size:13px">' + escapeHtml(rule.name) + "</div>" +
-        '<div style="font-size:11px;color:#9B9292;margin-top:3px">' +
-        escapeHtml(capSubject(rule)) + "</div></td>" +
-        '<td class="cap-cell">' + escapeHtml(rule.metric_label || rule.metric) +
-        (rule.metric_hint
-          ? '<div style="font-size:10.5px;color:#9B9292;margin-top:2px">' +
-            escapeHtml(rule.metric_hint) + "</div>"
-          : "") + "</td>" +
+        '<div style="font-weight:700;font-size:13px">' + escapeHtml(rule.name) + "</div></td>" +
+        '<td class="cap-cell">' + escapeHtml(rule.user_name || "—") + "</td>" +
+        '<td class="cap-cell">' + escapeHtml(rule.channel_name || "—") + "</td>" +
+        '<td class="cap-cell">' + escapeHtml(rule.metric_label || rule.metric) + "</td>" +
         '<td class="cap-cell">' + escapeHtml(period) +
         '<div style="font-size:10.5px;color:#9B9292;margin-top:2px">' +
-        escapeHtml(rule.timezone || "UTC") + "</div></td>" +
-        '<td class="cap-cell"><div style="font-size:12.5px;font-weight:700">' +
-        escapeHtml(String(progress.value)) + " / " + escapeHtml(String(progress.limit)) +
+        escapeHtml(rule.timezone || "Europe/Moscow") + "</div></td>" +
+        '<td class="cap-cell"><div style="display:flex;align-items:baseline;' +
+        'justify-content:space-between;gap:10px;font-size:12.5px;font-weight:700">' +
+        "<span>" + escapeHtml(trimNumber(progress.value)) + " / " +
+        escapeHtml(trimNumber(progress.limit)) + "</span>" +
         '<span style="color:' + (progress.percent >= 100 ? "#B91414"
           : progress.percent >= 80 ? "#C9821F" : "#857D7D") +
-        ';margin-left:7px">' + progress.percent + " %</span></div>" +
+        '">' + progress.percent + " %</span></div>" +
         '<div class="cap-bar' + tone + '"><span style="width:' + width + '%"></span></div></td>' +
-        '<td class="cap-cell">' + (rule.notify_at || []).join(", ") + " %" +
-        (rule.notified_percent
-          ? '<div style="font-size:10.5px;color:#9B9292;margin-top:2px">отправлен ' +
-            rule.notified_percent + " %</div>"
-          : "") + "</td>" +
+        '<td class="cap-cell">' + thresholdChips(rule) + "</td>" +
         '<td class="cap-cell">' + (off
           ? '<span class="settings-chip" style="color:#9B9292;background:#F7F4F4">Выключен</span>'
           : '<span class="settings-chip" style="color:#0E7350;background:#E4F7F0">Активен</span>') +
@@ -1108,24 +1109,26 @@
     }).join("");
   }
 
+  /* Пороги — чипами, а пройденные с галочкой. Строка «100 % · отправлен 100 %»
+     заставляла сверять два числа глазами, а нужен ответ на один вопрос: по
+     какому порогу уже ушло сообщение, а какой ещё впереди. */
+  function thresholdChips(rule) {
+    var sent = Number(rule.notified_percent || 0);
+    var values = (rule.notify_at || []).slice().sort(function (a, b) { return a - b; });
+    if (!values.length) return '<span style="color:#9B9292">—</span>';
+    return '<div class="cap-thresholds">' + values.map(function (value) {
+      var passed = sent >= value;
+      return '<span class="cap-threshold' + (passed ? " is-passed" : "") + '"' +
+        (passed ? ' title="Уведомление отправлено"' : "") + ">" + value + " %" +
+        (passed ? " ✓" : "") + "</span>";
+    }).join("") + "</div>";
+  }
+
   function capFailure(error) {
     notify({
       title: "Не удалось загрузить капы",
       message: error && error.message ? error.message : ""
     });
-  }
-
-  function capSubject(rule) {
-    var parts = [];
-    var names = rule.offer_names || [];
-    if (names.length) {
-      parts.push(names.length > 2
-        ? names.slice(0, 2).join(", ") + " +" + (names.length - 2)
-        : names.join(", "));
-    }
-    if (rule.user_name) parts.push(rule.user_name);
-    parts.push("канал: " + (rule.channel_name || "—"));
-    return parts.join(" · ");
   }
 
   function labelFrom(list, code) {
@@ -1150,14 +1153,23 @@
 
   /* ---------- журнал ---------- */
 
+  function emptyEventsText() {
+    if (state.eventFilter === "true") return "Отправленных уведомлений пока нет.";
+    if (state.eventFilter === "false") {
+      return "Все уведомления ушли — застрявших нет.";
+    }
+    return "Уведомления ещё не отправлялись.";
+  }
+
   async function loadEvents() {
     var host = byId("utilEvents");
     try {
-      var page = await api.get("/utilities/events?limit=50");
+      var page = await api.get("/utilities/events?limit=50" +
+        (state.eventFilter ? "&delivered=" + state.eventFilter : ""));
       var items = page.items || [];
       if (!items.length) {
         host.innerHTML = '<div style="padding:24px;text-align:center;font-size:12.5px;' +
-          'color:#857D7D;font-weight:600">Уведомления ещё не отправлялись.</div>';
+          'color:#857D7D;font-weight:600">' + escapeHtml(emptyEventsText()) + "</div>";
         return;
       }
       host.innerHTML = items.map(function (event) {
@@ -1207,6 +1219,10 @@
   }
 
   function switchTab(tab) {
+    if ((tab === "channels" && state.canChannels === false) ||
+      (tab === "events" && state.canEvents === false)) {
+      tab = "alerts";
+    }
     state.tab = tab;
     document.querySelectorAll("[data-util-tab]").forEach(function (button) {
       button.classList.toggle("active", button.getAttribute("data-util-tab") === tab);
@@ -1256,6 +1272,15 @@
     byId("utilCapMetric").addEventListener("change", function (event) {
       state.capMetric = event.target.value;
       loadCaps().catch(capFailure);
+    });
+    document.querySelectorAll("[data-util-events]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        state.eventFilter = button.getAttribute("data-util-events");
+        document.querySelectorAll("[data-util-events]").forEach(function (item) {
+          item.classList.toggle("active", item === button);
+        });
+        loadEvents();
+      });
     });
     document.querySelectorAll("[data-util-tab]").forEach(function (button) {
       button.addEventListener("click", function () {
@@ -1405,9 +1430,22 @@
     if (!byId("utilAlerts")) return;
     state.user = user;
     state.canManage = hasPermission(user, "utilities.manage");
+    // «Каналы» и «Журнал» — по отдельным правам роли: чаты и журнал отправок
+    // видеть нужно не всем, кто настраивает свои уведомления.
+    state.canChannels = hasPermission(user, "utilities.channels");
+    state.canEvents = hasPermission(user, "utilities.events");
+    [["channels", state.canChannels], ["events", state.canEvents]].forEach(function (pair) {
+      var tab = document.querySelector('[data-util-tab="' + pair[0] + '"]');
+      if (tab) tab.style.display = pair[1] ? "" : "none";
+    });
     ["utilAlertCreate", "utilCapCreate", "utilChannelCreate"].forEach(function (id) {
       byId(id).style.display = state.canManage ? "" : "none";
     });
+    if (!state.canChannels) byId("utilChannelCreate").style.display = "none";
+    if ((state.tab === "channels" && !state.canChannels) ||
+      (state.tab === "events" && !state.canEvents)) {
+      switchTab("alerts");
+    }
     bind();
     state.reference = await api.get("/utilities/reference");
     byId("utilCapMetric").innerHTML = '<option value="">Все метрики</option>' +

@@ -128,6 +128,7 @@
   .modal-backdrop{position:fixed;inset:0;z-index:30;background:rgba(20,14,14,.42);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:24px}
   .modal-backdrop.open{display:flex}
   .modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:20px;box-shadow:0 28px 70px rgba(17,11,11,.24)}
+  #userModal .modal-card{width:min(520px,100%)}
   .field-label{display:block;color:#6A6161;font-size:11.5px;font-weight:700;margin-bottom:7px}
   .form-input{width:100%;height:44px;border:1px solid #E5DFDF;border-radius:11px;padding:0 13px;outline:none;color:#2A2020;background:#fff;font-size:13px}
   .form-input:focus{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.09)}
@@ -156,6 +157,45 @@
     .team-header-actions button{justify-content:center}
     .modal-backdrop{padding:12px}
   }
+  /* Окно роли: область доступа к данным и массовый выбор прав. */
+  .role-scope{display:grid;gap:8px}
+  .role-scope__item{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border:1px solid #E8E2E2;border-radius:11px;cursor:pointer}
+  .role-scope__item:hover{border-color:#DCD4D4}
+  .role-scope__item input{margin-top:2px;accent-color:#B91414}
+  .role-scope__item b{display:block;color:#2A2020;font-size:12.5px;font-weight:700}
+  .role-scope__item i{display:block;margin-top:3px;color:#9B9292;font-size:11px;font-weight:600;font-style:normal;line-height:1.5}
+  .role-scope__item:has(input:checked){border-color:#B91414;background:#FCF1F1}
+  .role-move[hidden]{display:none}
+  .role-move{display:grid;gap:10px;padding:13px 14px;border:1px solid #F1C9C9;border-radius:11px;background:#FDF5F5}
+  .role-move b{color:#8E1111;font-size:12.5px;font-weight:700}
+  .role-switch{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 12px;border:1px solid #E8E2E2;border-radius:11px;cursor:pointer}
+  .role-switch b{display:block;color:#2A2020;font-size:12.5px;font-weight:700}
+  .role-switch i{display:block;margin-top:3px;color:#9B9292;font-size:11px;font-weight:600;font-style:normal;line-height:1.5}
+  .role-switch__toggle{position:relative;flex-shrink:0;width:44px;height:26px}
+  .role-switch__toggle input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+  .role-switch__toggle i{position:absolute;inset:0;margin:0;border-radius:999px;background:#E5DFDF;transition:background .18s;pointer-events:none}
+  .role-switch__toggle i::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(20,14,14,.25);transition:transform .18s}
+  .role-switch__toggle input:checked + i{background:#B91414}
+  .role-switch__toggle input:checked + i::after{transform:translateX(18px)}
+  #deleteRoleButton:disabled{color:#C4BBBB;cursor:not-allowed}
+  .role-perms__head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .role-perms__actions{display:flex;gap:8px}
+  .role-perms__btn{height:30px;padding:0 11px;border:1px solid #E5DFDF;border-radius:9px;background:#fff;color:#6A6161;font:700 11.5px Inter,sans-serif;cursor:pointer}
+  .role-perms__btn:hover{border-color:#D06060;color:#B91414}
+  .field-hint{display:block;margin-top:6px;color:#9B9292;font-size:11px;font-weight:600;line-height:1.5}
+  /* Форма пользователя: группы Keitaro и их загрузка из трекера. */
+  .team-kt{display:grid;gap:12px;padding-top:14px;border-top:1px solid #EBE6E6}
+  .team-kt__head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .team-kt__title{color:#2A2020;font-size:12.5px;font-weight:700}
+  .team-kt__refresh{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 11px;border:1px solid #E7C9C9;border-radius:9px;background:#FCF1F1;color:#B91414;font:700 11.5px Inter,sans-serif;cursor:pointer}
+  .team-kt__refresh:hover{background:#F9E4E4}
+  .team-kt__refresh:disabled{cursor:default;opacity:.75}
+  .team-kt__refresh.is-busy svg{animation:team-kt-spin .9s linear infinite}
+  @keyframes team-kt-spin{to{transform:rotate(360deg)}}
+  .team-kt__status{margin-top:-4px;color:#16B57F;font-size:11.5px;font-weight:600;line-height:1.5}
+  .team-kt__status.is-muted{color:#9B9292}
+  .team-kt__status.is-error{color:#C41616}
+  .team-kt__status[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -189,9 +229,12 @@
     </nav>
 
     <div style="margin:14px;padding:16px;border-radius:16px;background:linear-gradient(150deg,#231212,#070505 75%)">
-      <div style="color:#fff;font-weight:700;font-size:13px">Доступы команды</div>
-      <div style="color:rgba(255,255,255,.8);font-size:11.5px;margin-top:4px;line-height:1.5">Все изменения ролей фиксируются в логах</div>
-      <div style="margin-top:12px;display:flex;align-items:center;gap:7px"><span style="width:7px;height:7px;border-radius:50%;background:#7BEBB8;box-shadow:0 0 0 3px rgba(123,235,184,.3)"></span><span id="teamSidebarTotal" style="color:#fff;font-size:12px;font-weight:600">24 пользователя</span></div>
+      <div style="color:#fff;font-weight:700;font-size:13px;line-height:1.4">Синхронизация Keitaro</div>
+      <div style="color:rgba(255,255,255,.8);font-size:11.5px;margin-top:4px;line-height:1.5">Проверяем подключение…</div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:7px">
+        <span style="width:7px;height:7px;border-radius:50%;background:#D8D0D0;box-shadow:0 0 0 3px rgba(214,217,228,.3)"></span>
+        <span style="color:#fff;font-size:12px;font-weight:600">Проверка API</span>
+      </div>
     </div>
     <div style="padding:12px 16px 18px;border-top:1px solid #EBE6E6;display:flex;align-items:center;gap:11px">
       <div id="teamCurrentAvatar" style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#070505,#B91414);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">ЕВ</div>
@@ -211,7 +254,7 @@
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="#9B9292" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
           <input id="teamSearch" type="search" placeholder="Поиск пользователя..." style="border:0;outline:0;background:transparent;width:100%;min-width:0;color:#3A3030;font-size:13px">
         </label>
-        <button id="openUserModal" type="button" style="height:44px;border:0;border-radius:12px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 17px;display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;box-shadow:0 8px 18px rgba(185,20,20,.28)">
+        <button id="openUserModal" type="button" style="display:flex;align-items:center;gap:8px;height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
           Создать пользователя
         </button>
@@ -319,7 +362,7 @@
 
     <!-- ROLES -->
     <section class="team-panel" data-team-panel="roles">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin:2px 0 16px;gap:16px"><div><h3 class="team-heading" style="font-size:18px;font-weight:700">Роли и права доступа</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Настройте доступ к разделам и функциям CRM</div></div><button id="openRoleModal" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 15px;font-size:13.5px;font-weight:600">+ Создать роль</button></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:2px 0 16px;gap:16px"><div><h3 class="team-heading" style="font-size:18px;font-weight:700">Роли и права доступа</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Настройте доступ к разделам и функциям CRM</div></div><button id="openRoleModal" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">+ Создать роль</button></div>
       <div id="rolesGrid" class="role-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
         <article class="role-card"><div style="display:flex;align-items:center;justify-content:space-between"><div style="width:42px;height:42px;border-radius:12px;background:#FCF1F1;display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3 4 7v5c0 4.8 3.3 7.7 8 9 4.7-1.3 8-4.2 8-9V7l-8-4Z" stroke="#B91414" stroke-width="2"/></svg></div><span style="font-size:11px;color:#9B9292;font-weight:700">2 пользователя</span></div><h4 class="team-heading" style="font-size:16px;margin-top:15px">Administrator</h4><p style="font-size:11.5px;color:#857D7D;line-height:1.55;margin-top:5px">Полный доступ ко всем разделам, настройкам и журналам.</p><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px"><span class="permission-pill">Dashboard</span><span class="permission-pill">Финансы</span><span class="permission-pill">Команда</span><span class="permission-pill">+8</span></div><div style="display:flex;gap:8px;margin-top:18px"><button type="button" style="flex:1;height:36px;border:1px solid #EBE6E6;background:#fff;border-radius:9px;color:#B91414;font-size:11.5px;font-weight:700">Редактировать</button><button type="button" style="width:38px;height:36px;border:1px solid #EBE6E6;background:#fff;border-radius:9px;color:#857D7D" title="Копировать роль"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="2"/></svg></button></div></article>
         <article class="role-card"><div style="display:flex;align-items:center;justify-content:space-between"><div style="width:42px;height:42px;border-radius:12px;background:#E4F7F0;display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="3" stroke="#16B57F" stroke-width="2"/><circle cx="17" cy="8" r="3" stroke="#16B57F" stroke-width="2"/><path d="M2 20a6 6 0 0 1 12 0M11 20a6 6 0 0 1 12 0" stroke="#16B57F" stroke-width="2"/></svg></div><span style="font-size:11px;color:#9B9292;font-weight:700">4 пользователя</span></div><h4 class="team-heading" style="font-size:16px;margin-top:15px">Team Lead</h4><p style="font-size:11.5px;color:#857D7D;line-height:1.55;margin-top:5px">Просмотр команды, статистики и финансов подчинённых.</p><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px"><span class="permission-pill">Dashboard</span><span class="permission-pill">Медиаборд</span><span class="permission-pill">Команда</span><span class="permission-pill">+4</span></div><div style="display:flex;gap:8px;margin-top:18px"><button type="button" style="flex:1;height:36px;border:1px solid #EBE6E6;background:#fff;border-radius:9px;color:#B91414;font-size:11.5px;font-weight:700">Редактировать</button><button type="button" style="width:38px;height:36px;border:1px solid #EBE6E6;background:#fff;border-radius:9px;color:#857D7D" title="Копировать роль"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="2"/></svg></button></div></article>
@@ -356,17 +399,20 @@
   <div class="modal-card">
     <div style="padding:22px 24px 18px;border-bottom:1px solid #EBE6E6;display:flex;align-items:flex-start;justify-content:space-between;gap:18px"><div><h2 id="userModalTitle" class="team-heading" style="font-size:20px">Новый пользователь</h2><div id="userModalSubtitle" style="font-size:11.5px;color:#9B9292;margin-top:5px">Создайте учётную запись и назначьте доступы</div></div><button id="closeUserModal" type="button" aria-label="Закрыть" style="width:34px;height:34px;border:0;border-radius:9px;background:#F7F4F4;color:#857D7D"><svg width="17" height="17" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
     <form id="createUserForm">
-      <div class="form-grid" style="padding:22px 24px;display:grid;grid-template-columns:1fr 1fr;gap:17px">
-        <label><span class="field-label">Имя пользователя</span><input class="form-input" name="name" required placeholder="Например, Артём Иванов"></label>
-        <label><span class="field-label">Логин</span><input class="form-input" name="login" required placeholder="@username"></label>
+      <div class="form-grid" style="padding:22px 24px;display:grid;grid-template-columns:1fr;gap:15px">
+        <label><span class="field-label">Логин</span><input class="form-input" name="login" required placeholder="Например, CG_Dmitry"></label>
         <label id="userPasswordField"><span class="field-label">Пароль</span><input class="form-input" name="password" type="password" required minlength="8" placeholder="Минимум 8 символов"></label>
         <label><span class="field-label">Роль</span><select class="form-input" name="role" required><option value="">Выберите роль</option></select></label>
         <label><span class="field-label">Статус</span><select class="form-input" name="status"><option value="active">Активен</option><option value="blocked">Заблокирован</option></select></label>
         <div><span class="field-label">Родительские пользователи</span><div id="parentPicker" class="people-picker"><button id="parentPickerTrigger" class="form-input people-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false"><span id="parentPickerSummary" class="people-picker-summary is-empty"><span class="people-picker-summary-text">Не выбраны — верхний уровень</span></span></button><div id="parentPickerMenu" class="people-picker-menu" role="listbox" aria-multiselectable="true" hidden><input id="parentPickerSearch" class="form-input people-picker-search" type="search" autocomplete="off" placeholder="Найти пользователя"><div id="parentPickerOptions" class="people-picker-options"></div><div class="people-picker-footer"><span id="parentPickerCount">Не выбрано</span><button id="parentPickerClear" class="people-picker-clear" type="button">Очистить</button></div></div></div></div><div><span class="field-label">Дочерние пользователи</span><div id="childPicker" class="people-picker"><button id="childPickerTrigger" class="form-input people-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false"><span id="childPickerSummary" class="people-picker-summary is-empty"><span class="people-picker-summary-text">Не выбраны — подчинённых нет</span></span></button><div id="childPickerMenu" class="people-picker-menu" role="listbox" aria-multiselectable="true" hidden><input id="childPickerSearch" class="form-input people-picker-search" type="search" autocomplete="off" placeholder="Найти пользователя"><div id="childPickerOptions" class="people-picker-options"></div><div class="people-picker-footer"><span id="childPickerCount">Не выбрано</span><button id="childPickerClear" class="people-picker-clear" type="button">Очистить</button></div></div></div></div>
-        <label><span class="field-label">Группа кампаний Keitaro</span><select class="form-input" name="companyGroup"><option value="">Без привязки</option></select></label>
-        <label><span class="field-label">Группа офферов Keitaro</span><select class="form-input" name="offerGroup"><option value="">Без привязки</option></select></label>
+        <div class="team-kt">
+          <div class="team-kt__head"><span class="team-kt__title">Привязки Keitaro</span><button id="refreshKeitaroGroups" type="button" class="team-kt__refresh" title="Загрузить группы, к которым в Keitaro только что открыли доступ"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3M4 13a8 8 0 0 0 14.9 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 3v5h5M19 21v-5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Обновить из Keitaro</span></button></div>
+          <div id="keitaroGroupsStatus" class="team-kt__status" role="status" hidden></div>
+          <label><span class="field-label">Группа кампаний Keitaro</span><select class="form-input" name="companyGroup"><option value="">Без привязки</option></select></label>
+          <label><span class="field-label">Группа офферов Keitaro</span><select class="form-input" name="offerGroup"><option value="">Без привязки</option></select></label>
+        </div>
       </div>
-      <div style="padding:16px 24px 22px;border-top:1px solid #EBE6E6;display:flex;justify-content:flex-end;gap:10px"><button id="cancelUserModal" type="button" style="height:42px;border:1px solid #E5DFDF;background:#fff;border-radius:10px;padding:0 16px;color:#6A6161;font-size:12.5px;font-weight:700">Отмена</button><button id="saveUserButton" type="submit" style="height:42px;border:0;background:#B91414;border-radius:10px;padding:0 18px;color:#fff;font-size:12.5px;font-weight:700;box-shadow:0 7px 16px rgba(185,20,20,.23)">Создать пользователя</button></div>
+      <div style="padding:16px 24px 22px;border-top:1px solid #EBE6E6;display:flex;justify-content:flex-end;gap:10px"><button id="cancelUserModal" type="button" style="height:42px;border:1px solid #E5DFDF;background:#fff;border-radius:10px;padding:0 16px;color:#6A6161;font-size:12.5px;font-weight:700">Отмена</button><button id="saveUserButton" type="submit" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Создать пользователя</button></div>
     </form>
   </div>
 </div>
@@ -379,9 +425,11 @@
       <div style="padding:22px 24px;display:grid;gap:17px">
         <label><span class="field-label">Название роли</span><input class="form-input" name="roleName" required maxlength="80" placeholder="Например, Senior Buyer"></label>
         <label><span class="field-label">Описание</span><input class="form-input" name="roleDescription" maxlength="255" placeholder="Кратко опишите уровень доступа"></label>
-        <div><span class="field-label">Права доступа</span><div id="rolePermissions" style="display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:9px"></div></div>
+                <div class="role-scope"><span class="field-label">Доступ к данным</span><label class="role-scope__item"><input type="radio" name="dataScope" value="all"><span><b>Все данные</b><i>Видит цифры всей команды, кто бы их ни завёл</i></span></label><label class="role-scope__item"><input type="radio" name="dataScope" value="team" checked><span><b>Данные своей команды</b><i>Свои строки и строки подчинённых по структуре</i></span></label><label class="role-scope__item"><input type="radio" name="dataScope" value="own"><span><b>Только свои данные</b><i>Ничего чужого, даже у подчинённых</i></span></label></div>
+        <div><div class="role-perms__head"><span class="field-label" style="margin:0">Права доступа</span><span class="role-perms__actions"><button type="button" id="rolePermissionsAll" class="role-perms__btn">Выбрать всё</button><button type="button" id="rolePermissionsNone" class="role-perms__btn">Снять всё</button></span></div><div id="rolePermissions" style="display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:9px"></div></div>
+        <div id="roleDeleteMove" class="role-move" hidden><b id="roleDeleteMoveText">Роль назначена пользователям</b><label><span class="field-label">Перенести их на роль</span><select class="form-input" id="roleDeleteReplacement"></select></label></div>
       </div>
-      <div style="padding:16px 24px 22px;border-top:1px solid #EBE6E6;display:flex;justify-content:flex-end;gap:10px"><button id="cancelRoleModal" type="button" style="height:42px;border:1px solid #E5DFDF;background:#fff;border-radius:10px;padding:0 16px;color:#6A6161;font-size:12.5px;font-weight:700">Отмена</button><button id="saveRoleButton" type="submit" style="height:42px;border:0;background:#B91414;border-radius:10px;padding:0 18px;color:#fff;font-size:12.5px;font-weight:700">Сохранить роль</button></div>
+      <div style="padding:16px 24px 22px;border-top:1px solid #EBE6E6;display:flex;justify-content:flex-end;gap:10px"><button id="deleteRoleButton" type="button" hidden style="margin-right:auto;height:42px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;padding:0 16px;color:#B91414;font-size:12.5px;font-weight:700;cursor:pointer">Удалить роль</button><button id="cancelRoleModal" type="button" style="height:42px;border:1px solid #E5DFDF;background:#fff;border-radius:10px;padding:0 16px;color:#6A6161;font-size:12.5px;font-weight:700">Отмена</button><button id="saveRoleButton" type="submit" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Сохранить роль</button></div>
     </form>
   </div>
 </div>

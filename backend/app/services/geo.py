@@ -16,6 +16,8 @@ _COUNTRIES: tuple[tuple[str, ...], ...] = (
     ("AL", "ALB", "ALBANIA", "АЛБАНИЯ"),
     ("AM", "ARM", "ARMENIA", "АРМЕНИЯ"),
     ("AO", "AGO", "ANGOLA", "АНГОЛА"),
+    # Meta принимает Антарктиду страной в таргетинге — без неё её не выбрать в связке.
+    ("AQ", "ATA", "ANTARCTICA", "АНТАРКТИДА", "АНТАРКТИКА"),
     ("AR", "ARG", "ARGENTINA", "АРГЕНТИНА"),
     ("AT", "AUT", "AUSTRIA", "АВСТРИЯ"),
     ("AU", "AUS", "AUSTRALIA", "АВСТРАЛИЯ"),

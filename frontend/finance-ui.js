@@ -1,9 +1,8 @@
 /*
  * Финансы: книга одного баера за месяц — показатели по строкам, дни по столбцам.
  *
- * Всё заполняется руками; из Keitaro сюда ничего не приходит. Формулой считаются
- * только доход по офферу (депозиты по тегам × ставка), доход общий, профит, ROI
- * и зарплата.
+ * Спенд приходит из медиаборда; явная ручная правка заменяет его до очистки.
+ * Доход по офферу, профит, ROI и зарплата рассчитываются из актуальных данных.
  * Книга уходит на сервер целиком с задержкой после последнего нажатия — так
  * набор длинного ряда цифр не превращается в очередь из тридцати запросов.
  */
@@ -128,8 +127,14 @@
     days: 31,
     prevMinus: 0,
     eurRate: 1,
+    mediaSpend: {},
+    manualDirty: {},
+    manualRevision: 0,
     manual: { spendBuyer: {}, spendAgent: {}, costs: {} },
     offers: [],
+    // Справочник офферов для выбора новой строки книги. Грузится по первому
+    // нажатию «+ оффер»: на обзоре и в закрытых месяцах он не нужен.
+    catalog: { items: [], loading: false, loaded: false, error: "" },
     // Правило зарплаты этого баера за этот месяц и его ступени; null — правила
     // нет, действует шкала по умолчанию.
     plan: null,
@@ -145,6 +150,15 @@
   var activeSave = null;
   var loadSequence = 0;
   var dirty = false;
+  var OFFER_LOCK_FIELDS = ["name", "partner", "geo", "rate", "rate_currency"];
+
+  function offerLocked(offer) {
+    return (offer.lockedFields || []).length > 0;
+  }
+
+  function lockOfferFields(offer) {
+    offer.lockedFields = OFFER_LOCK_FIELDS.slice();
+  }
 
   /* ---------- helpers ---------- */
 
@@ -233,10 +247,14 @@
       return sum + offerIncome(offer, day);
     }, 0);
   }
-  // Затраты принадлежат дню целиком: спенд приходит из кабинета одной суммой,
-  // и разносить его по офферам руками дороже получаемой точности. По тирам его
-  // распределяет сводка — по доле дохода дня.
-  function spend(day) { return num(state.manual.spendBuyer[day]); }
+  // Пустая ручная ячейка использует медиаборд; явный 0 заменяет его нулём.
+  /* Спенд дня — целые доллары: столбец, его сумма и карточка наверху должны
+     сходиться, а копейки кабинета в книге ничего не решают. Сервер округляет
+     то же значение при переносе из медиаборда. */
+  function spend(day) {
+    return Math.round(state.manual.spendBuyer[day] != null
+      ? num(state.manual.spendBuyer[day]) : num(state.mediaSpend[day]));
+  }
   function costs(day) { return num(state.manual.costs[day]); }
   function profit(day) { return income(day) - spend(day) - costs(day); }
   function roi(day) {
@@ -259,7 +277,7 @@
   function dayFlags(day) {
     var date = new Date(state.year, state.month - 1, day);
     var weekday = date.getDay();
-    var now = new Date();
+    var now = window.CelestialTime.today();
     return {
       weekday: WEEK[weekday],
       off: weekday === 0 || weekday === 6,
@@ -323,16 +341,71 @@
     return button;
   }
 
+  /* Новая строка книги начинается с выбора оффера из справочника. Ручной
+     ввод убрали: набранный руками оффер приходил без ID у партнёрки, а по
+     нему депозиты из ПП и находят строку — без ID она молча оставалась
+     пустой. Теперь оффер сначала заводят в разделе «Оффера». */
   function addOffer() {
     // Тег создаётся пустым: как назвать строку, решает пользователь, а не мы.
-    state.offers.push({ name: "Новый оффер", partner: "", geo: null, sourceOfferId: null, rate: 0,
-      rateCurrency: "USD", tags: [{ name: "", values: {} }] });
+    state.offers.push({ picking: true, name: "", partner: "", geo: null,
+      sourceOfferId: null, rate: 0, rateCurrency: "USD",
+      lockedFields: [],
+      tags: [{ name: "", values: {} }] });
+    renderBody();
+    recalc();
+    loadOfferCatalog().then(function () {
+      // Список приезжает после отрисовки — перерисовываем, чтобы селект
+      // наполнился, не сбрасывая уже введённое в другие строки.
+      if (state.offers.some(function (offer) { return offer.picking; })) renderBody();
+    });
+    var picker = byId("finGridBody").querySelector(".fin-o-pick");
+    if (picker) picker.focus();
+  }
+
+  /* Перенос из справочника — те же поля, что подставляет назначение оффера
+     баеру: имя, партнёрка, гео и ставка с её валютой. */
+  function applyCatalogOffer(offer, item) {
+    offer.picking = false;
+    offer.name = item.name || "Новый оффер";
+    offer.partner = item.partner || "";
+    offer.geo = item.geo || null;
+    offer.rate = num(item.cpa);
+    offer.rateCurrency = item.cpa_currency === "EUR" ? "EUR" : "USD";
+    offer.sourceOfferId = item.id;
+    offer.externalId = item.external_id || "";
+    offer.lockedFields = [];
     renderBody();
     recalc();
     scheduleSave();
-    var names = byId("finGridBody").querySelectorAll(".fin-o-name");
-    var last = names[names.length - 1];
-    if (last) { last.focus(); last.select(); }
+  }
+
+  async function loadOfferCatalog() {
+    var catalog = state.catalog;
+    if (catalog.loaded || catalog.loading) return;
+    catalog.loading = true;
+    catalog.error = "";
+    // В финансах работают с офферами, заведёнными вручную в разделе
+    // «Оффера» (manual=true = connection_id IS NULL): трекерные из Keitaro
+    // сюда не попадают — они не про деньги баера по сделке.
+    var query = "?manual=true&limit=200";
+    try {
+      // Сначала офферы этого баера — книга ведётся по ним. Если ему ещё
+      // ничего не назначили, показываем весь видимый справочник: иначе
+      // список пуст и выбирать не из чего.
+      var mine = await api.get("/offers" + query +
+        "&for_buyer_id=" + encodeURIComponent(state.buyerId));
+      var items = (mine && mine.items) || [];
+      if (!items.length) {
+        var all = await api.get("/offers" + query);
+        items = (all && all.items) || [];
+      }
+      catalog.items = items;
+      catalog.loaded = true;
+    } catch (error) {
+      catalog.error = error && error.message ? error.message : "Справочник недоступен";
+    } finally {
+      catalog.loading = false;
+    }
   }
 
   function labelCell(label, hint) {
@@ -363,6 +436,7 @@
       input.inputMode = "decimal";
       input.value = store[d] != null ? store[d] : "";
       input.dataset.d = d;
+      if (key === "spendManual") input.dataset.spendManual = "true";
       input.disabled = !state.canManage;
       noAutofill(input);
       input.setAttribute("aria-label", label + ", день " + d);
@@ -371,6 +445,7 @@
         var raw = event.target.value;
         if (raw === "") delete store[day];
         else store[day] = num(raw);
+        if (key === "spendManual") state.manualDirty[day] = ++state.manualRevision;
         scheduleSave();
       });
       // Колесо над сфокусированным полем молча меняет цифру — при прокрутке
@@ -384,6 +459,120 @@
     }
     navRows.push(line);
     calcCells[key] = { sum: sum, days: null };
+    return tr;
+  }
+
+  /* Спенд — одна строка вместо трёх («Из медиаборда», «Ручной спенд», «Спенд
+     итого»). В ячейке лежит то, что доска посчитала по GEO и тиру, пока её не
+     тронули руками; правка запирает ячейку замком, и медиаборд её больше не
+     переписывает. Пустая ячейка снимает замок и возвращает автоподсчёт —
+     то же делает клик по самому замку.
+
+     Замок закрыт = на сервере лежит manual_spend этого дня; открыт = null и
+     значение приезжает из media_spend. */
+  var LOCK_CLOSED = '<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">' +
+    '<path d="M7 10V7a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round"/><rect x="4.5" y="10" width="15" height="10" rx="2.5" ' +
+    'fill="currentColor"/></svg>';
+  var LOCK_OPEN = '<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">' +
+    '<path d="M7 10V7a5 5 0 0 1 9.5-2.2" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round"/><rect x="4.5" y="10" width="15" height="10" rx="2.5" ' +
+    'fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+
+  function spendLocked(day) {
+    return state.manual.spendBuyer[day] != null;
+  }
+
+  function paintSpendCell(cell) {
+    var day = Number(cell.dataset.d);
+    var locked = spendLocked(day);
+    cell.td.classList.toggle("is-locked", locked);
+    cell.lock.innerHTML = locked ? LOCK_CLOSED : LOCK_OPEN;
+    cell.lock.title = locked
+      ? "Значение внесено вручную. Медиаборд его не меняет — нажмите, чтобы вернуть автоподсчёт"
+      : "Значение из медиаборда. Впишите своё, чтобы закрепить";
+    cell.lock.setAttribute("aria-label", cell.lock.title);
+    cell.lock.setAttribute("aria-pressed", locked ? "true" : "false");
+    if (cell.input !== document.activeElement) {
+      // Спенд ведём в целых долларах: «1259.9876» в ячейку не помещается и
+      // обрезается, а копейки кабинетов на решения финансиста не влияют.
+      var value = locked ? state.manual.spendBuyer[day] : state.mediaSpend[day];
+      cell.input.value = value == null ? "" : Math.round(num(value));
+    }
+  }
+
+  function repaintSpend() {
+    spendCells.forEach(paintSpendCell);
+  }
+
+  var spendCells = [];
+
+  function spendRow() {
+    var tr = el("tr");
+    tr.appendChild(labelCell("Спенд", "медиаборд, пока не закрыт замок"));
+    var sum = el("td", "fin-c-sum");
+    tr.appendChild(sum);
+    var line = [];
+    spendCells = [];
+    for (var d = 1; d <= state.days; d += 1) {
+      var flags = dayFlags(d);
+      var td = el("td", "fin-num fin-in fin-in--lock" + (flags.off ? " is-off" : ""));
+      td.dataset.d = d;
+      var input = document.createElement("input");
+      input.type = "number";
+      input.step = "1";
+      input.inputMode = "numeric";
+      input.dataset.d = d;
+      input.dataset.spendManual = "true";
+      input.disabled = !state.canManage;
+      noAutofill(input);
+      input.setAttribute("aria-label", "Спенд, день " + d);
+      input.addEventListener("input", function (event) {
+        var day = Number(event.target.dataset.d);
+        var raw = event.target.value;
+        // Пустая ячейка — это снятый замок, а не ноль: ноль вписывают явно.
+        if (raw === "") delete state.manual.spendBuyer[day];
+        // Введённое округляем на месте: строка целиком в целых долларах, и
+        // одна ячейка с копейками ломала бы и вид, и сумму столбца.
+        else state.manual.spendBuyer[day] = Math.round(num(raw));
+        state.manualDirty[day] = ++state.manualRevision;
+        paintSpendCell(spendCells[day - 1]);
+        scheduleSave();
+        recalc();
+      });
+      input.addEventListener("blur", function (event) {
+        // Ячейку очистили и ушли — показываем то, что подставил медиаборд.
+        paintSpendCell(spendCells[Number(event.target.dataset.d) - 1]);
+      });
+      // Колесо над сфокусированным полем молча меняет цифру — при прокрутке
+      // длинной таблицы это тихая порча данных.
+      input.addEventListener("wheel", function (event) {
+        if (document.activeElement === event.target) event.target.blur();
+      }, { passive: true });
+      var lock = document.createElement("button");
+      lock.type = "button";
+      lock.className = "fin-lock";
+      lock.dataset.d = d;
+      lock.disabled = !state.canManage;
+      lock.addEventListener("click", function (event) {
+        var day = Number(event.currentTarget.dataset.d);
+        if (!spendLocked(day)) return event.currentTarget.parentElement
+          .querySelector("input").focus();
+        delete state.manual.spendBuyer[day];
+        state.manualDirty[day] = ++state.manualRevision;
+        paintSpendCell(spendCells[day - 1]);
+        scheduleSave();
+        recalc();
+      });
+      td.appendChild(input);
+      td.appendChild(lock);
+      tr.appendChild(td);
+      line.push(input);
+      spendCells.push({ dataset: { d: d }, td: td, input: input, lock: lock });
+    }
+    navRows.push(line);
+    calcCells.spendBuyer = { sum: sum, days: null };
+    repaintSpend();
     return tr;
   }
 
@@ -478,23 +667,93 @@
       : "";
   }
 
+  /* Выбор оффера у новой строки. Список — обычный <select>: его подхватывает
+     select-ui и даёт поиск с подписью, а ID из подписи ищется наравне с
+     названием — по нему строку и сверяют с кабинетом партнёрки. */
+  function offerPicker(offer) {
+    var picker = document.createElement("select");
+    picker.className = "fin-o-name fin-o-pick meta-select";
+    picker.setAttribute("aria-label", "Выберите оффер из списка");
+    var catalog = state.catalog;
+    var first = document.createElement("option");
+    first.value = "";
+    first.textContent = catalog.loading
+      ? "Загружаем офферы…"
+      : catalog.error
+        ? "Справочник недоступен"
+        : "Выберите оффер…";
+    picker.appendChild(first);
+    catalog.items.forEach(function (item) {
+      var option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = item.name;
+      var hint = [
+        item.external_id ? "ID " + item.external_id : "без ID",
+        item.geo || null,
+        item.partner || null
+      ].filter(Boolean).join(" · ");
+      option.setAttribute("data-hint", hint);
+      picker.appendChild(option);
+    });
+    picker.disabled = !state.canManage || catalog.loading;
+    picker.addEventListener("change", function () {
+      var chosen = catalog.items.filter(function (item) {
+        return item.id === picker.value;
+      })[0];
+      if (chosen) applyCatalogOffer(offer, chosen);
+    });
+    return picker;
+  }
+
   function offerHeadRow(offer, index) {
     var tr = el("tr", "fin-offer-head");
     var td = el("td", "fin-c-name");
     var wrap = el("div", "fin-o-wrap");
     wrap.appendChild(el("i", "fin-o-dot"));
 
-    var name = document.createElement("input");
-    name.className = "fin-o-name";
-    name.value = offer.name;
-    name.disabled = !state.canManage;
-    name.setAttribute("aria-label", "Название оффера");
-    noAutofill(name);
-    name.addEventListener("input", function () {
-      offer.name = name.value;
-      scheduleSave();
-    });
-    wrap.appendChild(name);
+    if (offer.picking) {
+      wrap.appendChild(offerPicker(offer));
+    } else {
+      var name = document.createElement("input");
+      name.className = "fin-o-name";
+      name.value = offer.name;
+      name.disabled = !state.canManage;
+      name.setAttribute("aria-label", "Название оффера");
+      noAutofill(name);
+      name.addEventListener("input", function () {
+        offer.name = name.value;
+        lockOfferFields(offer);
+        scheduleSave();
+      });
+      wrap.appendChild(name);
+    }
+
+    if (state.canManage && offer.sourceOfferId) {
+      var offerLock = el("button", "fin-spend-lock");
+      offerLock.type = "button";
+      offerLock.innerHTML = offerLocked(offer) ? LOCK_CLOSED : LOCK_OPEN;
+      offerLock.title = offerLocked(offer)
+        ? "Ручные данные защищены. Нажмите, чтобы разрешить обновление из «Офферов»"
+        : "Данные обновляются из «Офферов». Нажмите, чтобы защитить ручные значения";
+      offerLock.setAttribute("aria-label", offerLock.title);
+      offerLock.addEventListener("click", function () {
+        var wasLocked = offerLocked(offer);
+        offer.lockedFields = wasLocked ? [] : OFFER_LOCK_FIELDS.slice();
+        offer.syncFromCatalog = wasLocked;
+        renderBody();
+        scheduleSave();
+      });
+      wrap.appendChild(offerLock);
+    }
+
+    /* ID оффера у партнёрки: по нему строку сверяют с кабинетом ПП и понимают,
+       почему депозиты приехали или не приехали. Здесь он только показан —
+       меняют его в разделе «Оффера», где он и живёт. */
+    if (offer.externalId) {
+      var external = el("span", "fin-o-id", "ID " + offer.externalId);
+      external.title = "ID оффера у партнёрки — из раздела «Оффера»";
+      wrap.appendChild(external);
+    }
 
     if (state.canManage) {
       var del = el("button", "fin-o-del");
@@ -544,6 +803,7 @@
     partner.value = offer.partner || "";
     partner.addEventListener("change", function () {
       offer.partner = partner.value || null;
+      lockOfferFields(offer);
       scheduleSave();
     });
     box.appendChild(partner);
@@ -574,6 +834,7 @@
 
     geo.addEventListener("change", function () {
       offer.geo = geo.value || null;
+      lockOfferFields(offer);
       scheduleSave();
     });
     box.appendChild(geo);
@@ -590,6 +851,7 @@
     currency.classList.toggle("is-eur", offer.rateCurrency === "EUR");
     currency.addEventListener("click", function () {
       offer.rateCurrency = offer.rateCurrency === "EUR" ? "USD" : "EUR";
+      lockOfferFields(offer);
       currency.textContent = CURRENCIES[offer.rateCurrency];
       currency.classList.toggle("is-eur", offer.rateCurrency === "EUR");
       renderRateNote(offer, note);
@@ -608,6 +870,7 @@
     noAutofill(rateInput);
     rateInput.addEventListener("input", function () {
       offer.rate = num(rateInput.value);
+      lockOfferFields(offer);
       renderRateNote(offer, note);
       recalc();
       scheduleSave();
@@ -655,10 +918,7 @@
     navRows = [];
 
     body.appendChild(bandRow("cost", "Затраты"));
-    body.appendChild(section(inputRow(
-      "spendBuyer", "Спенд", "то, что открутил баер",
-      state.manual.spendBuyer, "0.01"
-    ), "cost"));
+    body.appendChild(section(spendRow(), "cost"));
     body.appendChild(section(inputRow(
       "costs", "Costs", "комиссии, сервисы, прочее", state.manual.costs, "0.01"
     ), "cost"));
@@ -740,7 +1000,7 @@
     });
 
     var spendSum = totalOf(spend);
-    calcCells.spendBuyer.sum.textContent = money(spendSum);
+    calcCells.spendBuyer.sum.textContent = whole(spendSum);
     var costsSum = totalOf(costs);
     calcCells.costs.sum.textContent = money(costsSum);
 
@@ -775,7 +1035,7 @@
 
   function renderSummary(incomeSum, spendSum, costsSum, profitSum, roiSum) {
     byId("finCardIncome").textContent = withSign(whole(incomeSum));
-    byId("finCardSpend").textContent = withSign(money(spendSum));
+    byId("finCardSpend").textContent = withSign(whole(spendSum));
     byId("finCardCosts").textContent = withSign(money(costsSum));
 
     var profitCard = byId("finCardProfit");
@@ -960,11 +1220,16 @@
 
   /* ---------- сохранение ---------- */
 
+  /* Индикатор молчит, пока всё в порядке: постоянное «Сохранено» в шапке ничего
+     не сообщало, а «Сохраняю…» и так видно по кнопке синхронизации. Остаются
+     только ошибки — без них неудачное сохранение прошло бы незаметно. */
   function status(kind, text) {
     var box = byId("finSaved");
-    box.classList.toggle("is-busy", kind === "busy");
-    box.classList.toggle("is-error", kind === "error");
-    box.querySelector("span").textContent = text;
+    if (!box) return;
+    var bad = kind === "error";
+    box.hidden = !bad;
+    box.classList.toggle("is-error", bad);
+    box.querySelector("span").textContent = bad ? text : "";
   }
 
   function scheduleSave() {
@@ -978,11 +1243,12 @@
   function payload() {
     var days = {};
     for (var d = 1; d <= state.days; d += 1) {
-      var spendBuyer = num(state.manual.spendBuyer[d]);
+      var manualSpend = state.manual.spendBuyer[d] != null ? num(state.manual.spendBuyer[d]) : null;
       var spendAgent = num(state.manual.spendAgent[d]);
       var dayCosts = num(state.manual.costs[d]);
-      if (!spendBuyer && !spendAgent && !dayCosts) continue;
-      days[d] = { spend_buyer: spendBuyer, spend_agent: spendAgent, costs: dayCosts };
+      days[d] = { spend_agent: spendAgent, costs: dayCosts };
+      // Only an edited cell may replace or clear a manual override.
+      if (state.manualDirty[d]) days[d].manual_spend = manualSpend;
     }
     return {
       buyer_id: state.buyerId,
@@ -991,12 +1257,18 @@
       tier: state.bookTab,
       eur_usd_rate: num(state.eurRate) || 1,
       days: days,
-      offers: state.offers.map(function (offer) {
+      // Строка, в которой оффер ещё не выбран, не сохраняется: у неё нет ни
+      // названия, ни связи со справочником — сохранять нечего.
+      offers: state.offers.filter(function (offer) {
+        return !offer.picking;
+      }).map(function (offer) {
         return {
           name: (offer.name || "").trim() || "Без названия",
           partner: (offer.partner || "").trim() || null,
           geo: offer.geo || null,
           source_offer_id: offer.sourceOfferId || null,
+          locked_fields: offer.lockedFields || [],
+          sync_from_catalog: !!offer.syncFromCatalog,
           rate: num(offer.rate),
           rate_currency: offer.rateCurrency === "EUR" ? "EUR" : "USD",
           tags: offer.tags.map(function (tag) {
@@ -1034,10 +1306,14 @@
       return activeSave;
     }
     var requestPayload = payload();
+    var sentManual = Object.assign({}, state.manualDirty);
     dirty = false;
     activeSave = (async function () {
       try {
         var savedBook = await api.put("/finance/book", requestPayload);
+        Object.keys(sentManual).forEach(function (day) {
+          if (state.manualDirty[day] === sentManual[day]) delete state.manualDirty[day];
+        });
         // Перенос принадлежит серверу. Если параллельно не появилась новая
         // локальная правка, сразу принимаем пересчитанный остаток из ответа.
         if (!dirty && savedBook && savedBook.buyer &&
@@ -1046,6 +1322,15 @@
             savedBook.month === requestPayload.month &&
             state.buyerId === requestPayload.buyer_id &&
             state.year === requestPayload.year && state.month === requestPayload.month) {
+          state.mediaSpend = {};
+          Object.keys(state.manual.spendBuyer).forEach(function (day) { delete state.manual.spendBuyer[day]; });
+          Object.keys(savedBook.days || {}).forEach(function (day) {
+            var entry = savedBook.days[day];
+            state.mediaSpend[Number(day)] = num(entry.media_spend);
+            if (entry.manual_spend != null) state.manual.spendBuyer[Number(day)] = num(entry.manual_spend);
+          });
+          // Ответ принёс и пересчитанный медиаборд, и оставшиеся замки.
+          repaintSpend();
           state.prevMinus = num(savedBook.prev_minus);
           // Правило могли поменять в Настройках, пока книга была открыта:
           // ответ на сохранение приносит актуальную шкалу.
@@ -1079,10 +1364,13 @@
     state.ladder = stepsFromPlan(state.plan);
     state.prevMinus = num(book.prev_minus);
     state.eurRate = num(book.eur_usd_rate) || 1;
+    state.mediaSpend = {};
+    state.manualDirty = {};
     state.manual = { spendBuyer: {}, spendAgent: {}, costs: {} };
     Object.keys(book.days || {}).forEach(function (day) {
       var entry = book.days[day];
-      if (num(entry.spend_buyer)) state.manual.spendBuyer[Number(day)] = num(entry.spend_buyer);
+      state.mediaSpend[Number(day)] = num(entry.media_spend);
+      if (entry.manual_spend != null) state.manual.spendBuyer[Number(day)] = num(entry.manual_spend);
       if (num(entry.spend_agent)) state.manual.spendAgent[Number(day)] = num(entry.spend_agent);
       if (num(entry.costs)) state.manual.costs[Number(day)] = num(entry.costs);
     });
@@ -1092,8 +1380,12 @@
         partner: offer.partner || "",
         geo: offer.geo || null,
         sourceOfferId: offer.source_offer_id || null,
+        // ID у партнёрки — только для чтения: правят его в разделе «Оффера».
+        externalId: offer.external_id || "",
         rate: num(offer.rate),
         rateCurrency: offer.rate_currency === "EUR" ? "EUR" : "USD",
+        lockedFields: offer.locked_fields || [],
+        syncFromCatalog: false,
         tags: (offer.tags || []).map(function (tag) {
           var values = {};
           Object.keys(tag.values || {}).forEach(function (day) {
@@ -1133,6 +1425,7 @@
         request.buyerId !== state.buyerId ||
         request.year !== state.year || request.month !== state.month) return;
     applyBook(book);
+    renderSpendWarning(book.unassigned_spend);
     renderPeriod();
     renderLadder();
     renderCurrency();
@@ -1186,8 +1479,8 @@
      потрачено, что заработано. Числа в семь столбцов без этого читаются как
      одна сплошная простыня. */
   var SUMMARY_BANDS = {
-    spend: "cost", costs: "cost", salary: "cost", payout: "cost",
-    income: "result", profit: "result", roi: "result"
+    spend: "cost", costs: "cost", salary: "cost",
+    income: "offer", profit: "result", roi: "result"
   };
 
   function bandClass(key, previousKey) {
@@ -1197,18 +1490,21 @@
     return " fin-col--" + band + (opens ? " is-band-start" : "");
   }
 
-  function summaryCell(key, value, previousKey) {
+  function summaryCell(key, value, previousKey, plain) {
     var formatted = key === "roi" ? summaryPercent(value) : summaryMoney(value);
     var tone = key === "profit" || key === "roi"
       ? (num(value) < 0 ? " fin-neg" : num(value) > 0 ? " fin-pos" : "")
       : "";
-    return '<td class="' + (tone + bandClass(key, previousKey)).trim() + '">' +
+    var band = plain ? "" : bandClass(key, previousKey);
+    return '<td class="' + (tone + band).trim() + '">' +
       escapeHtml(formatted) + "</td>";
   }
 
-  function summaryTable(columns, rows, total) {
+  /* plain — таблица без цветных блоков: у «По тирам» колонки различает сама
+     подпись, а полосы делали из трёх строк пёструю сетку. */
+  function summaryTable(columns, rows, total, plain) {
     var head = columns.map(function (column, index) {
-      var band = index === 0 || column.text
+      var band = index === 0 || column.text || plain
         ? ""
         : bandClass(column.key, index ? (columns[index - 1] || {}).key : null);
       return '<th class="' + band.trim() + '">' + escapeHtml(column.label) + "</th>";
@@ -1219,7 +1515,7 @@
           return "<td>" + escapeHtml(row[column.key]) + "</td>";
         }
         return summaryCell(column.key, row[column.key],
-          (columns[index - 1] || {}).key);
+          (columns[index - 1] || {}).key, plain);
       }).join("") + "</tr>";
     }).join("");
     if (total) {
@@ -1227,7 +1523,7 @@
         columns.slice(1).map(function (column, index) {
           if (column.text) return "<td></td>";
           return summaryCell(column.key, total[column.key],
-            (columns[index] || {}).key);
+            (columns[index] || {}).key, plain);
         }).join("") + "</tr>";
     }
     // Шапку из пустых ячеек не рисуем: в таблице «имя — сумма» подписи не
@@ -1306,7 +1602,6 @@
     byId("finSummaryView").hidden = !summaryMode;
     byId("finBookSheet").hidden = summaryMode;
     byId("finBookSalary").hidden = summaryMode;
-    byId("finSaved").hidden = summaryMode;
     byId("finCardSalary").closest(".fin-card").hidden = summaryMode;
     var buyerSheet = state.sheet.indexOf("buyer:") === 0;
   }
@@ -1394,7 +1689,22 @@
     return total;
   }
 
+  function renderSpendWarning(amount) {
+    var warning = byId("finSpendWarning");
+    if (!warning) {
+      warning = el("div");
+      warning.id = "finSpendWarning";
+      warning.setAttribute("role", "status");
+      warning.style.cssText = "padding:12px 16px;margin:12px 0;border:1px solid #E6C59A;border-radius:10px;background:#FFF8EE;color:#775021;font-size:12px";
+      byId("finBookTabs").parentNode.insertBefore(warning, byId("finBookTabs"));
+    }
+    warning.hidden = !num(amount);
+    warning.textContent = "Спенд без GEO: " + money(num(amount)) +
+      ". Он не включён в таблицы по тирам. Укажите страну у оффера в медиаборде.";
+  }
+
   function renderFinanceSummary(data) {
+    renderSpendWarning(data.unassigned_spend);
     setView(true);
     renderSummaryCards(data.cards);
     var teamSummary = state.sheet.indexOf("team:") === 0;
@@ -1412,12 +1722,12 @@
     }
     buyerColumns = buyerColumns.concat(moneyColumns);
     byId("finSummaryTiersBlock").hidden = !data.tiers.length;
-    byId("finSummaryTiers").innerHTML = summaryTable(tierColumns, data.tiers, data.cards);
+    byId("finSummaryTiers").innerHTML = summaryTable(tierColumns, data.tiers, data.cards, true);
     byId("finSummaryBuyersBlock").hidden = !data.buyers.length;
     byId("finSummaryBuyersTitle").textContent = teamSummary
       ? "Тимлид и команда" : "По баерам";
     byId("finSummaryBuyers").innerHTML = summaryTable(
-      buyerColumns, data.buyers, data.cards
+      buyerColumns, data.buyers, data.cards, true
     );
     // Показываем по данным, а не по имени листа: в общей сводке баера лист
     // называется «buyer:…», и проверка на «all» прятала блок вместе с числами.
@@ -1425,14 +1735,15 @@
     byId("finSummaryDaily").innerHTML = dailyGrid(data.daily, data.cards);
 
     var salary = data.salary;
-    byId("finSummarySalaryBlock").hidden = !salary;
+    // Разбивка по ролям — только когда есть что разбивать: у баера групп нет,
+    // и его начисление целиком видно строкой фонда и в «Общей ЗП по тирам».
+    var groups = salary ? salary.groups || [] : [];
+    byId("finSalaryFundRow").hidden = !salary;
+    byId("finSummarySalaryBlock").hidden = !groups.length;
     if (salary) {
       byId("finSalaryFundLabel").textContent = salary.label
         || (teamSummary ? "Фонд ЗП команды" : "Фонд ЗП компании");
       byId("finSalaryFund").textContent = summaryMoney(salary.total);
-      // Пустые части блока не рисуем: у баера нет ни групп, ни списка людей —
-      // подпись «нет начислений» над его же зарплатой читалась бы как ошибка.
-      var groups = salary.groups || [];
       byId("finSalaryRoles").hidden = !groups.length;
       byId("finSalaryRoles").innerHTML = salaryRoles(groups);
       var apart = groups.length ? salaryApart(groups) : "";
@@ -1466,7 +1777,9 @@
   function renderBuyerMenu() {
     var menu = byId("finBuyerMenu");
     menu.innerHTML = "";
-    menu.appendChild(menuTitle("Сводки"));
+    // Роли «Только свои данные» сводки не приходят: заголовок без списка
+    // выглядел бы поломкой.
+    if ((state.scopes.summaries || []).length) menu.appendChild(menuTitle("Сводки"));
     (state.scopes.summaries || []).forEach(function (summary) {
       var item = el("li", null, summary.name);
       item.setAttribute("role", "option");
@@ -1492,6 +1805,15 @@
       item.setAttribute("aria-selected", String(item.dataset.sheet === state.sheet));
       menu.appendChild(item);
     });
+  }
+
+  /* Что открыть первым. Обычно это «Общая», но роли с доступом только к своим
+     данным сводок не видят — ей открывается собственная книга. */
+  function defaultSheet() {
+    var summaries = state.scopes.summaries || [];
+    if (summaries.length) return summaries[0].scope;
+    var buyers = state.scopes.buyers || [];
+    return buyers.length ? "buyer:" + buyers[0].id : "all";
   }
 
   function sheetName(sheet) {
@@ -1554,6 +1876,7 @@
     renderPeriod();
     renderFinanceSummary({
       title: "",
+      unassigned_spend: data.unassigned_spend,
       cards: data.cards,
       tiers: data.tiers,
       daily: data.daily,
@@ -1620,7 +1943,7 @@
     shiftMonth(delta);
     renderPeriod();
     await loadScopes();
-    if (!sheetName(state.sheet)) state.sheet = "all";
+    if (!sheetName(state.sheet)) state.sheet = defaultSheet();
     state.buyerName = sheetName(state.sheet);
     byId("finBuyerName").textContent = state.buyerName;
     renderBuyerMenu();
@@ -1663,10 +1986,7 @@
         {}
       );
       var text = "Депозитов записано: " + result.upserted;
-      if (result.pending) {
-        text += ", без строки в таблице: " + result.pending;
-      }
-      if (result.skipped) text += ", пропущено: " + result.skipped;
+      if (result.pending) text += " · без строки: " + result.pending;
       notify(text, result);
       // Таблица могла заполниться — перечитываем её.
       await loadBook();
@@ -1679,6 +1999,10 @@
     }
   }
 
+  /* Итог синка коротко: сколько записано и сколько не легло, а из подробностей
+     — только то, что требует действия. Разбор по каждому тегу («такой строки в
+     финансах нет») занимал пол-экрана и повторял одну и ту же мысль: заведите
+     тег в книге. Ошибки интеграций показываем как есть — это не шум. */
   function notify(text, result) {
     var details = [];
     (result && result.errors ? result.errors : []).forEach(function (row) {
@@ -1686,13 +2010,9 @@
     });
     if (result && result.pending) {
       details.push(
-        "Депозиты без строки: заведите тег под нужным оффером в книге — " +
-        "следующий синк за тот же период разложит их сам."
+        "Заведите тег под нужным оффером в книге — следующий синк разложит их сам."
       );
     }
-    (result && result.reasons ? result.reasons : []).slice(0, 5).forEach(function (row) {
-      details.push(row);
-    });
     if (window.CelestialShell && window.CelestialShell.notify) {
       window.CelestialShell.notify({
         title: text,
@@ -1787,7 +2107,7 @@
     if (!byId("finGrid")) return;
     state.user = user;
     state.canManage = hasPermission(user, "finance.manage");
-    var now = new Date();
+    var now = window.CelestialTime.today();
     state.year = now.getFullYear();
     state.month = now.getMonth() + 1;
 
@@ -1800,7 +2120,7 @@
       .catch(function () { return { value: {} }; });
     await loadScopes();
     var preferred = preference && preference.value && preference.value.sheet;
-    state.sheet = preferred && sheetName(preferred) ? preferred : "all";
+    state.sheet = preferred && sheetName(preferred) ? preferred : defaultSheet();
     state.buyerName = sheetName(state.sheet) || "Общая";
     byId("finBuyerName").textContent = state.buyerName;
     renderBuyerMenu();

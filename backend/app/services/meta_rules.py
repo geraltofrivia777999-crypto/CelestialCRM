@@ -19,9 +19,10 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.clock import business_timezone, business_today, meta_rules_step_minutes
 from app.core.security import decrypt_secret
 from app.models import (
     IntegrationConnection,
@@ -33,6 +34,7 @@ from app.models import (
     MetaRuleEvent,
     MetaStatDaily,
 )
+from app.services.formulas import q
 from app.services.meta import MetaClient, money_to_minor
 from app.services.meta_metrics import (
     REVENUE_METRICS,
@@ -132,26 +134,64 @@ def _convert_money(amount: Decimal, from_currency: str, to_currency: str) -> Dec
     return (amount / Decimal(str(frm)) * Decimal(str(to))).quantize(Decimal("0.01"))
 
 
-def schedule_allows(rule: MetaRule, now: datetime) -> bool:
-    """Расписание правила: когда ему разрешено смотреть на объекты."""
-    if rule.schedule_kind == "custom":
-        payload = rule.schedule or {}
-        days = set(int(value) for value in (payload.get("days") or []))
-        if days and now.isoweekday() not in days:
-            return False
-        current = f"{now.hour:02d}:{now.minute:02d}"
-        intervals = payload.get("intervals") or []
-        if intervals:
-            return any(
-                str(item.get("begin") or "") <= current <= str(item.get("end") or "")
-                and bool(str(item.get("end") or ""))
-                for item in intervals
-            )
-        return True
+def _aware(value: datetime) -> datetime:
+    # SQLite и старые строки отдают время без зоны; в базе оно всегда UTC.
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _clock(value: object) -> tuple[int, int] | None:
+    try:
+        hour, minute = str(value or "").split(":", 1)
+        return int(hour), int(minute)
+    except ValueError:
+        return None
+
+
+def schedule_allows(
+    rule: MetaRule, now: datetime, previous: datetime | None = None
+) -> bool:
+    """Расписание правила: когда ему разрешено смотреть на объекты.
+
+    Часы и дни — московские: так их задают в форме. `previous` — время прошлой
+    проверки правила. Прогон идёт раз в несколько минут, и момент, который
+    выпал между двумя прогонами (полночь, короткое окно «с 10:05 до 10:10»),
+    засчитывается следующему прогону — иначе правило молча не срабатывало бы.
+    Опоздание больше одного шага (сервер лежал) не догоняем: остановить
+    кампании в полдень по «полуночному» правилу хуже, чем пропустить сутки.
+    """
+    local = _aware(now).astimezone(business_timezone())
+    step = timedelta(minutes=meta_rules_step_minutes())
+    since = _aware(previous).astimezone(local.tzinfo) if previous else local - step
+    late = step + timedelta(minutes=5)
+
+    def fell_between(moment: datetime) -> bool:
+        return since < moment <= local and local - moment <= late
+
     if rule.schedule_kind == "daily_midnight":
-        # «Каждую полночь»: окно первого прогона суток — 00:00–00:09.
-        return now.hour == 0 and now.minute < 10
-    return True
+        return fell_between(local.replace(hour=0, minute=0, second=0, microsecond=0))
+    if rule.schedule_kind != "custom":
+        return True
+    payload = rule.schedule or {}
+    days = {int(value) for value in (payload.get("days") or [])}
+    intervals = payload.get("intervals") or []
+    if not intervals:
+        return not days or local.isoweekday() in days
+    current = (local.hour, local.minute)
+    for item in intervals:
+        begin, end = _clock(item.get("begin")), _clock(item.get("end"))
+        if begin is None or end is None:
+            continue
+        if (not days or local.isoweekday() in days) and begin <= current <= end:
+            return True
+        # Окно целиком уместилось между прогонами — его начало (сегодня или
+        # вчера, если прошлый прогон был до полуночи) засчитываем этому прогону.
+        for back in (0, 1):
+            start = (local - timedelta(days=back)).replace(
+                hour=begin[0], minute=begin[1], second=0, microsecond=0
+            )
+            if fell_between(start) and (not days or start.isoweekday() in days):
+                return True
+    return False
 FREQUENCIES = {
     15: "Каждые 15 минут",
     60: "Каждый час",
@@ -205,7 +245,13 @@ class MetaRuleEngine:
             rule = await db.get(MetaRule, rule_id)
             if not rule or not rule.is_enabled:
                 return {"triggered": 0, "applied": 0}
-            if not schedule_allows(rule, datetime.now(UTC)):
+            now = datetime.now(UTC)
+            previous = rule.last_checked_at
+            # Отметка ставится при каждом прогоне, даже если расписание не
+            # пустило: по ней следующий прогон понимает, что пропустил.
+            rule.last_checked_at = now
+            await db.commit()
+            if not schedule_allows(rule, now, previous):
                 return {"triggered": 0, "applied": 0}
             candidates = await collect_candidates(db, rule)
             recent = await self._recent_campaigns(db, rule)
@@ -220,25 +266,34 @@ class MetaRuleEngine:
             return {"triggered": 0, "applied": 0}
 
         session_access = None
+        access_error: str | None = None
         if access and rule.action in WRITE_ACTIONS:
             if access.get("auth_method") == "session":
                 # Запись через токен сессии Meta принимает только из браузерного
-                # контекста живой сессии.
-                session_access = await open_session_access(
-                    self.session_factory,
-                    access["connection_id"],
-                    proxy_url=access.get("proxy_url"),
-                    user_agent=access.get("user_agent"),
-                )
+                # контекста живой сессии. Сохранённый токен уже проверяется
+                # запросом действия; повторное извлечение через Ads Manager
+                # здесь только задерживало стоп на несколько минут и падало на
+                # медленных прокси.
+                try:
+                    session_access = await open_session_access(
+                        self.session_factory,
+                        access["connection_id"],
+                        proxy_url=access.get("proxy_url"),
+                        user_agent=access.get("user_agent"),
+                        refresh_token=False,
+                    )
+                except Exception as exc:  # noqa: BLE001 — ошибка попадёт в событие правила
+                    access_error = " ".join(str(exc).split())[:500]
         try:
             client = (
                 self.client_factory(
-                    session_access["token"] if session_access else access["token"],
+                    (session_access.get("token") if session_access else None)
+                    or access["token"],
                     proxy=access["proxy_url"],
                     user_agent=access["user_agent"],
                     transport=session_access["transport"] if session_access else None,
                 )
-                if access and rule.action in WRITE_ACTIONS
+                if access and rule.action in WRITE_ACTIONS and not access_error
                 else None
             )
             applied = 0
@@ -246,7 +301,9 @@ class MetaRuleEngine:
                 error: str | None = None
                 done = False
                 if rule.action in WRITE_ACTIONS:
-                    if not client:
+                    if access_error:
+                        error = "Не удалось открыть сессию Meta: " + access_error
+                    elif not client:
                         error = (
                             "Нет активного подключения Meta с токеном — действие не выполнено, "
                             "правило сработало как уведомление."
@@ -471,9 +528,22 @@ class MetaRuleEngine:
             await db.commit()
 
 
+def _maybe_convert(
+    value: Decimal | None,
+    currency_from: str | None,
+    rule: MetaRule,
+) -> Decimal | None:
+    """Приведение суммы к валюте правила — как это делает расход окна."""
+    if value is None:
+        return None
+    if rule.convert_currency and rule.currency:
+        return _convert_money(value, currency_from or "USD", rule.currency)
+    return value
+
+
 async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
     """Объекты уровня правила с посчитанными метриками за период статы."""
-    today = datetime.now(UTC).date()
+    today = business_today()
     start, end = window_range(rule.window, today)
     level = rule.level if rule.level in LEVELS else "campaign"
 
@@ -542,6 +612,48 @@ async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
     if not grouped:
         return []
 
+    # Метрики «за всё время» и «за сегодня» окном статы не покрываются:
+    # для них нужны отдельные агрегаты. Считаются одним запросом и только
+    # когда условие правила их правда использует.
+    needs = rule_metrics(rule)
+    key_columns = {
+        "campaign": MetaStatDaily.campaign_external_id,
+        "adset": MetaStatDaily.adset_external_id,
+        "ad": MetaStatDaily.ad_external_id,
+    }
+    key_column_expr = key_columns[level]
+    base_filters = [MetaStatDaily.account_id.in_(list(accounts))]
+    if only_campaigns:
+        base_filters.append(MetaStatDaily.campaign_external_id.in_(only_campaigns))
+    lifetime_spend: dict[str, Decimal] = {}
+    if needs & {"spend_total", "spend_total_pct"}:
+        lifetime_spend = {
+            key: total
+            for key, total in (
+                await db.execute(
+                    select(key_column_expr, func.sum(MetaStatDaily.spend))
+                    .where(*base_filters)
+                    .group_by(key_column_expr)
+                )
+            )
+        }
+    today_spend: dict[str, Decimal] = {}
+    if "spend_day_pct" in needs:
+        today = business_today()
+        today_spend = {
+            key: total
+            for key, total in (
+                await db.execute(
+                    select(key_column_expr, func.sum(MetaStatDaily.spend))
+                    .where(
+                        *base_filters,
+                        MetaStatDaily.record_date == today,
+                    )
+                    .group_by(key_column_expr)
+                )
+            )
+        }
+
     sub_id = await _attribution_sub_id(db, rule.workspace_id)
     # Доход из трекера привязан к ID кампании, поэтому ниже кампании его нет:
     # доходные метрики на адсетах и объявлениях остаются неизвестными, а
@@ -595,6 +707,25 @@ async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
             spend = _convert_money(spend, entity_stats[0].currency or "USD", rule.currency)
         if spend < (rule.min_spend or ZERO):
             continue
+
+        lifetime = _maybe_convert(
+            lifetime_spend.get(external_id), entity_stats[0].currency, rule
+        )
+        spent_today = _maybe_convert(
+            today_spend.get(external_id), entity_stats[0].currency, rule
+        )
+        daily_budget = _entity_money(entity, "daily_budget")
+        lifetime_budget = _entity_money(entity, "lifetime_budget")
+        day_pct = (
+            q(spent_today / daily_budget * Decimal("100"))
+            if spent_today is not None and daily_budget and daily_budget > 0
+            else None
+        )
+        total_pct = (
+            q(lifetime / lifetime_budget * Decimal("100"))
+            if lifetime is not None and lifetime_budget and lifetime_budget > 0
+            else None
+        )
         campaign_id = entity_stats[0].campaign_external_id
         tracker = keitaro.get(campaign_id) if campaign_id else None
         budget_targets = adsets.get(external_id, [])
@@ -645,6 +776,9 @@ async def collect_candidates(db: AsyncSession, rule: MetaRule) -> list[dict]:
                     ),
                     daily_budget=_entity_money(entity, "daily_budget"),
                     lifetime_budget=_entity_money(entity, "lifetime_budget"),
+                    spend_total=lifetime,
+                    spend_day_pct=day_pct,
+                    spend_total_pct=total_pct,
                 ),
             }
         )

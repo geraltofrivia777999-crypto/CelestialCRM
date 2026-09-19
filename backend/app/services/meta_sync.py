@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.clock import business_today
 from app.core.config import settings
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models import (
@@ -36,8 +37,7 @@ from app.services.meta import (
     MetaError,
     account_status_label,
     action_counts,
-    creative_page_id,
-    creative_post_id,
+    apply_entity_row,
     decimal_value,
     integer_value,
     money_from_minor,
@@ -298,7 +298,7 @@ class MetaSyncEngine:
 
     @staticmethod
     def _date_window(mode: str, config: dict) -> tuple[date, date]:
-        today = datetime.now(UTC).date()
+        today = business_today()
         if mode == "backfill":
             # Полная выкачка за три месяца — это сотни запросов подряд. Токену
             # системного пользователя это нормально: он для того и сделан. Токен
@@ -556,20 +556,7 @@ class MetaSyncEngine:
                             external_id=external_id,
                         )
                         db.add(entity)
-                    entity.name = str(row.get("name") or external_id)[:300]
-                    entity.parent_external_id = _parent_id(level, row)
-                    if level == "ad":
-                        entity.page_external_id = creative_page_id(row)
-                        entity.post_external_id = creative_post_id(row)
-                    entity.effective_status = (
-                        str(row.get("effective_status") or row.get("status") or "") or None
-                    )
-                    entity.objective = (
-                        str(row.get("objective") or row.get("optimization_goal") or "") or None
-                    )
-                    entity.daily_budget = money_from_minor(row.get("daily_budget"))
-                    entity.lifetime_budget = money_from_minor(row.get("lifetime_budget"))
-                    entity.external_payload = row
+                    apply_entity_row(entity, level, row)
                 await db.commit()
             if level == "campaign":
                 await self._sync_launch_statuses(config, rows)
@@ -680,14 +667,6 @@ async def active_meta_connections(db: AsyncSession, workspace_id: uuid.UUID) -> 
             )
         ).scalars()
     )
-
-
-def _parent_id(level: str, row: dict) -> str | None:
-    if level == "adset":
-        return str(row.get("campaign_id") or "") or None
-    if level == "ad":
-        return str(row.get("adset_id") or "") or None
-    return None
 
 
 def _parse_day(value: object) -> date | None:

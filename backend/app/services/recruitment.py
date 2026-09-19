@@ -7,6 +7,7 @@
 """
 
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -109,15 +110,25 @@ class RecruitmentClient:
         self,
         *,
         source: str | None = None,
+        via: str | None = None,
         template_id: str | None = None,
         min_score: int | None = None,
         review_status: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
+        """Кандидаты сервиса.
+
+        `via` разделяет две ветки HH: `search` — нашли активным поиском по базе
+        резюме, `negotiation` — человек сам откликнулся на размещённую вакансию.
+        Обе пишут `source: "hh"`, и без этого признака экран «Отклики» показывал
+        бы результаты поиска вперемешку с настоящими откликами.
+        """
         params: dict = {"limit": limit, "offset": offset}
         if source:
             params["source"] = source
+        if via:
+            params["via"] = via
         if template_id:
             params["search_template_id"] = template_id
         if min_score is not None:
@@ -142,8 +153,59 @@ class RecruitmentClient:
     async def hh_status(self) -> dict:
         return await self._request("GET", "/providers/hh/status")
 
+    async def hh_vacancies(self) -> dict:
+        return await self._request("GET", "/providers/hh/vacancies")
+
+    async def hh_areas(self, query: str = "", limit: int = 20) -> dict:
+        """Города и регионы HH для структурного критерия поиска."""
+        return await self._request(
+            "GET",
+            "/providers/hh/areas",
+            params={"query": query, "limit": limit},
+        )
+
     async def hh_connect(self) -> dict:
         return await self._request("POST", "/providers/hh/connect")
+
+    async def telegram_file(
+        self, application_id: str
+    ) -> tuple[bytes | None, str | None, str | None, str | None]:
+        """Забрать Telegram-файл, не раскрывая браузеру внутренний токен.
+
+        Recruitment Service иногда отвечает перенаправлением на готовую
+        HTTP(S)-ссылку, а для Telegram ``file_id`` возвращает само содержимое.
+        """
+        try:
+            async with self._client() as client:
+                response = await client.get(
+                    f"/telegram/applications/{application_id}/file",
+                    follow_redirects=False,
+                )
+        except RecruitmentError:
+            raise
+        except httpx.HTTPError:
+            raise RecruitmentError("Не удалось получить файл резюме") from None
+        if response.status_code in (401, 403):
+            raise RecruitmentError("Сервис рекрутинга отклонил токен доступа")
+        if response.status_code >= 400:
+            detail = ""
+            try:
+                detail = str(response.json().get("detail") or "")
+            except Exception:
+                pass
+            raise RecruitmentError(detail or "Не удалось получить файл резюме")
+        if response.is_redirect:
+            location = response.headers.get("location")
+            parsed = urlparse(location or "")
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise RecruitmentError("Сервис вернул некорректную ссылку на резюме")
+            return None, None, None, location
+        return (
+            response.content,
+            response.headers.get("content-type") or "application/octet-stream",
+            response.headers.get("content-disposition"),
+            None,
+        )
 
 
 def recruitment_client() -> RecruitmentClient:

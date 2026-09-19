@@ -109,7 +109,7 @@ class Workspace(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "workspaces"
 
     name: Mapped[str] = mapped_column(String(160), nullable=False)
-    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Qyzylorda")
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Moscow")
     currency: Mapped[str] = mapped_column(String(3), default="USD")
 
 
@@ -141,6 +141,18 @@ class Role(UUIDMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     description: Mapped[str] = mapped_column(String(255), default="")
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Чьи данные видит роль: "all" — весь воркспейс, "team" — себя и своих
+    # подчинённых, "own" — только свои. Права отвечают за разделы, а это — за
+    # строки внутри них: тимлид и баер открывают Медиаборд одинаково, но видят
+    # в нём разное.
+    data_scope: Mapped[str] = mapped_column(
+        String(10), default="team", server_default="team", nullable=False
+    )
+    # Сводки «Общая», «Tier1», «Tier2/3» в Финансах. Отдельно от области
+    # доступа: тимлиду своя команда нужна, а общий срез по воркспейсу — не всем.
+    show_finance_summaries: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
     permissions: Mapped[list[Permission]] = relationship(
         secondary="role_permissions", lazy="selectin"
     )
@@ -240,7 +252,7 @@ class IntegrationConnection(UUIDMixin, TimestampMixin, Base):
     api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active)
     sync_interval_minutes: Mapped[int] = mapped_column(default=15)
-    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Moscow")
     buyer_sub_id: Mapped[int] = mapped_column(default=1)
     lookback_days: Mapped[int] = mapped_column(default=2)
     checkpoint_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -674,7 +686,9 @@ class MetaTemplate(UUIDMixin, TimestampMixin, Base):
 
     __tablename__ = "meta_templates"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "name", name="uq_meta_template_name"),
+        UniqueConstraint(
+            "workspace_id", "created_by_id", "name", name="uq_meta_template_owner_name"
+        ),
     )
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(
@@ -832,6 +846,8 @@ class MetaLaunch(UUIDMixin, TimestampMixin, Base):
     budget_randomize: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # На сколько процентов разбрасывать бюджет (±N %). Пусто — ±10 %.
+    budget_randomize_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     adset_budget_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     bid_strategy: Mapped[str | None] = mapped_column(String(40))
     # Автоправила, привязанные к этому заливу: их launch_id проставляется,
@@ -1389,6 +1405,11 @@ class FinanceBookOffer(UUIDMixin, Base):
     rate_currency: Mapped[str] = mapped_column(
         String(3), default="USD", server_default="USD"
     )
+    # Поля, которые финансист заполнил вручную и защитил от обновления из
+    # справочника «Оффера». Замок хранится на строке книги.
+    locked_fields: Mapped[list] = mapped_column(
+        JSON, default=list, server_default="[]", nullable=False
+    )
 
 
 class FinanceBookDay(UUIDMixin, Base):
@@ -1400,6 +1421,10 @@ class FinanceBookDay(UUIDMixin, Base):
     )
     day: Mapped[int] = mapped_column(nullable=False)
     spend_buyer: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
+    # null у media_spend — прежняя ручная запись, ещё не сверенная с доской.
+    media_spend: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    # Явная замена автоматической суммы. null — использовать медиаборд; 0 — ручной ноль.
+    manual_spend: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     # Сверка с кабинетом: в расчёты не входит, но финансист её ведёт.
     spend_agent: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
     costs: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0, server_default="0")
@@ -1452,6 +1477,11 @@ class TaskSection(UUIDMixin, TimestampMixin, Base):
     )
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     position: Mapped[int] = mapped_column(default=0)
+    # Шаблон, с которым открывается новая задача этого раздела. У каждого отдела
+    # свой бриф: дизайнеру нужны «Вид крео» и «Формат», баеру — совсем другое.
+    default_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("task_templates.id", ondelete="SET NULL")
+    )
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -1593,6 +1623,12 @@ class Task(UUIDMixin, TimestampMixin, Base):
     )
     position: Mapped[int] = mapped_column(default=0)
     custom_values: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Поля, созданные прямо из этой карточки. Определения остаются в общем
+    # справочнике (так сохраняются тип и настройки), но другие задачи их не
+    # показывают, пока поле не добавили в их собственный список или шаблон.
+    field_ids: Mapped[list] = mapped_column(
+        JSON, default=list, server_default="[]", nullable=False
+    )
     # По какому шаблону заведена карточка — от этого зависит набор её полей.
     # Удаление шаблона обнуляет ссылку, но поля с уже заполненными значениями
     # из карточки не пропадают.
@@ -1605,6 +1641,26 @@ class Task(UUIDMixin, TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     assignees: Mapped[list["TaskAssignee"]] = relationship(
         lazy="selectin", cascade="all, delete-orphan"
+    )
+
+
+class TaskStatusEvent(UUIDMixin, Base):
+    """Переход задачи в статус: кто и когда. Название статуса копируется —
+    колонку могут переименовать или удалить, а история должна читаться."""
+
+    __tablename__ = "task_status_events"
+    __table_args__ = (Index("ix_task_status_events_task", "task_id", "created_at"),)
+
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    status_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("task_statuses.id", ondelete="SET NULL")
+    )
+    status_name: Mapped[str] = mapped_column(String(80), default="", server_default="")
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
@@ -1780,6 +1836,11 @@ class KnowledgeAttachment(UUIDMixin, Base):
     task_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("tasks.id", ondelete="CASCADE"), index=True
     )
+    # Запись интервью в карточке кандидата. Третья возможная привязка: без неё
+    # уборщик незакреплённых файлов удалил бы запись через сутки.
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("recruitment_candidates.id", ondelete="CASCADE"), index=True
+    )
     file_name: Mapped[str] = mapped_column(String(300), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
     byte_size: Mapped[int] = mapped_column(default=0)
@@ -1927,7 +1988,7 @@ class CapRule(UUIDMixin, TimestampMixin, Base):
     # Таймзона сброса счётчика. Без неё «каждый день в 00:00» означало бы
     # полночь сервера, а команда живёт по своему времени.
     timezone: Mapped[str] = mapped_column(
-        String(64), default="UTC", server_default="UTC"
+        String(64), default="Europe/Moscow", server_default="Europe/Moscow"
     )
     # Тема супергруппы для этой конкретной капы. У канала есть свой thread_id,
     # но капы одного канала часто разводят по разным темам.
@@ -2213,9 +2274,9 @@ class RecruitmentCandidate(UUIDMixin, TimestampMixin, Base):
     )
     # id находки в Recruitment Service — по нему подтягиваем свежий профиль.
     external_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    # screening | interview | offer | hired | rejected
+    # screening | interview | tech_interview | offer | hired | rejected
     stage: Mapped[str] = mapped_column(
-        String(12), default="screening", server_default="screening", nullable=False
+        String(24), default="screening", server_default="screening", nullable=False
     )
     position_title: Mapped[str | None] = mapped_column(String(300))
     geo: Mapped[str | None] = mapped_column(String(160))
@@ -2225,16 +2286,35 @@ class RecruitmentCandidate(UUIDMixin, TimestampMixin, Base):
     salary_expectation: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     experience_months: Mapped[int | None] = mapped_column(Integer)
     external_url: Mapped[str | None] = mapped_column(String(500))
+    # Остальной снимок находки одним полем: имя, дата рождения, город, ник в
+    # телеграме, текст отклика и файл. Колонкой на каждое поле это была бы
+    # миграция под каждую правку сервиса — а состав того, что он отдаёт, ещё
+    # меняется. В расчётах эти данные не участвуют, только показываются.
+    profile: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
     note: Mapped[str | None] = mapped_column(Text)
+    # Позиция, на которую рассматриваем, — не та, что стоит в резюме:
+    # `position_title` это снимок из HH, а здесь решение команды.
+    target_position: Mapped[str | None] = mapped_column(String(300))
+    # Телеграм кандидата: в резюме HH его нет, а переписка идёт там.
+    telegram_contact: Mapped[str | None] = mapped_column(String(120))
+    # Запись интервью — ссылка на встречу или загруженный файл. Одним полем:
+    # для нанимающего это одно и то же «где посмотреть интервью».
+    interview_record: Mapped[str | None] = mapped_column(String(500))
     stage_changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     added_by_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
+    # Убран с доски. Строку не удаляем: сервис по-прежнему считает находку
+    # разобранной и при следующем открытии доски вернул бы её обратно —
+    # карточка «удалялась» и тут же появлялась снова. Отметка помнит решение
+    # CRM: на доске такого кандидата нет, а повторно завести его можно из
+    # «Откликов» — тогда отметка снимается.
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class IdempotencyRecord(UUIDMixin, Base):
@@ -2275,6 +2355,12 @@ class PartnerIntegration(UUIDMixin, TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     partner_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    # Платформа, на которой работает ПП: affise | alanbase | afftech. По ней
+    # сервис выбирает готовый шаблон коннектора — вручную его не собирают.
+    platform: Mapped[str] = mapped_column(String(40), default="", server_default="")
+    # Адрес и ключ самой партнёрки, а не сервиса: сервис у CRM один, его адрес
+    # живёт в настройках развёртывания. Эти доступы CRM передаёт сервису при
+    # создании интеграции, дальше в ПП ходит он.
     base_url: Mapped[str] = mapped_column(String(300), nullable=False)
     api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     is_enabled: Mapped[bool] = mapped_column(

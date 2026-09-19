@@ -20,6 +20,15 @@
   .settings-select{appearance:none;padding:0 38px 0 13px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%23A2A7B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
   .settings-tab{height:42px;border:0;background:transparent;color:#857D7D;padding:0 16px;font-size:13px;font-weight:700;border-radius:10px;white-space:nowrap}
   .settings-tab.active{background:#FCF1F1;color:#B91414}
+  .util-seg{display:inline-flex;gap:2px;padding:4px;border-radius:12px;background:#F3EDED}
+  .util-seg button{height:32px;padding:0 14px;border:0;border-radius:9px;background:transparent;
+    color:#857D7D;font:700 12px Inter,sans-serif;white-space:nowrap;cursor:pointer}
+  .util-seg button.active{background:#fff;color:#B91414;box-shadow:0 1px 2px rgba(28,18,18,.08)}
+  .cap-thresholds{display:flex;flex-wrap:wrap;gap:5px}
+  .cap-threshold{display:inline-flex;align-items:center;height:23px;padding:0 8px;
+    border:1px solid #E8E2E2;border-radius:7px;background:#fff;font:700 11px Inter,sans-serif;
+    color:#857D7D;white-space:nowrap}
+  .cap-threshold.is-passed{border-color:#BBD9F0;background:#EEF5FC;color:#2C4E77}
   .cap-th{padding:12px 14px;font-size:10.5px;font-weight:700;color:#9B9292;text-transform:uppercase;letter-spacing:.6px;text-align:left;white-space:nowrap}
   .cap-cell{padding:13px 14px;font-size:12.5px;font-weight:600;vertical-align:middle}
   .cap-bar{height:7px;border-radius:7px;background:#F2EDED;overflow:hidden;margin-top:6px}
@@ -198,9 +207,12 @@
       <div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:#6A6161;font-weight:500;font-size:14px"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#9B9292" stroke-width="2"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 3h-4l-.4 2.2a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 21h4l.4-2.2a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" stroke="#9B9292" stroke-width="1.6"/></svg>Настройки</div>
     </nav>
     <div style="margin:14px;padding:16px;border-radius:16px;background:linear-gradient(150deg,#231212,#070505 75%)">
-      <div style="color:#fff;font-weight:700;font-size:13px">Состояние системы</div>
-      <div style="color:rgba(255,255,255,.8);font-size:11.5px;margin-top:4px;line-height:1.5">Справочники и интеграции работают штатно</div>
-      <div style="margin-top:12px;display:flex;align-items:center;gap:7px"><span style="width:7px;height:7px;border-radius:50%;background:#7BEBB8;box-shadow:0 0 0 3px rgba(123,235,184,.3)"></span><span style="color:#fff;font-size:12px;font-weight:600">Все системы активны</span></div>
+      <div style="color:#fff;font-weight:700;font-size:13px;line-height:1.4">Синхронизация Keitaro</div>
+      <div style="color:rgba(255,255,255,.8);font-size:11.5px;margin-top:4px;line-height:1.5">Проверяем подключение…</div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:7px">
+        <span style="width:7px;height:7px;border-radius:50%;background:#D8D0D0;box-shadow:0 0 0 3px rgba(214,217,228,.3)"></span>
+        <span style="color:#fff;font-size:12px;font-weight:600">Проверка API</span>
+      </div>
     </div>
     <div style="padding:12px 16px 18px;border-top:1px solid #EBE6E6;display:flex;align-items:center;gap:11px"><div style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#070505,#B91414);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">ЕВ</div><div style="flex:1"><div style="font-weight:700;font-size:13.5px">Evano</div><div style="font-size:11.5px;color:#9B9292">Administrator</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="#9B9292" stroke-width="2"/></svg></div>
   </aside>
@@ -210,7 +222,7 @@
       <div><h1 class="settings-heading" style="font-size:27px;font-weight:700;letter-spacing:-.6px">Утилиты</h1></div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <div id="utilBotState" style="display:flex;align-items:center;gap:8px;height:44px;border:1px solid #EBE6E6;background:#fff;border-radius:12px;padding:0 14px;font-size:12px;font-weight:700;color:#857D7D">Бот не подключён</div>
-        <button id="utilBotSetup" type="button" style="height:44px;border:0;border-radius:12px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 17px;font-size:15px;font-weight:600;box-shadow:0 8px 18px rgba(185,20,20,.28)">Подключить Telegram</button>
+        <button id="utilBotSetup" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Подключить Telegram</button>
       </div>
     </div>
 
@@ -224,8 +236,8 @@
     <!-- ALERT (ТЗ 9.1) -->
     <section class="settings-panel active" data-util-panel="alerts">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px;flex-wrap:wrap">
-        <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Alert</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Сообщение на каждый депозит и отчёт по расписанию</div></div>
-        <button id="utilAlertCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 15px;font-size:13.5px;font-weight:600">+ Новое уведомление</button>
+        <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Alert</h3></div>
+        <button id="utilAlertCreate" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">+ Новое уведомление</button>
       </div>
       <div id="utilAlerts" style="display:grid;gap:12px"></div>
     </section>
@@ -233,8 +245,8 @@
     <!-- CAP (ТЗ 9.2) -->
     <section class="settings-panel" data-util-panel="caps">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px;flex-wrap:wrap">
-        <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">CapAlert</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Лимиты на оффер или баера и оповещения о них</div></div>
-        <button id="utilCapCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 15px;font-size:13.5px;font-weight:600">+ Новый CapAlert</button>
+        <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">CapAlert</h3></div>
+        <button id="utilCapCreate" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">+ Новый CapAlert</button>
       </div>
       <div id="utilCapSummary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px"></div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
@@ -253,6 +265,8 @@
             <thead>
               <tr style="border-bottom:1px solid #F0EBEB">
                 <th class="cap-th" style="padding-left:20px">Название</th>
+                <th class="cap-th">Пользователь</th>
+                <th class="cap-th">Канал</th>
                 <th class="cap-th">Метрика</th>
                 <th class="cap-th">Период</th>
                 <th class="cap-th" style="min-width:210px">Прогресс</th>
@@ -271,14 +285,23 @@
     <section class="settings-panel" data-util-panel="channels">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 16px;flex-wrap:wrap">
         <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Каналы</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Чаты Telegram, куда уходят уведомления</div></div>
-        <button id="utilChannelCreate" type="button" style="height:40px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;padding:0 15px;font-size:13.5px;font-weight:600">+ Новый канал</button>
+        <button id="utilChannelCreate" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">+ Новый канал</button>
       </div>
       <div id="utilChannels" style="display:grid;gap:12px"></div>
     </section>
 
     <!-- ЖУРНАЛ -->
     <section class="settings-panel" data-util-panel="events">
-      <div style="margin:2px 0 16px"><h3 class="settings-heading" style="font-size:18px;font-weight:700">Журнал</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Что и когда ушло в Telegram — и что не ушло</div></div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:2px 0 16px">
+        <div><h3 class="settings-heading" style="font-size:18px;font-weight:700">Журнал</h3><div style="font-size:11.5px;color:#9B9292;margin-top:4px">Что и когда ушло в Telegram — и что не ушло</div></div>
+        <!-- Фильтр отбирает записи на сервере: неудачных обычно единицы, и в
+             последних полусотне отправок их могло не быть вовсе. -->
+        <div class="util-seg" id="utilEventFilter">
+          <button type="button" class="active" data-util-events="">Все</button>
+          <button type="button" data-util-events="true">Отправленные</button>
+          <button type="button" data-util-events="false">Не ушли</button>
+        </div>
+      </div>
       <div id="utilEvents" style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;overflow:hidden"></div>
     </section>
   </main>
@@ -296,7 +319,7 @@
     <div style="padding:16px 24px 22px;border-top:1px solid #EBE6E6;display:flex;justify-content:flex-end;gap:10px">
       <button id="utilModalDelete" type="button" style="display:none;height:42px;border:1px solid #F1D9D9;background:#fff;border-radius:10px;padding:0 16px;color:#B91414;font-size:12.5px;font-weight:700;margin-right:auto">Удалить</button>
       <button id="utilModalCancel" type="button" style="height:42px;border:1px solid #E5DFDF;background:#fff;border-radius:10px;padding:0 16px;color:#6A6161;font-size:12.5px;font-weight:700">Отмена</button>
-      <button id="utilModalSave" type="button" style="height:42px;border:0;background:#B91414;border-radius:10px;padding:0 18px;color:#fff;font-size:12.5px;font-weight:700;box-shadow:0 7px 16px rgba(185,20,20,.23)">Сохранить</button>
+      <button id="utilModalSave" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Сохранить</button>
     </div>
   </div>
 </div>

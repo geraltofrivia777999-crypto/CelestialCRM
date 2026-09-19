@@ -15,6 +15,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import business_today
 from app.models import FinanceBook, FinanceBookOffer, FinanceOfferTag, Offer, Partner
 from app.services.country_tiers import UNASSIGNED, tier_for, tier_map
 
@@ -35,6 +36,9 @@ async def pull_offer_to_books(
     Прошлые месяцы не трогаются — закрытый месяц не должен меняться из-за
     сегодняшнего назначения.
     """
+    from app.services.finance_spend import create_book_from_previous, lock_workspace
+
+    await lock_workspace(db, offer.workspace_id)
     if not buyer_ids:
         return []
     tiers = await tier_map(db, offer.workspace_id)
@@ -42,7 +46,7 @@ async def pull_offer_to_books(
     if tier == UNASSIGNED:
         return []
 
-    moment = today or date.today()
+    moment = today or business_today()
     partner = await _partner_name(db, offer)
     touched: list[uuid.UUID] = []
     for buyer_id in buyer_ids:
@@ -56,15 +60,9 @@ async def pull_offer_to_books(
             )
         )
         if book is None:
-            book = FinanceBook(
-                workspace_id=offer.workspace_id,
-                buyer_id=buyer_id,
-                year=moment.year,
-                month=moment.month,
-                tier=tier,
+            book = await create_book_from_previous(
+                db, offer.workspace_id, buyer_id, moment.year, moment.month, tier
             )
-            db.add(book)
-            await db.flush()
 
         row = await db.scalar(
             select(FinanceBookOffer).where(
@@ -73,12 +71,19 @@ async def pull_offer_to_books(
             )
         )
         if row is not None:
-            # Ставка и партнёрка могли поменяться в справочнике — подтягиваем.
-            # Название не трогаем: финансист мог уточнить его под свою связку.
-            row.partner = partner
-            row.geo = offer.geo
-            row.rate = offer.cpa
-            row.rate_currency = offer.cpa_currency or "USD"
+            # Ручная правка защищена замком. Остальные поля актуализируются при
+            # каждом сохранении оффера, включая уже расшаренные книги.
+            locked = set(row.locked_fields or [])
+            if "name" not in locked:
+                row.name = offer.name
+            if "partner" not in locked:
+                row.partner = partner
+            if "geo" not in locked:
+                row.geo = offer.geo
+            if "rate" not in locked:
+                row.rate = offer.cpa
+            if "rate_currency" not in locked:
+                row.rate_currency = offer.cpa_currency or "USD"
             continue
 
         position = await db.scalar(
@@ -141,9 +146,14 @@ async def push_book_changes_to_offers(
     changed: list[str] = []
     for offer in offers:
         row = wanted[offer.id]
-        geo = row.get("geo")
-        rate = row.get("rate")
-        currency = row.get("rate_currency") or "USD"
+        locked = set(row.get("locked_fields") or [])
+        geo = offer.geo if "geo" in locked else row.get("geo")
+        rate = offer.cpa if "rate" in locked else row.get("rate")
+        currency = (
+            offer.cpa_currency
+            if "rate_currency" in locked
+            else (row.get("rate_currency") or "USD")
+        )
         if offer.geo == geo and offer.cpa == rate and offer.cpa_currency == currency:
             continue
         offer.geo = geo

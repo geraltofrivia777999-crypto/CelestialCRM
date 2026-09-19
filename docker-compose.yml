@@ -28,7 +28,8 @@ services:
     build: ./backend
     env_file: .env
     command: >
-      sh -c "Xvfb :99 -screen 0 1366x768x24 & sleep 1 &&
+      sh -c "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 &&
+             Xvfb :99 -screen 0 1366x768x24 & sleep 1 &&
              x11vnc -forever -shared -display :99 -nopw -bg &
              alembic upgrade head &&
              python -m app.seed &&
@@ -62,11 +63,35 @@ services:
     build: ./backend
     env_file: .env
     command: >
-      sh -c "Xvfb :99 -screen 0 1366x768x24 & sleep 1 &&
-             exec celery -A app.workers.celery_app worker --loglevel=INFO"
+      celery -A app.workers.celery_app worker --loglevel=INFO
+      --queues=celery --concurrency=2 --hostname=general@%h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  keitaro-worker:
+    build: ./backend
+    env_file: .env
+    command: >
+      celery -A app.workers.celery_app worker --loglevel=INFO
+      --queues=keitaro --concurrency=2 --hostname=keitaro@%h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  meta-worker:
+    build: ./backend
+    env_file: .env
+    command: >
+      sh -c "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 &&
+             Xvfb :99 -screen 0 1366x768x24 & sleep 1 &&
+             exec celery -A app.workers.celery_app worker --loglevel=INFO --queues=meta --concurrency=1 --hostname=meta@%h"
     volumes:
-      # Токен сессии (EAAB) обновляется синхронизацией через восстановление
-      # браузерной сессии — worker тоже должен видеть сохранённые сессии.
+      # Только Meta нужен браузер и сохранённая Facebook-сессия.
       - meta_sessions_data:/app/meta_sessions
     depends_on:
       postgres:

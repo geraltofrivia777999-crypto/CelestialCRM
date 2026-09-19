@@ -105,6 +105,28 @@ async def payroll(database):
         await db.commit()
 
 
+async def _junior(payroll, profit: int) -> None:
+    """Подчинённый с книгой: без него база «профит команды» пуста.
+
+    Своя книга тимлида в эту базу не входит, поэтому команду в тестах надо
+    заводить явно — иначе компонент от команды считал бы ноль и проверял бы
+    только то, что он не падает.
+    """
+    async with SessionLocal() as db:
+        junior = User(
+            workspace_id=payroll["workspace"],
+            role_id=payroll["buyer_role"],
+            name="Джуниор",
+            login="salaryjunior",
+            password_hash=hash_password("salary-password"),
+        )
+        db.add(junior)
+        await db.flush()
+        db.add(UserParent(user_id=junior.id, parent_id=payroll["buyer"]))
+        await _book(db, payroll["workspace"], junior.id, profit)
+        await db.commit()
+
+
 def _percent_rule(payroll, **overrides) -> dict:
     payload = {
         "name": "Баер — 5% от профита",
@@ -236,6 +258,7 @@ async def test_a_grid_takes_the_rate_of_the_whole_amount(payroll) -> None:
 
 async def test_several_components_are_added_together(payroll) -> None:
     """Процент от профита + сетка по профиту команды + оклад − вычет."""
+    await _junior(payroll, 20000)
     with _admin_client() as client:
         client.post(
             "/api/v1/salary/rules",
@@ -260,12 +283,14 @@ async def test_several_components_are_added_together(payroll) -> None:
         result = client.get("/api/v1/salary/calculate?year=2026&month=8").json()
 
     row = [item for item in result["rows"] if item["user_id"] == str(payroll["buyer"])][0]
-    # 1000 (5 % от 20000) + 4000 (20 % от команды 20000) + 500 − 200
+    # 1000 (5 % от своих 20000) + 4000 (20 % от книги подчинённого 20000)
+    # + 500 − 200
     assert Decimal(str(row["payout"])) == Decimal("5300")
     assert len(row["lines"]) == 4
 
 
 async def test_a_percentage_deduction_uses_its_own_base(payroll) -> None:
+    await _junior(payroll, 20000)
     with _admin_client() as client:
         client.post(
             "/api/v1/salary/rules",
@@ -280,7 +305,7 @@ async def test_a_percentage_deduction_uses_its_own_base(payroll) -> None:
         result = client.get("/api/v1/salary/calculate?year=2026&month=8").json()
 
     row = [item for item in result["rows"] if item["user_id"] == str(payroll["buyer"])][0]
-    # 1000 − 2 % от профита команды 20000
+    # 1000 − 2 % от профита команды (книга подчинённого, 20000)
     assert Decimal(str(row["payout"])) == Decimal("600")
 
 
@@ -408,9 +433,15 @@ async def test_the_reference_lists_bases_roles_and_people(payroll) -> None:
         reference = client.get("/api/v1/salary/bases").json()
 
     codes = [item["code"] for item in reference["bases"]]
-    # Ровно две базы: считать зарплату можно только от того, что видно в Финансах.
-    # Порядок осмысленный: своя книга → своя ветка → вся компания.
-    assert codes == ["finance_profit", "team_profit", "company_profit"]
+    # Считать зарплату можно только от того, что видно в Финансах. Порядок
+    # осмысленный: свои книги по тирам → своя ветка → вся компания. Общая
+    # база своей книги скрыта — она осталась только для прежних правил.
+    assert codes == [
+        "finance_profit_t1",
+        "finance_profit_t23",
+        "team_profit",
+        "company_profit",
+    ]
     assert [scope["code"] for scope in reference["scopes"]] == ["role", "user"]
     assert "periodicities" not in reference
     assert any(role["name"] == "Buyer" for role in reference["roles"])
@@ -483,9 +514,12 @@ async def test_the_team_profit_adds_up_the_books_of_the_subordinates(payroll) ->
         result = client.get("/api/v1/salary/calculate?year=2026&month=8").json()
 
     lead = [row for row in result["rows"] if row["user_id"] == str(payroll["buyer"])][0]
-    # Своя книга 20000 плюс книга подчинённого 5000.
-    assert Decimal(str(lead["bases"]["team_profit"])) == Decimal("25000")
-    assert Decimal(str(lead["payout"])) == Decimal("2500")
+    # Только книга подчинённого: своя книга тимлида (20000) в базу команды не
+    # входит — за неё он получает по своей ставке, и попади она сюда, тот же
+    # профит оплатился бы дважды.
+    assert Decimal(str(lead["bases"]["team_profit"])) == Decimal("5000")
+    assert Decimal(str(lead["bases"]["finance_profit"])) == Decimal("20000")
+    assert Decimal(str(lead["payout"])) == Decimal("500")
 
 
 async def test_the_finance_ladder_follows_the_rule(payroll) -> None:
@@ -625,9 +659,11 @@ async def test_a_team_rule_does_not_break_the_book_of_its_lead(payroll) -> None:
 
     assert response.status_code == 200
     plan = response.json()["salary_plan"]
-    # Процент от команды посчитан на сервере и приехал одной суммой: 5% от 25000.
+    # Процент от команды посчитан на сервере и приехал одной суммой: 5% от
+    # книги подчинённого (5000). Своя книга тимлида сюда не входит — за неё
+    # платит сетка ниже, и в шкале зарплаты подсвечена именно её ступень.
     flat = [part for part in plan["parts"] if part["kind"] == "flat"][0]
-    assert Decimal(flat["amount"]) == Decimal("1250")
+    assert Decimal(flat["amount"]) == Decimal("250")
     # Сетка от профита книги осталась частью, которую клиент считает сам.
     assert any(part["kind"] == "grid" for part in plan["parts"])
 
@@ -662,5 +698,99 @@ async def test_the_company_profit_covers_every_book(payroll) -> None:
     row = [item for item in result["rows"] if item["user_id"] == str(payroll["buyer"])][0]
     # Своя книга 20000 плюс чужая 5000 — обе входят в компанию.
     assert Decimal(str(row["bases"]["company_profit"])) == Decimal("25000")
-    assert Decimal(str(row["bases"]["team_profit"])) == Decimal("20000")
+    # Подчинённых нет, и своя книга в команду не входит: база пуста.
+    assert Decimal(str(row["bases"]["team_profit"])) == Decimal("0")
     assert Decimal(str(row["payout"])) == Decimal("250")
+
+
+async def _tier_book(payroll, tier: str, profit: int) -> None:
+    """Ещё одна книга того же баера — другого тира."""
+    async with SessionLocal() as db:
+        book = FinanceBook(
+            workspace_id=payroll["workspace"],
+            buyer_id=payroll["buyer"],
+            year=2026,
+            month=8,
+            tier=tier,
+            prev_minus=Decimal("0"),
+            eur_usd_rate=Decimal("1"),
+        )
+        db.add(book)
+        await db.flush()
+        offer = FinanceBookOffer(
+            book_id=book.id, position=0, name="Оффер", rate=Decimal(profit),
+            rate_currency="USD",
+        )
+        db.add(offer)
+        await db.flush()
+        tag = FinanceOfferTag(offer_id=offer.id, position=0, name="SOK")
+        db.add(tag)
+        await db.flush()
+        db.add(FinanceTagDay(tag_id=tag.id, day=10, deposits=Decimal("1")))
+        await db.commit()
+
+
+async def test_tier_bases_count_only_their_own_book(payroll) -> None:
+    """T1 и T2/3 — разные базы, и процент у каждой свой.
+
+    Книга Tier1 даёт 20000 (фикстура), Tier2/3 — 10000. Правило берёт 5 % с
+    первой и 10 % со второй: 1000 + 1000. Общая зарплата — сумма двух баз, и
+    ни одна из них не должна прихватывать чужой тир.
+    """
+    await _tier_book(payroll, "T23", 10000)
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/salary/rules",
+            json=_percent_rule(
+                payroll,
+                components=[
+                    {"kind": "percent", "base": "finance_profit_t1", "percent": 5},
+                    {"kind": "percent", "base": "finance_profit_t23", "percent": 10},
+                ],
+            ),
+        )
+        assert created.status_code == 201, created.text
+        labels = [item["base_label"] for item in created.json()["components"]]
+        assert labels == ["Профит T1 (Финансы)", "Профит T2/3 (Финансы)"]
+        result = client.get("/api/v1/salary/calculate?year=2026&month=8").json()
+        t1 = client.get(
+            f"/api/v1/finance/book?buyer_id={payroll['buyer']}"
+            "&year=2026&month=8&tier=T1"
+        ).json()
+        t23 = client.get(
+            f"/api/v1/finance/book?buyer_id={payroll['buyer']}"
+            "&year=2026&month=8&tier=T23"
+        ).json()
+        overview = client.get(
+            f"/api/v1/finance/buyer-overview?buyer_id={payroll['buyer']}"
+            "&year=2026&month=8"
+        ).json()
+
+    row = [item for item in result["rows"] if item["user_id"] == str(payroll["buyer"])][0]
+    assert Decimal(str(row["bases"]["finance_profit_t1"])) == Decimal("20000")
+    assert Decimal(str(row["bases"]["finance_profit_t23"])) == Decimal("10000")
+    assert Decimal(str(row["payout"])) == Decimal("2000")
+    book_salaries = {
+        "T1": Decimal(t1["totals"]["total"]["salary"]),
+        "T23": Decimal(t23["totals"]["total"]["salary"]),
+    }
+    overview_salaries = {
+        item["tier"]: Decimal(item["amount"])
+        for item in overview["salary"]["tiers"]
+    }
+    # Сводка не должна возвращаться к старой лестнице: она обязана сложить
+    # ровно те суммы, которые баер видит в двух своих таблицах.
+    assert overview_salaries["T1"] == book_salaries["T1"] == Decimal("1000")
+    assert overview_salaries["T23"] == book_salaries["T23"] == Decimal("1000")
+    assert overview_salaries["total"] == sum(book_salaries.values(), Decimal("0"))
+    assert Decimal(overview["salary"]["total"]) == overview_salaries["total"]
+
+
+async def test_the_old_common_profit_base_is_hidden_from_the_picker(payroll) -> None:
+    """Прежние правила считаются, но выбрать общую базу заново уже нельзя."""
+    with _admin_client() as client:
+        bases = client.get("/api/v1/salary/bases").json()["bases"]
+    codes = [base["code"] for base in bases]
+    assert "finance_profit_t1" in codes
+    assert "finance_profit_t23" in codes
+    assert "finance_profit" not in codes

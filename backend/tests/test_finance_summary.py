@@ -331,3 +331,93 @@ async def test_buyer_overview_has_days_tiers_and_salary(team_summary) -> None:
     # Зарплата каждой таблицы своя, а «ЗП итого» — их сумма.
     assert rows["T1"] + rows["T23"] == rows["total"]
     assert Decimal(salary["total"]) == rows["total"]
+
+
+@pytest.mark.parametrize("role_name", ["CMO", "СМО"])
+async def test_the_cmo_card_finds_its_role_in_any_spelling(database, role_name) -> None:
+    """Карточка «ЗП СМО» должна находить человека и по русскому названию роли.
+
+    Роль — свободный текст, и рабочее пространство называет её как удобно.
+    Раньше совпадение искалось только с латинским «cmo», а у такого человека
+    в подчинении вся компания — поэтому его зарплата уходила в колонку
+    тимлидов, а карточка «ЗП СМО» оставалась с нулём.
+    """
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        lead_role = await db.scalar(select(Role).where(Role.name == "Team Lead"))
+        # Латинская роль в рабочем пространстве уже есть — заводим только ту,
+        # которой не хватает, и убираем за собой тоже только её.
+        role = await db.scalar(
+            select(Role).where(
+                Role.workspace_id == admin.workspace_id, Role.name == role_name
+            )
+        )
+        created_role = role is None
+        if created_role:
+            role = Role(workspace_id=admin.workspace_id, name=role_name)
+            db.add(role)
+            await db.flush()
+        chief = User(
+            workspace_id=admin.workspace_id,
+            role_id=role.id,
+            name="Директор по маркетингу",
+            login="fincmo1",
+            password_hash=hash_password("summary-password"),
+        )
+        lead = User(
+            workspace_id=admin.workspace_id,
+            role_id=lead_role.id,
+            name="Тимлид под СМО",
+            login="fincmolead1",
+            password_hash=hash_password("summary-password"),
+        )
+        db.add_all([chief, lead])
+        await db.flush()
+        # Вся компания в подчинении — по этому признаку человека и записывали
+        # в тимлиды, когда название роли не узнавалось.
+        db.add(UserParent(user_id=lead.id, parent_id=chief.id))
+        db.add(
+            SalaryRule(
+                workspace_id=admin.workspace_id,
+                name="СМО — оклад",
+                scope="user",
+                mode="replace",
+                user_id=chief.id,
+                created_by_id=admin.id,
+                components=[
+                    SalaryComponent(kind="fixed", amount=Decimal("2500"), position=0)
+                ],
+            )
+        )
+        await db.commit()
+        chief_id = str(chief.id)
+        workspace_id = admin.workspace_id
+
+    try:
+        with _admin_client() as client:
+            salary = client.get(
+                "/api/v1/finance/summary?year=2026&month=8"
+            ).json()["salary"]
+    finally:
+        async with SessionLocal() as db:
+            user_ids = select(User.id).where(User.login.in_(["fincmo1", "fincmolead1"]))
+            rules = select(SalaryRule.id).where(SalaryRule.user_id.in_(user_ids))
+            await db.execute(
+                delete(SalaryComponent).where(SalaryComponent.rule_id.in_(rules))
+            )
+            await db.execute(delete(SalaryRule).where(SalaryRule.id.in_(rules)))
+            await db.execute(delete(UserParent).where(UserParent.parent_id.in_(user_ids)))
+            await db.execute(delete(Session).where(Session.user_id.in_(user_ids)))
+            await db.execute(delete(User).where(User.id.in_(user_ids)))
+            if created_role:
+                await db.execute(
+                    delete(Role).where(
+                        Role.name == role_name, Role.workspace_id == workspace_id
+                    )
+                )
+            await db.commit()
+
+    chief_row = next(row for row in salary["people"] if row["user_id"] == chief_id)
+    assert chief_row["category"] == "cmo"
+    groups = {(row["category"], row["tier"]): Decimal(row["amount"]) for row in salary["groups"]}
+    assert groups[("cmo", "all")] >= Decimal("2500")

@@ -2,6 +2,61 @@
   "use strict";
 
   var API_ROOT = "/api/v1";
+  var CRM_TIMEZONE = "Europe/Moscow";
+
+  function moscowParts(value) {
+    var date = value instanceof Date ? value : new Date(value == null ? Date.now() : value);
+    var parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: CRM_TIMEZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(date);
+    var values = {};
+    parts.forEach(function (part) { values[part.type] = part.value; });
+    return {
+      year: Number(values.year),
+      month: Number(values.month),
+      day: Number(values.day)
+    };
+  }
+
+  function moscowToday() {
+    var parts = moscowParts();
+    // Календарные виджеты работают с Date через локальные getters. Объект
+    // синтетический: важна московская дата, а не соответствующий ей timestamp.
+    return new Date(parts.year, parts.month - 1, parts.day);
+  }
+
+  function dateISO(date) {
+    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") +
+      "-" + String(date.getDate()).padStart(2, "0");
+  }
+
+  window.CelestialTime = {
+    timezone: CRM_TIMEZONE,
+    today: moscowToday,
+    todayISO: function () { return dateISO(moscowToday()); },
+    dateISO: dateISO,
+    format: function (value, options) {
+      var date = value instanceof Date ? value : new Date(value);
+      return new Intl.DateTimeFormat(
+        "ru-RU",
+        Object.assign({}, options || {}, { timeZone: CRM_TIMEZONE })
+      ).format(date);
+    },
+    localInputISO: function (value) {
+      if (!value) return null;
+      var text = String(value);
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) text += ":00";
+      var parsed = new Date(text + "+03:00");
+      return isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    },
+    nextMidnightISO: function () {
+      var parts = moscowParts();
+      return new Date(Date.UTC(parts.year, parts.month - 1, parts.day + 1, -3)).toISOString();
+    }
+  };
 
   async function request(path, options) {
     var config = Object.assign(
@@ -50,7 +105,11 @@
         ? fields[0].message.replace(/^Value error, /, "")
         : payload && payload.error && payload.error.message
           ? payload.error.message
-          : "Ошибка запроса";
+          : payload && typeof payload.detail === "string"
+            ? payload.detail
+            : response.status === 413
+              ? "Файл слишком большой. Максимальный размер — 90 МБ"
+              : "Ошибка запроса";
       var error = new Error(message);
       error.status = response.status;
       error.payload = payload;

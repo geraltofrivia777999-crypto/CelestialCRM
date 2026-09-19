@@ -23,6 +23,7 @@ from app.schemas import (
     SpendProviderIn,
     SpendProviderOut,
 )
+from app.services import finance_spend
 from app.services.audit import audit
 
 MAX_PAGE_SIZE = 500
@@ -160,6 +161,7 @@ async def update_spend_provider(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("settings.manage")),
 ) -> SpendProvider:
+    await finance_spend.lock_workspace(db, current.workspace_id)
     provider = await db.get(SpendProvider, provider_id)
     if not provider or provider.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Spend provider not found")
@@ -168,6 +170,7 @@ async def update_spend_provider(
     await audit(
         db, current, "spend_provider.updated", f"Updated provider {provider.name}", request=request
     )
+    await finance_spend.refresh_workspace(db, current.workspace_id)
     await db.commit()
     return provider
 
@@ -197,7 +200,12 @@ async def delete_service(
             detail="Сервис используется в записях. Деактивируйте его вместо удаления.",
         )
     await audit(
-        db, current, "service.deleted", f"Deleted service {service.name}", request=request
+        db,
+        current,
+        "service.deleted",
+        f"Deleted service {service.name}",
+        request=request,
+        data={"service_name": service.name},
     )
     await db.delete(service)
     await db.commit()
@@ -233,6 +241,7 @@ async def delete_spend_provider(
         "spend_provider.deleted",
         f"Deleted provider {provider.name}",
         request=request,
+        data={"provider_name": provider.name},
     )
     await db.delete(provider)
     await db.commit()

@@ -22,13 +22,16 @@
   фиксации, которой столько не нужно.
 
 Часы считает сама Meta и только в таймзоне рекламного кабинета — других
-вариантов Graph API не даёт. Поэтому таймзона едет рядом с числами: «с 12 до
-16» ничего не значит, если кабинет живёт в другом поясе.
+вариантов Graph API не даёт. Но команда живёт по Москве, и «с 12 до 16» для неё
+значит московские часы, а не эфиопские. Поэтому почасовая разбивка кабинета
+пересобирается в UTC+3: час окна берётся из того часа кабинета, который в это
+время шёл на самом деле, — при необходимости из соседних суток.
 """
 
 import uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,6 +90,68 @@ def split_into_days(
         middle += timedelta(days=1)
     parts.append((date_to, 0, hour_to))
     return parts
+
+
+# Часы окна команда задаёт по Москве: и Медиаборд, и книги баера живут в этой
+# зоне, а кабинет может быть в любой.
+REPORT_TZ = ZoneInfo("Europe/Moscow")
+
+
+def account_offset(timezone_name: str | None, day: date) -> int:
+    """На сколько часов отчётная зона опережает зону кабинета в этот день.
+
+    Считается на конкретную дату, а не раз и навсегда: и Москва, и кабинет
+    могут жить с переходом на летнее время, и летом разница другая.
+    """
+    if not timezone_name:
+        return 0
+    try:
+        account_zone = ZoneInfo(str(timezone_name))
+    except Exception:  # noqa: BLE001 — незнакомая зона не должна ронять фиксацию
+        return 0
+    moment = datetime.combine(day, time(12, 0))
+    account_shift = account_zone.utcoffset(moment) or timedelta(0)
+    report_shift = REPORT_TZ.utcoffset(moment) or timedelta(0)
+    return int((report_shift - account_shift).total_seconds() // 3600)
+
+
+def shift_hours(
+    previous: list[dict], current_day: list[dict], following: list[dict], offset: int
+) -> list[dict]:
+    """Разбивка кабинета, пересобранная в отчётную зону.
+
+    `offset` — насколько отчётная зона опережает зону кабинета. Час X по Москве
+    это час `X - offset` у кабинета: при положительном сдвиге начало суток
+    берётся из вчерашнего дня кабинета, при отрицательном конец — из завтрашнего.
+    Соседние сутки приходят пустыми, если их не запрашивали, — тогда края окна
+    просто останутся нулевыми, а не приедут чужими числами.
+    """
+    if not offset:
+        return current_day
+    source = {
+        -1: {int(row.get("hour", -1)): row for row in previous or []},
+        0: {int(row.get("hour", -1)): row for row in current_day or []},
+        1: {int(row.get("hour", -1)): row for row in following or []},
+    }
+    result = []
+    for hour in range(HOURS):
+        raw = hour - offset
+        shift = 0
+        if raw < 0:
+            raw += HOURS
+            shift = -1
+        elif raw >= HOURS:
+            raw -= HOURS
+            shift = 1
+        bucket = source[shift].get(raw)
+        result.append({
+            "hour": hour,
+            "spend": (bucket or {}).get("spend", 0.0),
+            "impressions": (bucket or {}).get("impressions", 0),
+            "clicks": (bucket or {}).get("clicks", 0),
+            "link_clicks": (bucket or {}).get("link_clicks", 0),
+        })
+    return result
 
 
 def window_spend(hours: list[dict], hour_from: int, hour_to: int) -> Decimal:

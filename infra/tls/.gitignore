@@ -1,0 +1,5 @@
+# Private keys, ACME account credentials and generated challenge files.
+letsencrypt/
+webroot/
+logs/
+work/

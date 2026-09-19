@@ -16,6 +16,7 @@ from app.models import (
     Offer,
     Service,
     SpendProvider,
+    Status,
     User,
 )
 from app.services.formulas import finance_import_key
@@ -206,6 +207,25 @@ async def test_media_groups_match_the_raw_records(board_rows) -> None:
     )
 
 
+async def test_media_board_hides_records_of_removed_keitaro_offer(board_rows) -> None:
+    """История остаётся в базе, но выключенный трекером оффер исчезает с доски."""
+    _buyer_id, offer_id = board_rows
+    async with SessionLocal() as db:
+        offer = await db.get(Offer, uuid.UUID(offer_id))
+        offer.keitaro_state = Status.inactive
+        await db.commit()
+
+    with _admin_client() as client:
+        listed = client.get("/api/v1/media-records", params=_period(offer_id))
+        grouped = client.get("/api/v1/media-records/groups", params=_period(offer_id))
+
+    assert listed.status_code == 200
+    assert listed.json()["items"] == []
+    assert grouped.status_code == 200
+    assert grouped.json()["groups"] == []
+    assert grouped.json()["record_count"] == 0
+
+
 async def test_finance_groups_match_the_raw_records(board_rows) -> None:
     _buyer_id, offer_id = board_rows
     with _admin_client() as client:
@@ -298,3 +318,127 @@ async def test_media_filters_accept_several_values(board_rows) -> None:
     assert both_geo.json() == one.json()
     assert foreign_geo.json()["record_count"] == 0
     assert len(leaves.json()["items"]) == DAYS
+
+
+def test_export_rows_repeat_what_the_board_shows() -> None:
+    """Профит, ROI и CPD в выгрузке считаются той же формулой, что в таблице."""
+    from app.api.routers.analytics import _media_export_rows
+
+    rows = _media_export_rows([
+        {"buyer": "EVS", "tier": "T1", "geo": "AR", "partner": "Growe", "offer": "2xBet",
+         "records": 3, "installs": 100, "registrations": 40, "ftd": 10,
+         "spend": "50", "revenue": "150"},
+    ])
+
+    assert rows[0][:5] == ["EVS", "Tier1", "AR", "Growe", "2xBet"]
+    assert rows[0][11] == Decimal("100")      # profit = revenue - spend
+    assert rows[0][12] == Decimal("200.00")   # roi, %
+    assert rows[0][13] == Decimal("5.00")     # cpd = spend / ftd
+
+
+def test_export_total_sums_every_column() -> None:
+    """Строка «Общая» повторяет итог доски, а не пересчитывает его иначе."""
+    from app.api.routers.analytics import _media_export_rows, _media_export_total
+
+    rows = _media_export_rows([
+        {"buyer": "EVS", "tier": "T1", "geo": "AR", "partner": "P", "offer": "A",
+         "records": 3, "installs": 100, "registrations": 40, "ftd": 10,
+         "spend": "50", "revenue": "150"},
+        {"buyer": "LUKA", "tier": "T23", "geo": "PE", "partner": "P", "offer": "B",
+         "records": 2, "installs": 50, "registrations": 20, "ftd": 5,
+         "spend": "25", "revenue": "60"},
+    ])
+
+    total = _media_export_total(rows)
+
+    assert total[0] == "Общая"
+    assert total[5:9] == [5, 150, 60, 15]
+    assert total[9] == Decimal("75")
+    assert total[11] == Decimal("135")
+
+
+def test_a_spendless_row_has_no_roi() -> None:
+    """Деление на ноль в выгрузке — пустая ячейка, а не бесконечность."""
+    from app.api.routers.analytics import _media_export_rows
+
+    rows = _media_export_rows([
+        {"buyer": "EVS", "tier": "unassigned", "geo": None, "partner": None,
+         "offer": "A", "records": 1, "installs": 0, "registrations": 0, "ftd": 0,
+         "spend": "0", "revenue": "0"},
+    ])
+
+    assert rows[0][1] == "Без тира"
+    assert rows[0][12] == ""
+    assert rows[0][13] == ""
+
+
+async def test_by_date_splits_groups_into_days(board_rows) -> None:
+    """Уровень «Дата» на доске — это отдельная строка на каждый день.
+
+    Разбивка приходит только по запросу (`by_date`), поэтому проверяется и то,
+    что без него строка по-прежнему одна, и то, что с ним суммы по дням дают
+    ровно те же итоги — вместе с разбивками по сервисам и платёжкам, которые
+    иначе легли бы не в тот день.
+    """
+    _buyer_id, offer_id = board_rows
+    with _admin_client() as client:
+        listed = client.get(
+            "/api/v1/media-records", params=_period(offer_id, {"limit": 1000})
+        )
+        whole = client.get("/api/v1/media-records/groups", params=_period(offer_id))
+        daily = client.get(
+            "/api/v1/media-records/groups", params=_period(offer_id, {"by_date": "true"})
+        )
+        assert daily.status_code == 200
+        items = listed.json()["items"]
+        one_row = whole.json()["groups"]
+        rows = daily.json()["groups"]
+
+    assert len(one_row) == 1
+    assert one_row[0]["date"] is None
+    assert len(rows) == DAYS
+    assert [row["date"] for row in rows] == sorted(item["record_date"] for item in items)
+
+    fields = ("installs", "registrations", "ftd", "revenue", "rent", "spend")
+    assert _totals(rows, fields) == _totals(one_row, fields)
+    assert _split_totals(rows, "services", "quantity") == _split_totals(
+        one_row, "services", "quantity"
+    )
+    assert _split_totals(rows, "providers", "amount") == _split_totals(
+        one_row, "providers", "amount"
+    )
+
+    # Строка дня должна совпасть с записью этого дня, иначе разбивки склеились.
+    by_day = {item["record_date"]: item for item in items}
+    for row in rows:
+        assert row["records"] == 1
+        record = by_day[row["date"]]
+        for field in fields:
+            assert _q(Decimal(str(row[field]))) == _q(Decimal(str(record[field])))
+        assert _split_totals([row], "providers", "amount") == _split_totals(
+            [record], "providers", "amount"
+        )
+
+
+async def test_records_carry_the_tier_the_board_groups_by(board_rows) -> None:
+    """Уровень «Тир» на доске должен узнавать свои записи.
+
+    Тир не фильтруется параметром запроса — доска сверяет его на своей стороне,
+    поэтому запись без поля `tier` в ветку тира не попадает и ветка выглядит
+    пустой, хотя группа над ней показывает суммы.
+    """
+    _buyer_id, offer_id = board_rows
+    with _admin_client() as client:
+        listed = client.get(
+            "/api/v1/media-records", params=_period(offer_id, {"limit": 1000})
+        )
+        finance = client.get(
+            "/api/v1/finance-records", params=_period(offer_id, {"limit": 1000})
+        )
+        grouped = client.get("/api/v1/media-records/groups", params=_period(offer_id))
+        items = listed.json()["items"]
+        finance_items = finance.json()["items"]
+        group = grouped.json()["groups"][0]
+
+    assert {item["tier"] for item in items} == {group["tier"]}
+    assert {item["tier"] for item in finance_items} == {group["tier"]}

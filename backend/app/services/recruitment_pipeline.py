@@ -21,6 +21,7 @@ Recruitment Service отвечает за находки и их разбор �
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,10 +29,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import RecruitmentCandidate, User
 
 # Порядок важен: в этом же порядке колонки стоят на доске.
-STAGES = ("screening", "interview", "offer", "hired", "rejected")
+STAGES = ("screening", "interview", "tech_interview", "offer", "hired", "rejected")
 STAGE_LABELS = {
     "screening": "Скрининг",
     "interview": "Интервью",
+    # Техническое интервью идёт после разговора с рекрутером: проверяют не
+    # человека, а работу — связки, кабинеты, разбор кейсов.
+    "tech_interview": "Тех. интервью",
     "offer": "Оффер",
     "hired": "Нанят",
     "rejected": "Отказ",
@@ -56,6 +60,38 @@ def _money_or_none(value: object) -> Decimal | None:
         return None
 
 
+def telegram_handle(url: str | None) -> str | None:
+    """`https://t.me/leon_wp` → `@leon_wp`. Ссылка кандидата — единственное
+    место, где ник вообще есть: отдельного поля сервис не отдаёт."""
+    text = str(url or "").strip()
+    if not text:
+        return None
+    tail = text.rsplit("/", 1)[-1].strip()
+    if not tail:
+        return None
+    return tail if tail.startswith("@") else "@" + tail
+
+
+def _text(value: object) -> str | None:
+    return (str(value or "").strip() or None)
+
+
+def resume_file_url(value: object) -> str | None:
+    """Внутреннюю ссылку сервиса превращаем в защищённый маршрут CRM."""
+    text = _text(value)
+    if not text:
+        return None
+    parsed = urlparse(text)
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) == 4 and parts[:2] == ["telegram", "applications"] and parts[3] == "file":
+        try:
+            application_id = uuid.UUID(parts[2])
+        except ValueError:
+            return text
+        return f"/api/v1/recruitment/telegram/applications/{application_id}/file"
+    return text
+
+
 def snapshot(external: dict) -> dict:
     """Снимок находки сервиса — то, что показывает карточка на доске."""
     profile = external.get("parsed_profile") or {}
@@ -66,15 +102,37 @@ def snapshot(external: dict) -> dict:
         if best is None or (score.get("score") or 0) > (best.get("score") or 0):
             best = score
     first_source = sources[0] if sources else {}
+    telegram_source = next(
+        (row for row in sources if str(row.get("source") or "") == "telegram"), None
+    )
     return {
-        "position_title": (str(profile.get("position_title") or "") or None),
-        "geo": (str(profile.get("geo") or "") or None),
-        "source": (str(first_source.get("source") or "") or None),
-        "tier": (str((best or {}).get("tier") or "") or None),
+        "position_title": _text(profile.get("position_title")),
+        "geo": _text(profile.get("geo")),
+        "source": _text(first_source.get("source")),
+        "tier": _text((best or {}).get("tier")),
         "score": _int_or_none((best or {}).get("score")),
         "salary_expectation": _money_or_none(profile.get("salary_expectation")),
         "experience_months": _int_or_none(profile.get("total_experience_months")),
-        "external_url": (str(first_source.get("external_url") or "") or None),
+        "external_url": _text(first_source.get("external_url")),
+        # Показательная часть снимка. Новые ключи сервиса необязательны:
+        # у старых кандидатов они пусты, и карточка просто не рисует строку.
+        "profile": {
+            key: value
+            for key, value in {
+                "full_name": _text(profile.get("full_name")),
+                "birth_date": _text(profile.get("birth_date")),
+                "age": _int_or_none(profile.get("age")),
+                "telegram_username": telegram_handle(
+                    (telegram_source or {}).get("external_url")
+                ),
+                "application_text": _text(profile.get("text_blob")),
+                "resume_file_url": resume_file_url(
+                    profile.get("resume_file_url") or profile.get("resume_url")
+                ),
+                "resume_file_name": _text(profile.get("resume_file_name")),
+            }.items()
+            if value is not None
+        },
     }
 
 
@@ -103,6 +161,12 @@ async def upsert_from_external(
     if row:
         for key, value in fields.items():
             setattr(row, key, value)
+        _fill_telegram(row)
+        # Кандидата убирали с доски, а теперь заводят снова — значит решение
+        # передумали, и карточка возвращается.
+        if row.removed_at is not None:
+            row.removed_at = None
+            row.stage_changed_at = datetime.now(UTC)
         return row
     row = RecruitmentCandidate(
         workspace_id=workspace_id,
@@ -112,9 +176,24 @@ async def upsert_from_external(
         added_by_id=added_by_id,
         **fields,
     )
+    _fill_telegram(row)
     db.add(row)
     await db.flush()
     return row
+
+
+def _fill_telegram(row: RecruitmentCandidate) -> None:
+    """Телеграм отклика подставляем сами — но только в пустое поле.
+
+    У заявки из Telegram ник и есть единственный контакт, и вводить его руками
+    там, где он уже известен, незачем. Введённое человеком не трогаем: он мог
+    поправить ник на рабочий, а снимок сервиса про это не знает.
+    """
+    if row.telegram_contact:
+        return
+    handle = (row.profile or {}).get("telegram_username")
+    if handle:
+        row.telegram_contact = handle
 
 
 async def drop_external(
@@ -128,7 +207,7 @@ async def drop_external(
         )
     )
     if row:
-        await db.delete(row)
+        row.removed_at = datetime.now(UTC)
 
 
 async def sync_added(
@@ -144,6 +223,8 @@ async def sync_added(
     когда кого-то пометили `added` в обход CRM.
     """
     created = 0
+    # В «известные» попадают и убранные с доски: их сервис по-прежнему считает
+    # разобранными, и без этого каждое открытие доски возвращало бы их назад.
     known = {
         row.external_id
         for row in (
@@ -171,7 +252,10 @@ async def board(db: AsyncSession, workspace_id: uuid.UUID) -> dict:
         (
             await db.execute(
                 select(RecruitmentCandidate)
-                .where(RecruitmentCandidate.workspace_id == workspace_id)
+                .where(
+                    RecruitmentCandidate.workspace_id == workspace_id,
+                    RecruitmentCandidate.removed_at.is_(None),
+                )
                 .order_by(RecruitmentCandidate.stage_changed_at.desc())
             )
         ).scalars()
@@ -212,9 +296,13 @@ def serialize(row: RecruitmentCandidate, owners: dict) -> dict:
         ),
         "experience_months": row.experience_months,
         "external_url": row.external_url,
+        "profile": row.profile or {},
         "owner_id": str(row.owner_id) if row.owner_id else None,
         "owner_name": owners.get(row.owner_id) if row.owner_id else None,
         "note": row.note,
+        "target_position": row.target_position,
+        "telegram_contact": row.telegram_contact,
+        "interview_record": row.interview_record,
         "stage_changed_at": row.stage_changed_at,
         "created_at": row.created_at,
     }

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -26,9 +26,11 @@ async def login(
     # Logins are unique per workspace, not globally, so more than one row can match.
     stmt = (
         select(User)
-        .where(User.login == payload.login.strip().lower())
+        # Логин хранится с регистром, а вводят его как придётся.
+        .where(func.lower(User.login) == payload.login.strip().lower())
         .options(selectinload(User.role).selectinload(Role.permissions))
         .order_by(User.created_at)
+        .with_for_update()
     )
     candidates = list((await db.execute(stmt)).scalars().all())
     user = next(

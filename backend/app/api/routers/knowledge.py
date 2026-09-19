@@ -784,10 +784,9 @@ async def read_attachment(
         headers={
             # inline для картинок и видео, но с запретом угадывания типа: файл,
             # который браузер решит считать HTML, выполнит скрипты в нашем домене.
-            "Content-Disposition": (
-                f'inline; filename="{attachment.id}"'
-                if storage.kind_for(attachment.mime_type) != "file"
-                else f'attachment; filename="{attachment.id}"'
+            "Content-Disposition": storage.disposition(
+                attachment.file_name,
+                inline=storage.kind_for(attachment.mime_type) != "file",
             ),
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, max-age=3600",

@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -641,3 +642,68 @@ async def test_stale_unbound_upload_is_reclaimed_on_the_next_upload(
     assert not (storage.root() / old_path).exists()
     async with SessionLocal() as db:
         assert await db.get(KnowledgeAttachment, old_id) is None
+
+
+def test_a_zip_is_accepted_under_any_of_its_names() -> None:
+    """Один и тот же архив браузеры называют по-разному.
+
+    Chrome на Windows шлёт `x-zip-compressed`, часть клиентов — `octet-stream`,
+    и загрузка падала с «такой тип файла загружать нельзя», хотя zip разрешён.
+    """
+    from app.services import storage
+
+    archive = b"PK\x03\x04" + b"\x00" * 40
+    for declared in (
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/x-zip",
+        "application/octet-stream",
+    ):
+        storage.validate_content(declared, archive)
+        assert storage.normalize_mime_type(declared, archive) == "application/zip"
+
+
+def test_a_non_archive_stays_rejected_under_a_zip_name() -> None:
+    """Синоним не расширяет список: формат подтверждает сигнатура, а не заголовок."""
+    from app.services import storage
+
+    executable = b"MZ\x90\x00" + b"\x00" * 40
+    with pytest.raises(storage.StorageError):
+        storage.validate_content("application/octet-stream", executable)
+    with pytest.raises(storage.StorageError):
+        storage.validate_content("application/zip", b"<html><script>alert(1)</script>")
+
+
+@pytest.mark.parametrize(
+    ("uploaded", "expected_ascii"),
+    [
+        ("AccountOpener.zip", 'filename="AccountOpener.zip"'),
+        ("Отчёт за март.pdf", 'filename="file.pdf"'),
+    ],
+)
+def test_download_keeps_the_original_file_name(
+    upload_workspace, uploaded: str, expected_ascii: str
+) -> None:
+    """Файл должен сохраняться под своим именем, а не под id вложения.
+
+    Имя из Content-Disposition сильнее атрибута `download` у ссылки, поэтому с
+    id в заголовке браузер клал на диск «36d124b8-…» без расширения. Кириллица
+    в кавычки не помещается — для неё есть filename* по RFC 5987.
+    """
+    content = b"PK\x03\x04zip" if uploaded.endswith(".zip") else b"%PDF-1.7\n"
+    mime = "application/zip" if uploaded.endswith(".zip") else "application/pdf"
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/knowledge/attachments",
+            files={"file": (uploaded, content, mime)},
+        )
+        assert created.status_code == 201, created.text
+        attachment_id = created.json()["id"]
+        loaded = client.get(f"/api/v1/knowledge/attachments/{attachment_id}")
+
+    assert loaded.status_code == 200
+    disposition = loaded.headers["content-disposition"]
+    assert disposition.startswith("attachment; ")
+    assert expected_ascii in disposition
+    assert attachment_id not in disposition
+    assert disposition.endswith(f"filename*=UTF-8''{quote(uploaded, safe='')}")

@@ -25,7 +25,7 @@ dependencies = [
   "playwright-stealth==1.0.6",
   "celery[redis]==5.5.3",
   "redis==5.2.1",
-  "python-multipart==0.0.20",
+  "python-multipart==0.0.32",
   "openpyxl==3.1.5",
 ]
 

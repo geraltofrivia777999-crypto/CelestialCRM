@@ -443,6 +443,9 @@ class MetaSessionState:
     # не должны гоняться за одной страницей. Создаётся лениво в extract_token,
     # потому что asyncio.Lock обязан родиться внутри работающего event loop.
     extract_lock: object | None = None
+    # Кто запустил сессию из мастера: только ему (и администратору) можно её
+    # смотреть, закрывать и доставать из неё токен.
+    owner_id: object | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -644,7 +647,23 @@ class MetaSessionManager:
             page.set_default_timeout(settings.meta_page_timeout_ms)
 
             if parsed:
-                await page.goto(f"{settings.meta_facebook_url}/", wait_until="domcontentloaded")
+                try:
+                    await page.goto(
+                        f"{settings.meta_facebook_url}/", wait_until="domcontentloaded"
+                    )
+                except Exception:
+                    # Через прокси первый заход бывает медленным: FB тянет
+                    # тяжёлый HTML, прокси душит параллельные соединения
+                    # браузера. Во второй попытке достаточно дождаться ответа
+                    # сервера (`commit`): авторизацию ниже всё равно проверяем
+                    # по cookies, а ожидание всего DOM повторно давало тот же
+                    # 45-секундный таймаут.
+                    logger.warning(
+                        "[%s] first goto timed out — retrying until response", session_id
+                    )
+                    await page.goto(
+                        f"{settings.meta_facebook_url}/", wait_until="commit"
+                    )
                 await asyncio.sleep(random.uniform(1.5, 3.0))
                 if await self._is_logged_in(ctx):
                     logger.info("[%s] cookies are valid — session authorized", session_id)
@@ -678,6 +697,14 @@ class MetaSessionManager:
             state.error = str(exc)
             logger.exception("[%s] failed to start session", session_id)
             await self._cleanup(state)
+            # Не отдаём человеку внутренний Call log Playwright. Проверка IP
+            # могла пройти, но конкретно facebook.com этот прокси не открыл —
+            # это отдельная и понятная причина, с которой можно работать.
+            if "Page.goto" in str(exc) and "Timeout" in str(exc):
+                raise MetaSessionError(
+                    "Facebook не открылся через указанный прокси за 45 секунд. "
+                    "Проверьте доступ к facebook.com через этот прокси или замените его."
+                ) from exc
             raise
 
     async def _wait_for_login(self, state: MetaSessionState) -> None:
@@ -757,7 +784,12 @@ class MetaSessionManager:
         return {"session_id": session_id, "status": "saved", "path": str(path)}
 
     async def restore(
-        self, session_id: str, *, proxy_url: str, user_agent: str | None = None
+        self,
+        session_id: str,
+        *,
+        proxy_url: str,
+        user_agent: str | None = None,
+        extract_token_in_background: bool = True,
     ) -> MetaSessionState:
         """Восстанавливает сессию из JSON: накатывает cookies/localStorage, проверяет вход.
 
@@ -826,7 +858,8 @@ class MetaSessionManager:
             if await self._is_logged_in(ctx):
                 state.status = "saved"
                 logger.info("[%s] session restored successfully", session_id)
-                asyncio.create_task(self._extract_and_notify(state))
+                if extract_token_in_background:
+                    asyncio.create_task(self._extract_and_notify(state))
                 return state
 
             state.status = "waiting_login"
@@ -1132,6 +1165,7 @@ async def open_session_access(
     proxy_url: str | None,
     user_agent: str | None = None,
     store_token=None,
+    refresh_token: bool = True,
 ) -> dict:
     """Живой транспорт браузерной сессии для запросов Meta + свежий EAAB.
 
@@ -1167,7 +1201,10 @@ async def open_session_access(
         )
     try:
         state = await manager.restore(
-            connection_id, proxy_url=proxy_url, user_agent=user_agent
+            connection_id,
+            proxy_url=proxy_url,
+            user_agent=user_agent,
+            extract_token_in_background=refresh_token,
         )
     except Exception as exc:
         raise MetaSessionError(f"Не удалось восстановить браузерную сессию: {exc}") from exc
@@ -1177,11 +1214,12 @@ async def open_session_access(
             "войдите в аккаунт и повторите операцию."
         )
     token: str | None = None
-    try:
-        result = await manager.extract_token(connection_id)
-        token = result.get("token") or None
-    except Exception as exc:
-        logger.warning("[%s] token extraction during restore failed: %s", connection_id, exc)
+    if refresh_token:
+        try:
+            result = await manager.extract_token(connection_id)
+            token = result.get("token") or None
+        except Exception as exc:
+            logger.warning("[%s] token extraction during restore failed: %s", connection_id, exc)
     if token:
         state.token = token
         if store_token is not None:

@@ -688,33 +688,191 @@ html.celestial-data-loading body {
   box-shadow: 0 0 0 3px rgba(185, 20, 20, .09);
 }
 
-.capf-search {
-  height: 38px;
-  margin-bottom: 8px;
-  font-size: 12.5px;
+/* Офферы в CapAlert: выбранные — чипами прямо в поле, ввод там же ищет,
+   список раскрывается под полем поверх следующих строк формы. */
+.capf-ms {
+  position: relative;
 }
 
-.capf-list {
+/* Чипы — столбиком, каждый своей строкой по ширине названия. В строку с
+   переносом короткие офферы вставали по два в ряд, длинные — по одному, и
+   список выглядел рваным. Последняя строка — поле ввода и кнопки справа. */
+.capf-ms__box {
+  position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+  align-items: center;
   gap: 6px;
-  max-height: 190px;
-  overflow: auto;
-  padding: 9px;
-  border: 1px solid #EBE6E6;
+  min-height: 44px;
+  /* Справа место под «снять все» и стрелку: они стоят по центру поля, как в
+     фильтрах Медиаборда, а не в последней строке под чипами. */
+  padding: 6px 76px 6px 8px;
+  border: 1px solid #E5DFDF;
   border-radius: 11px;
+  background: #fff;
+  cursor: text;
 }
 
-.capf-check {
-  display: flex;
+.capf-ms.is-open .capf-ms__box,
+.capf-ms__box:focus-within {
+  border-color: #D06060;
+  box-shadow: 0 0 0 3px rgba(185, 20, 20, .09);
+}
+
+.capf-ms__chip {
+  grid-column: 1 / -1;
+  display: inline-flex;
   align-items: center;
-  gap: 9px;
-  font-size: 12.5px;
-  font-weight: 600;
+  gap: 3px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 3px 0 10px;
+  border: 1px solid #F1D9D9;
+  border-radius: 8px;
+  background: #FCF1F1;
+  color: #2A2020;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.capf-ms__chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capf-ms__chip-x {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #B91414;
   cursor: pointer;
 }
 
-.capf-check input {
-  accent-color: #B91414;
+.capf-ms__chip-x:hover {
+  background: #F6DCDC;
+}
+
+.capf-ms__input {
+  justify-self: stretch;
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 5px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #2A2020;
+  font: inherit;
+  font-size: 13px;
+}
+
+.capf-ms__input::placeholder {
+  color: #A89999;
+}
+
+.capf-ms__tools {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  transform: translateY(-50%);
+}
+
+.capf-ms__clear,
+.capf-ms__caret {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #9B9292;
+  cursor: pointer;
+}
+
+.capf-ms__clear:hover,
+.capf-ms__caret:hover {
+  background: #F7F4F4;
+  color: #B91414;
+}
+
+.capf-ms__clear[hidden] {
+  display: none;
+}
+
+.capf-ms__sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: #EBE6E6;
+}
+
+.capf-ms__caret svg {
+  transition: transform .15s;
+}
+
+.capf-ms.is-open .capf-ms__caret svg {
+  transform: rotate(180deg);
+}
+
+.capf-ms__list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: grid;
+  gap: 2px;
+  max-height: 264px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid #EBE6E6;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(30, 20, 20, .16);
+}
+
+.capf-ms__list[hidden],
+.capf-ms__option[hidden] {
+  display: none;
+}
+
+.capf-ms__option {
+  display: block;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #2A2020;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.capf-ms__option:hover,
+.capf-ms__option.is-active {
+  background: #F7F4F4;
+}
+
+.capf-ms__option.is-active {
+  color: #B91414;
 }
 
 .capf-none {
@@ -785,17 +943,6 @@ html.celestial-data-loading body {
   color: #9B9292;
   font-size: 11px;
   font-weight: 600;
-}
-
-.capf-note {
-  grid-column: 1 / -1;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: #F7F4F4;
-  color: #6A6161;
-  font-size: 11.5px;
-  font-weight: 600;
-  line-height: 1.6;
 }
 
 .capf-error {
@@ -1021,6 +1168,223 @@ input[type="date"][data-cdate-tamed] {
   background-repeat: no-repeat !important;
   background-position: right 10px center !important;
   padding-right: 32px;
+}
+
+/* Период одной плашкой: пресеты слева, два месяца справа. */
+.cdr-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  padding: 5px 13px;
+  border: 1px solid #EBE6E6;
+  border-radius: 11px;
+  background: #fff;
+  color: #070505;
+  font: 700 12.5px 'Inter', sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cdr-field svg { color: #9B9292; flex-shrink: 0; }
+
+.cdr-field:hover { border-color: #D9CFCF; }
+
+[data-date-range].is-open .cdr-field {
+  border-color: #D06060;
+  box-shadow: 0 0 0 3px rgba(185, 20, 20, .09);
+}
+
+.cdr-panel {
+  position: fixed;
+  z-index: 2147482000;
+  display: flex;
+  border: 1px solid #EBE6E6;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 44px rgba(30, 20, 20, .20);
+  font-family: 'Inter', -apple-system, 'Helvetica Neue', sans-serif;
+  overflow: hidden;
+}
+
+.cdr-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 176px;
+  padding: 12px 10px;
+  border-right: 1px solid #F0EBEB;
+  background: #FCFAFA;
+}
+
+.cdr-presets__title {
+  margin: 2px 6px 8px;
+  color: #A89999;
+  font: 700 10px 'Inter', sans-serif;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.cdr-preset {
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #3A3030;
+  font: 600 12px 'Inter', sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cdr-preset:hover { background: #F4F0F0; }
+
+.cdr-preset.is-on {
+  background: #FCF1F1;
+  color: #B91414;
+  font-weight: 700;
+}
+
+/* Правая часть тянется на всю высоту панели — её задаёт колонка быстрого
+   выбора. Дата сверху, кнопки внизу, а остаток делится поровну между ними и
+   месяцами: иначе под кнопками оставалась пустая полоса. */
+.cdr-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.cdr-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: #070505;
+  font: 700 13px 'Inter', sans-serif;
+}
+
+.cdr-value__hint {
+  color: #9B9292;
+  font: 600 11px 'Inter', sans-serif;
+  font-style: normal;
+}
+
+.cdr-months { display: flex; gap: 18px; }
+
+.cdr-month { width: 232px; }
+
+.cdr-month__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cdr-title { color: #2A2020; font: 700 12.5px 'Inter', sans-serif; }
+
+.cdr-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #EBE6E6;
+  border-radius: 8px;
+  background: #fff;
+  color: #6A6161;
+  cursor: pointer;
+}
+
+.cdr-nav:hover { border-color: #D06060; color: #B91414; }
+
+.cdr-week,
+.cdr-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.cdr-week {
+  margin-bottom: 4px;
+  color: #AFA6A6;
+  font: 700 10px 'Inter', sans-serif;
+  letter-spacing: .06em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.cdr-day {
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #3A3030;
+  font: 600 12px 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.cdr-day:hover { background: #F4F0F0; border-radius: 9px; }
+
+.cdr-day--outside { color: #C9BFBF; }
+
+.cdr-day--today { box-shadow: inset 0 0 0 1px #E0CFCF; border-radius: 9px; }
+
+/* Дни внутри периода — сплошной полосой, края — точками отсчёта. */
+.cdr-day--in { background: #FBEDED; }
+
+.cdr-day--edge,
+.cdr-day--edge:hover {
+  background: #B91414;
+  color: #fff;
+  font-weight: 700;
+  border-radius: 9px;
+}
+
+.cdr-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid #F0EBEB;
+}
+
+.cdr-btn {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid #EBE6E6;
+  border-radius: 10px;
+  background: #fff;
+  color: #6A6161;
+  font: 700 12px 'Inter', sans-serif;
+  cursor: pointer;
+}
+
+.cdr-btn:hover { background: #FAF8F8; color: #3A3030; }
+
+.cdr-btn--primary {
+  border-color: #B91414;
+  background: #B91414;
+  color: #fff;
+}
+
+.cdr-btn--primary:hover { background: #A21212; color: #fff; }
+
+@media (max-width: 720px) {
+  .cdr-panel { flex-direction: column; max-width: calc(100vw - 16px); }
+  .cdr-presets {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid #F0EBEB;
+  }
+  .cdr-presets__title { width: 100%; }
+  .cdr-months { flex-direction: column; gap: 12px; }
+  .cdr-month { width: 100%; }
 }
 
 .cdate-panel {
@@ -1256,25 +1620,6 @@ input[type="date"][data-cdate-tamed] {
   color: #9B9292;
 }
 
-/* Квадрат отметки: у набора значений галочка справа читается хуже, чем
-   привычный флажок слева. */
-.cmf-box {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 17px;
-  height: 17px;
-  border: 1.5px solid #DCD4D4;
-  border-radius: 5px;
-  color: #fff;
-}
-
-.csel-option--on .cmf-box {
-  border-color: #B91414;
-  background: #B91414;
-}
-
 /* Стрелка у списков формы CapAlert — та же, что у остальных полей CRM. */
 .capf-select {
   appearance: none;
@@ -1284,4 +1629,206 @@ input[type="date"][data-cdate-tamed] {
   background-repeat: no-repeat;
   background-position: right 12px center;
   font-weight: 600;
+}
+
+
+/* Модальные листы рекрутинга (подробная карточка отклика, доска): подложка
+   затемняет экран, сам лист — по центру с полями по бокам. */
+.rec-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(7, 5, 5, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 28px;
+  overflow-y: auto;
+}
+
+.rec-sheet__card {
+  background: #fff;
+  border-radius: 18px;
+  padding: 22px 26px;
+  width: 100%;
+  max-width: 720px;
+  box-shadow: 0 18px 50px rgba(7, 5, 5, 0.18);
+}
+
+.rec-sheet__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rec-sheet__title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #070505;
+}
+
+.rec-sheet__sub {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #857D7D;
+}
+
+/* Выравнивание внутри модального листа рекрутинга: шапка и строки стоят на
+   одной линии с текстом серого блока отклика (у блока свой отступ 16px). */
+.rec-sheet__card > *:not(.rec-apply):not(.rec-bd) {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+/* Шапка стоит на той же вертикали, что и строки под ней: отрицательных полей
+   у неё нет — с ними текст заголовка начинался на 16px левее имени кандидата и
+   ссылки на резюме, и разницу пытались гасить сдвигом самого заголовка. */
+.rec-sheet__card > .rec-sheet__head {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+/* Тот сдвиг заголовка на 8px мог остаться в не обновлённой разметке страницы:
+   вместе с исправленной шапкой он уводит заголовок вправо. Гасим его здесь —
+   этот файл грузится после стилей страницы, поэтому карточка ровная в любом
+   сочетании версий. */
+.rec-sheet__head > .rec-sheet__title,
+.rec-sheet__head > div > .rec-sheet__title {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.rec-apply {
+  margin-top: 12px;
+  background: #F7F4F4;
+  border-radius: 14px;
+  padding: 14px 16px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: #3A3030;
+}
+
+.rec-apply__text {
+  white-space: pre-wrap;
+  margin: 0 0 10px;
+}
+
+.rec-apply__text:last-child {
+  margin-bottom: 0;
+}
+
+/* Карточка файла без текста под ней — последняя в блоке: её нижний отступ
+   иначе висел пустой полосой в сером фоне. */
+.rec-apply > .rec-file:last-child {
+  margin-bottom: 0;
+}
+
+/* Тело модального листа: единый отступ, чтобы строки, поле Телеграм и
+   раскрывающееся резюме стояли на одной левой линии. */
+.rec-sheet__card > .rec-sheet__body {
+  margin-top: 16px;
+  padding: 16px 16px 4px;
+}
+
+/* Блок «Город»: пустой ряд чипсов не должен reserved-ить место — иначе
+   между заголовком и полем поиска остаётся дыра в 40 пикселей. */
+.rec-area .rec-chips:empty {
+  display: none;
+}
+
+/* История запусков поиска: компактная таблица с ровными колонками. */
+.rec-runs {
+  overflow-x: auto;
+  margin-top: 4px;
+}
+
+.rec-runs table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 640px;
+  font-size: 12.5px;
+}
+
+.rec-runs__th {
+  text-align: left;
+  padding: 0 18px 8px 0;
+  border-bottom: 1px solid #F0EBEB;
+  font: 600 10.5px Inter, sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9B9292;
+  white-space: nowrap;
+}
+
+.rec-runs__th--num {
+  text-align: right;
+  padding-right: 0;
+}
+
+.rec-runs__cell {
+  padding: 10px 18px 10px 0;
+  border-bottom: 1px solid #F7F4F4;
+  font-weight: 600;
+  color: #3A3030;
+  white-space: nowrap;
+}
+
+.rec-runs__cell--num {
+  text-align: right;
+  padding-right: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-runs__cell--empty {
+  color: #C9C0C0;
+  font-weight: 400;
+}
+
+.rec-runs tbody tr:hover .rec-runs__cell {
+  background: #FBF9F9;
+}
+
+.rec-runs tbody tr:last-child .rec-runs__cell {
+  border-bottom: 0;
+}
+
+/* Медиаборд: «Обновлено: N мин назад ⟳» — кнопкой того же размера, что
+   «Экспорт» и «Вид», в строке структуры. Сама кнопка — board-export__btn. */
+.kt-refresh {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.kt-refresh[hidden] {
+  display: none;
+}
+
+.kt-refresh__btn {
+  white-space: nowrap;
+}
+
+.kt-refresh__btn:disabled {
+  cursor: default;
+}
+
+.kt-refresh__label {
+  color: #6A6161;
+  font-weight: 600;
+}
+
+.kt-refresh.is-syncing .kt-refresh__btn svg {
+  animation: kt-refresh-spin .9s linear infinite;
+}
+
+.kt-refresh.is-error .kt-refresh__label {
+  color: #C41616;
+}
+
+@keyframes kt-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

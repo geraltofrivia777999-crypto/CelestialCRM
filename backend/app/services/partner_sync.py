@@ -156,7 +156,10 @@ async def collect_facts(
             "Интеграция не связана с сервисом: читаем только то, что он уже "
             "собрал. Укажите ID интеграции на сервисе, чтобы синк ходил в ПП."
         )
-    facts = await client.stats(date_from, date_to)
+    # Read the selected connection only. The legacy unscoped endpoint sums
+    # all mappings, including duplicate old/new connections to the same PP.
+    scope = {"integration_id": integration.external_id} if integration.external_id else {}
+    facts = await client.stats(date_from, date_to, **scope)
     # Сервис отдаёт `offer_id` тем значением, которое мы ему и передали как
     # `crm_offer_id`, — то есть наш числовой ключ. UUID и номер оффера у
     # партнёрки принимаем тоже: так синк работает и с интеграцией, настроенной
@@ -179,6 +182,33 @@ async def collect_facts(
     return kept, notes
 
 
+def duplicate_notes(facts: list[dict]) -> list[str]:
+    """Сообщить, если сервис прислал одну и ту же тройку дважды.
+
+    Ключ факта — дата, оффер и тег; повтор означает, что итоговое число в книге
+    зависит от порядка строк в ответе. Это либо две интеграции сервиса, знающие
+    один и тот же оффер, либо разбивка, которую сервис не сложил. И то и другое
+    выглядит в книге как «цифра не сходится с кабинетом партнёрки», поэтому
+    молчать об этом нельзя.
+    """
+    seen: dict[tuple[str, str, str], int] = {}
+    for fact in facts:
+        key = (
+            str(fact.get("date") or "")[:10],
+            str(fact.get("offer_id") or ""),
+            " ".join(str(fact.get("tag") or "").split()).casefold(),
+        )
+        seen[key] = seen.get(key, 0) + 1
+    repeated = sum(1 for count in seen.values() if count > 1)
+    if not repeated:
+        return []
+    return [
+        f"Сервис прислал повторяющиеся строки: {repeated} троек «дата — оффер — "
+        "тег» встретились больше одного раза. В книгу попало последнее значение "
+        "каждой — сверьте с кабинетом партнёрки."
+    ]
+
+
 async def perform_sync(
     db: AsyncSession,
     integration: PartnerIntegration,
@@ -188,6 +218,7 @@ async def perform_sync(
 ) -> dict:
     """Забрать факты и разложить их. Исключения не глушит — их пишет вызывающий."""
     facts, notes = await collect_facts(db, integration, client, date_from, date_to)
+    notes.extend(duplicate_notes(facts))
     result = await distribute_deposits(db, integration.workspace_id, facts)
     result["reasons"] = notes + list(result.get("reasons") or [])
     result["received"] = len(facts)

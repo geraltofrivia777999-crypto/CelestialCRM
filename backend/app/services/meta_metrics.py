@@ -50,6 +50,32 @@ METRIC_LABELS = {
 }
 REVENUE_METRICS = {"roi", "profit", "revenue", "cpl", "leads"}
 
+# Одну и ту же конверсию Meta присылает под несколькими именами сразу: пиксель,
+# «omni» (сайт + приложение) и короткий псевдоним. Складывать их — задвоить
+# число, поэтому из группы берём наибольшее: omni уже включает остальные.
+REGISTRATION_ACTION_TYPES = (
+    "omni_complete_registration",
+    "complete_registration",
+    "offsite_conversion.fb_pixel_complete_registration",
+    "app_custom_event.fb_mobile_complete_registration",
+)
+LANDING_VIEW_ACTION_TYPES = ("omni_landing_page_view", "landing_page_view")
+INSTALL_ACTION_TYPES = ("omni_app_install", "mobile_app_install", "app_install")
+
+
+def action_count(actions: dict | None, types: tuple[str, ...]) -> int:
+    """Число конверсий одного вида из сырого среза `actions` строки статистики."""
+    if not isinstance(actions, dict):
+        return 0
+    values = [
+        int(actions[name]) for name in types if isinstance(actions.get(name), int | float)
+    ]
+    return max(values, default=0)
+
+
+def _cost(spend: Decimal, count: int) -> float | None:
+    return float(q2(spend / count)) if count else None
+
 
 def q2(value: Decimal) -> Decimal:
     return Decimal(value).quantize(Decimal("0.01"))
@@ -65,6 +91,9 @@ def metrics(
     *,
     link_clicks: int = 0,
     results: int = 0,
+    registrations: int = 0,
+    landing_views: int = 0,
+    installs: int = 0,
     reach: int = 0,
     pixel_leads: int = 0,
     pixel_purchases: int = 0,
@@ -77,6 +106,9 @@ def metrics(
     bid_amount: Decimal | None = None,
     daily_budget: Decimal | None = None,
     lifetime_budget: Decimal | None = None,
+    spend_total: Decimal | None = None,
+    spend_day_pct: Decimal | None = None,
+    spend_total_pct: Decimal | None = None,
 ) -> dict:
     """Общий набор чисел строки отчёта.
 
@@ -98,6 +130,9 @@ def metrics(
             float(q2(Decimal(link_clicks) / impressions * 100)) if impressions else None
         ),
         "cpc": float(q2(spend / clicks)) if clicks else None,
+        # CPC в Ads Manager — цена именно клика по ссылке; `cpc` выше остаётся
+        # ценой любого клика, на нём стоят уже созданные автоправила.
+        "cpc_link": _cost(spend, link_clicks),
         "cpm": float(q2(spend / impressions * 1000)) if impressions else None,
         "results": results,
         "cpa": float(q2(spend / results)) if results else None,
@@ -110,9 +145,18 @@ def metrics(
         "revenue": None,
         "profit": None,
         "roi": None,
+        "cost_per_sale": _cost(spend, sales),
         "reach": reach,
         "pixel_leads": pixel_leads,
+        "cost_per_pixel_lead": _cost(spend, pixel_leads),
         "pixel_purchases": pixel_purchases,
+        "cost_per_purchase": _cost(spend, pixel_purchases),
+        "registrations": registrations,
+        "cost_per_registration": _cost(spend, registrations),
+        "landing_views": landing_views,
+        "cost_per_landing_view": _cost(spend, landing_views),
+        "installs": installs,
+        "cost_per_install": _cost(spend, installs),
         "actions_total": sum(action_values),
         "entity_name": entity_name,
         "campaign_name": campaign_name,
@@ -123,6 +167,11 @@ def metrics(
         "daily_budget": float(q2(daily_budget)) if daily_budget is not None else None,
         "lifetime_budget": (
             float(q2(lifetime_budget)) if lifetime_budget is not None else None
+        ),
+        "spend_total": float(q2(spend_total)) if spend_total is not None else None,
+        "spend_day_pct": float(q2(spend_day_pct)) if spend_day_pct is not None else None,
+        "spend_total_pct": (
+            float(q2(spend_total_pct)) if spend_total_pct is not None else None
         ),
     }
     if revenue is not None:
@@ -139,6 +188,11 @@ def totals(stats: list[MetaStatDaily], keitaro: dict[str, dict]) -> dict:
     clicks = sum(row.clicks or 0 for row in stats)
     link_clicks = sum(row.link_clicks or 0 for row in stats)
     results = sum((row.pixel_leads or 0) + (row.pixel_purchases or 0) for row in stats)
+    pixel_leads = sum(row.pixel_leads or 0 for row in stats)
+    pixel_purchases = sum(row.pixel_purchases or 0 for row in stats)
+    registrations = sum(action_count(row.actions, REGISTRATION_ACTION_TYPES) for row in stats)
+    landing_views = sum(action_count(row.actions, LANDING_VIEW_ACTION_TYPES) for row in stats)
+    installs = sum(action_count(row.actions, INSTALL_ACTION_TYPES) for row in stats)
     # В доход попадают только кампании, которые реально есть в этом наборе:
     # иначе итог включал бы трафик, к Meta отношения не имеющий.
     campaign_ids = {row.campaign_external_id for row in stats if row.campaign_external_id}
@@ -155,6 +209,11 @@ def totals(stats: list[MetaStatDaily], keitaro: dict[str, dict]) -> dict:
         sales,
         link_clicks=link_clicks,
         results=results,
+        pixel_leads=pixel_leads,
+        pixel_purchases=pixel_purchases,
+        registrations=registrations,
+        landing_views=landing_views,
+        installs=installs,
     )
 
 

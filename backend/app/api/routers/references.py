@@ -4,12 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, func, null, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.routers.analytics import invalidate_dashboard_cache
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import (
     accessible_user_ids,
     has_full_access,
     has_permission,
+    require_any_permission,
     require_permission,
 )
 from app.models import (
@@ -38,10 +40,11 @@ from app.schemas import (
     OfferStatusUpdate,
     Page,
 )
+from app.services import finance_spend
 from app.services.audit import audit
 from app.services.country_tiers import TIER_1
 from app.services.finance_pull import pull_offer_to_books
-from app.services.geo import countries, normalize_geo
+from app.services.geo import countries, country_options, normalize_geo
 
 MAX_PAGE_SIZE = 500
 
@@ -217,6 +220,39 @@ async def _buyer_offer_scope(
     )
 
 
+async def _media_board_offer_scope(db: AsyncSession, current: User):
+    """Офферы, которые действительно относятся к видимой ветке Медиаборда.
+
+    Трекерные офферы обычно не имеют ручных назначений OfferBuyer/OfferLead,
+    поэтому одной области справочника здесь недостаточно. Берём офферы из
+    записей доступных баеров и группы Keitaro этих же людей. Так тимлид видит
+    себя и подчинённых, а чужие команды не попадают даже в ответ API.
+    """
+    if await _sees_every_offer(db, current):
+        return None
+    user_ids = await accessible_user_ids(db, current)
+    groups = {
+        str(value).strip().lower()
+        for value in await db.scalars(
+            select(User.keitaro_offer_group).where(User.id.in_(user_ids))
+        )
+        if value and str(value).strip()
+    }
+    clauses = [
+        Offer.id.in_(
+            select(MediaRecord.offer_id).where(
+                MediaRecord.workspace_id == current.workspace_id,
+                MediaRecord.buyer_id.in_(user_ids),
+            )
+        ),
+        Offer.id.in_(select(OfferBuyer.offer_id).where(OfferBuyer.user_id.in_(user_ids))),
+        Offer.id.in_(select(OfferLead.offer_id).where(OfferLead.user_id.in_(user_ids))),
+    ]
+    if groups:
+        clauses.append(func.lower(func.coalesce(Offer.group_name, "")).in_(groups))
+    return or_(*clauses)
+
+
 async def _sees_every_offer(db: AsyncSession, current: User) -> bool:
     """Кому справочник виден целиком — админу и тому, у кого есть view_all."""
     return await has_full_access(db, current) or has_permission(current, "offers.view_all")
@@ -316,6 +352,25 @@ async def _valid_users(
     return users
 
 
+async def _assignment_scope(
+    db: AsyncSession, current: User, users: list[User]
+) -> set[uuid.UUID] | None:
+    """Кого человек вправе ставить на оффер и снимать с него. `None` — всех.
+
+    Список в запросе — это «мои люди на этом оффере», а не весь состав: тимлид
+    не видит баеров соседней команды, и замена целиком молча снимала бы их.
+    Поэтому без полного справочника меняются только назначения своей ветки.
+    """
+    if await _sees_every_offer(db, current):
+        return None
+    scope = await accessible_user_ids(db, current)
+    if any(user.id not in scope for user in users):
+        raise HTTPException(
+            status_code=422, detail="Назначить на оффер можно только людей своей команды"
+        )
+    return scope
+
+
 @router.get("/offers", response_model=Page)
 async def list_offers(
     search: str | None = None,
@@ -367,7 +422,18 @@ async def list_offers(
             != settings.keitaro_offers_group.strip().lower()
         )
         filters.append(Offer.connection_id.isnot(None))
-    if scope_offers or for_buyer_id or for_spend:
+        # Синхронизация не удаляет справочник физически: на офферы с историей
+        # ссылаются записи CRM. Статус Keitaro — источник истины для того,
+        # должен ли оффер оставаться в фильтрах рабочей доски.
+        filters.append(Offer.keitaro_state == Status.active)
+    # Для трекерных офферов Медиаборда область строится по видимым записям и
+    # группам Keitaro. Обычный справочник по-прежнему использует назначения.
+    personal_scope = scope_offers and not for_buyer_id and not for_spend
+    if personal_scope and exclude_offers_group:
+        scope = await _media_board_offer_scope(db, current)
+        if scope is not None:
+            filters.append(scope)
+    elif scope_offers or for_buyer_id or for_spend:
         scope = await _buyer_offer_scope(db, current, for_buyer_id)
         if scope is not None:
             filters.append(scope)
@@ -488,6 +554,9 @@ async def offers_reference(
     ).all()
     return {
         "geos": geos,
+        # Форма оффера предлагает все страны, а не только уже встреченные в
+        # Keitaro: новое GEO заводят раньше, чем по нему придёт первый клик.
+        "countries": country_options(),
         "partners": [{"id": str(row_id), "name": name} for row_id, name in partners],
         # Интеграции с ПП — для поля «ID ПП»: через какую из них приходят
         # депозиты по этому офферу.
@@ -548,8 +617,10 @@ async def create_offer(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("offers.manage")),
 ) -> dict:
+    await finance_spend.lock_workspace(db, current.workspace_id)
     leads = await _valid_users(db, current, payload.lead_ids)
     buyers = await _valid_users(db, current, payload.buyer_ids)
+    await _assignment_scope(db, current, leads + buyers)
     await _check_partner_offer_id(db, current, payload.external_id)
     geo = normalize_geo(payload.geo)
     offer = Offer(
@@ -573,6 +644,7 @@ async def create_offer(
     db.add_all([OfferLead(offer_id=offer.id, user_id=user.id) for user in leads])
     db.add_all([OfferBuyer(offer_id=offer.id, user_id=user.id) for user in buyers])
     await pull_offer_to_books(db, offer, [user.id for user in buyers])
+    await finance_spend.refresh_workspace(db, current.workspace_id)
     await audit(
         db,
         current,
@@ -583,6 +655,7 @@ async def create_offer(
         entity_id=str(offer.id),
     )
     await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
     return {"id": str(offer.id), "status": offer.status.value}
 
 
@@ -594,9 +667,11 @@ async def update_offer(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("offers.manage")),
 ) -> dict:
+    await finance_spend.lock_workspace(db, current.workspace_id)
     offer = await _manual_offer(db, current, offer_id)
     leads = await _valid_users(db, current, payload.lead_ids)
     buyers = await _valid_users(db, current, payload.buyer_ids)
+    scope = await _assignment_scope(db, current, leads + buyers)
     await _check_partner_offer_id(db, current, payload.external_id, exclude_id=offer.id)
     geo = normalize_geo(payload.geo)
     offer.name = payload.name.strip()
@@ -622,15 +697,28 @@ async def update_offer(
             )
         ).all()
     )
-    await db.execute(delete(OfferLead).where(OfferLead.offer_id == offer.id))
-    await db.execute(delete(OfferBuyer).where(OfferBuyer.offer_id == offer.id))
+    # Люди чужих команд в форму не попадают — их назначения не трогаем.
+    await db.execute(
+        delete(OfferLead).where(
+            OfferLead.offer_id == offer.id,
+            *([OfferLead.user_id.in_(scope)] if scope is not None else []),
+        )
+    )
+    await db.execute(
+        delete(OfferBuyer).where(
+            OfferBuyer.offer_id == offer.id,
+            *([OfferBuyer.user_id.in_(scope)] if scope is not None else []),
+        )
+    )
     db.add_all([
         OfferLead(offer_id=offer.id, user_id=user.id, cap=kept_caps.get(user.id))
         for user in leads
     ])
     db.add_all([OfferBuyer(offer_id=offer.id, user_id=user.id) for user in buyers])
+    await db.flush()
     await pull_offer_to_books(db, offer, [user.id for user in buyers])
-    offer.status = workflow_status(offer.status, bool(leads), bool(buyers))
+    await finance_spend.refresh_workspace(db, current.workspace_id)
+    await _refresh_status(db, offer)
     await audit(
         db,
         current,
@@ -641,6 +729,7 @@ async def update_offer(
         entity_id=str(offer.id),
     )
     await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
     return {"id": str(offer.id), "status": offer.status.value}
 
 
@@ -680,6 +769,7 @@ async def delete_offer(
         entity_id=str(offer_id),
     )
     await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
     return {"deleted": str(offer_id)}
 
 
@@ -705,6 +795,7 @@ async def set_offer_status(
         entity_id=str(offer.id),
     )
     await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
     return {"id": str(offer.id), "status": offer.status.value}
 
 
@@ -730,6 +821,7 @@ async def set_offer_star(
         entity_id=str(offer.id),
     )
     await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
     return {"id": str(offer.id), "is_starred": offer.is_starred}
 
 
@@ -746,8 +838,14 @@ async def assign_leads(
     if not offer or offer.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Offer not found")
     users = await _valid_users(db, current, payload.lead_ids)
+    scope = await _assignment_scope(db, current, users)
     caps = {key: (value or "").strip()[:160] for key, value in payload.caps.items()}
-    await db.execute(delete(OfferLead).where(OfferLead.offer_id == offer.id))
+    await db.execute(
+        delete(OfferLead).where(
+            OfferLead.offer_id == offer.id,
+            *([OfferLead.user_id.in_(scope)] if scope is not None else []),
+        )
+    )
     db.add_all(
         [
             OfferLead(
@@ -768,6 +866,7 @@ async def assign_leads(
         entity_id=str(offer.id),
     )
     await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
     return {
         "offer_id": str(offer.id),
         "lead_ids": [str(user.id) for user in users],
@@ -781,20 +880,28 @@ async def assign_buyers(
     payload: AssignBuyers,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("offers.manage")),
+    current: User = Depends(require_any_permission("offers.assign", "offers.manage")),
 ) -> dict:
     """Вторая ступень: тимлид раздаёт оффер баерам и он уходит «В работу»."""
+    await finance_spend.lock_workspace(db, current.workspace_id)
     offer = await db.get(Offer, offer_id)
     if not offer or offer.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Offer not found")
     users = await _valid_users(db, current, payload.buyer_ids)
-    await db.execute(delete(OfferBuyer).where(OfferBuyer.offer_id == offer.id))
+    scope = await _assignment_scope(db, current, users)
+    await db.execute(
+        delete(OfferBuyer).where(
+            OfferBuyer.offer_id == offer.id,
+            *([OfferBuyer.user_id.in_(scope)] if scope is not None else []),
+        )
+    )
     db.add_all([OfferBuyer(offer_id=offer.id, user_id=user.id) for user in users])
     await db.flush()
     # Оффер уезжает в Финансы баера сразу: заводить ту же строку руками —
     # лишняя работа и повод разойтись со справочником в названии или ставке.
     # Снятый баер свою строку сохраняет: в ней уже могут быть депозиты.
     pulled = await pull_offer_to_books(db, offer, [user.id for user in users])
+    await finance_spend.refresh_workspace(db, current.workspace_id)
     # Статус идёт следом за назначениями: снятый последний баер возвращает
     # оффер тимлиду, снятый последний тимлид — в «Не занят». Холд и Стоп
     # выставлены руками и здесь не сбрасываются.
@@ -809,6 +916,7 @@ async def assign_buyers(
         entity_id=str(offer.id),
     )
     await db.commit()
+    await invalidate_dashboard_cache(current.workspace_id)
     return {
         "offer_id": str(offer.id),
         "buyer_ids": [str(user.id) for user in users],
@@ -856,6 +964,7 @@ async def save_country_tiers(
     Приходит весь набор, а не «добавь одну»: список правят пачкой, и разбор
     того, что именно изменилось, ничего бы здесь не сэкономил.
     """
+    await finance_spend.lock_workspace(db, current.workspace_id)
     codes = sorted(
         {code for code in (normalize_geo(item) for item in payload.tier1) if code}
     )
@@ -871,6 +980,7 @@ async def save_country_tiers(
         f"Tier1: {len(codes)} стран",
         request=request,
     )
+    await finance_spend.refresh_workspace(db, current.workspace_id)
     await db.commit()
     known = countries()
     tier_one = set(codes)

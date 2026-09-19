@@ -11,14 +11,15 @@
 """
 
 import uuid
-from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import business_today
 from app.core.database import get_db
-from app.core.deps import require_permission
+from app.core.deps import accessible_user_ids, has_full_access, require_permission
 from app.models import Role, SalaryComponent, SalaryRule, Status, User
 from app.schemas import Page, SalaryRuleCreate, SalaryRuleUpdate
 from app.services.audit import audit
@@ -69,9 +70,12 @@ async def bases(
             {"id": str(person.id), "name": person.name or person.login}
             for person in people
         ],
+        # Скрытые базы остаются в расчёте ради прежних правил, но выбирать их
+        # для новых незачем — в списке их нет.
         "bases": [
             {"code": code, "label": meta["label"], "hint": meta["hint"]}
             for code, meta in BASES.items()
+            if not meta.get("hidden")
         ],
         "kinds": [
             {"code": "percent", "label": "Процент"},
@@ -180,12 +184,24 @@ async def calculate(
 
     Ничего не записывает: это проверка правил, а не выплата.
     """
-    today = datetime.now(UTC).date()
+    today = business_today()
     year = year or today.year
     month = month or today.month
     if not 1 <= month <= 12 or not 2000 <= year <= 2100:
         raise HTTPException(status_code=422, detail="Некорректный период")
-    return await payroll(db, current.workspace_id, year, month)
+    result = await payroll(db, current.workspace_id, year, month)
+    if await has_full_access(db, current):
+        return result
+    # Зарплата — те же данные людей: тимлид видит начисления своей ветки, баер
+    # со «своими данными» — только своё. Итог пересчитываем по видимым строкам.
+    visible = {str(user_id) for user_id in await accessible_user_ids(db, current)}
+    rows = [row for row in result["rows"] if row["user_id"] in visible]
+    return {
+        **result,
+        "rows": rows,
+        "total": sum((row["payout"] for row in rows), Decimal("0")),
+        "people": len(rows),
+    }
 
 
 async def _rules(db: AsyncSession, workspace_id: uuid.UUID) -> list[SalaryRule]:

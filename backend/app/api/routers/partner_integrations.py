@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_permission
 from app.core.security import encrypt_secret
@@ -26,6 +27,8 @@ from app.services.audit import audit
 from app.services.partner_integrations import (
     PartnerIntegrationError,
     PartnerServiceClient,
+    normalize_partner_url,
+    platform_template_id,
 )
 from app.services.partner_sync import (
     fail_run,
@@ -42,6 +45,7 @@ def _serialize(integration: PartnerIntegration) -> dict:
         "id": str(integration.id),
         "name": integration.name,
         "partner_name": integration.partner_name,
+        "platform": integration.platform,
         "base_url": integration.base_url,
         "external_id": integration.external_id,
         "is_enabled": integration.is_enabled,
@@ -102,27 +106,36 @@ async def create_integration(
     current: User = Depends(require_permission("settings.manage")),
 ) -> dict:
     partner_name = str(payload.get("partner_name") or "").strip()
+    platform = str(payload.get("platform") or "").strip().lower()
     base_url = str(payload.get("base_url") or "").strip()
     api_key = str(payload.get("api_key") or "").strip()
-    if not partner_name or not base_url or not api_key:
+    if not partner_name or not platform or not base_url or not api_key:
         raise HTTPException(
             status_code=422,
-            detail="Заполните партнёрку, адрес сервиса и API-ключ",
+            detail="Заполните партнёрку, платформу, адрес API и ключ",
         )
-    # Название и ID интеграции на сервисе руками больше не вводят: первое —
-    # просто подпись, второе спрашиваем у самого сервиса.
+    try:
+        base_url = normalize_partner_url(base_url)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    template_id = platform_template_id(platform)
+    if template_id is None:
+        raise HTTPException(status_code=422, detail="Неизвестная платформа партнёрки")
+    # Название — просто подпись; на сервисе оно же служит слагом, поэтому
+    # уникальность в воркспейсе обеспечиваем здесь.
     name = await _free_name(db, current.workspace_id, partner_name)
     integration = PartnerIntegration(
         workspace_id=current.workspace_id,
         name=name,
         partner_name=partner_name,
+        platform=platform,
         base_url=base_url,
         api_key_encrypted=encrypt_secret(api_key),
         is_enabled=payload.get("is_enabled", True),
     )
-    integration.external_id = str(payload.get("external_id") or "").strip() or None
-    if not integration.external_id:
-        integration.external_id = await _service_integration_id(integration, partner_name)
+    integration.external_id = await _create_on_service(
+        partner_name, name, template_id, base_url, api_key
+    )
     db.add(integration)
     await audit(
         db, current, "partner.integration_created",
@@ -152,31 +165,32 @@ async def _free_name(db: AsyncSession, workspace_id: uuid.UUID, base: str) -> st
     raise HTTPException(status_code=422, detail="Слишком много интеграций с таким именем")
 
 
-async def _service_integration_id(
-    integration: PartnerIntegration, partner_name: str
-) -> str | None:
-    """Спросить у сервиса, какая из его интеграций наша.
+async def _create_on_service(
+    partner_name: str, name: str, template_id: int, base_url: str, api_key: str
+) -> str:
+    """Завести интеграцию на сервисе и вернуть её id.
 
-    Конфиг коннектора заводят на самом сервисе, и раньше его id вбивали руками.
-    Сервис умеет перечислять свои интеграции — берём совпадение по имени, а
-    если она там одна, то её. Не ответил или не нашли — не беда: синк тогда
-    читает уже собранное сервисом, а id можно связать позже.
+    Ошибку сервиса поднимаем наверх, а не глотаем: без интеграции на его
+    стороне синк не заработает, и карточка, сохранённая «наполовину», выглядела
+    бы рабочей, ничего не привозя.
     """
     try:
-        rows = await PartnerServiceClient(integration).integrations()
-    except (PartnerIntegrationError, HTTPException):
-        return None
-    wanted = partner_name.strip().lower()
-    for row in rows:
-        names = {
-            str(row.get("partner_name") or "").strip().lower(),
-            str(row.get("name") or "").strip().lower(),
-        }
-        if wanted and wanted in names and row.get("id") is not None:
-            return str(row["id"])
-    if len(rows) == 1 and rows[0].get("id") is not None:
-        return str(rows[0]["id"])
-    return None
+        created = await PartnerServiceClient().create_integration(
+            partner_name=partner_name,
+            name=name,
+            template_integration_id=template_id,
+            base_url=base_url,
+            api_key=api_key,
+        )
+    except PartnerIntegrationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    external_id = created.get("id")
+    if external_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Сервис партнёрок не вернул id интеграции",
+        )
+    return str(external_id)
 
 
 @router.patch("/{integration_id}")
@@ -188,6 +202,37 @@ async def update_integration(
     current: User = Depends(require_permission("settings.manage")),
 ) -> dict:
     integration = await _integration(db, current, integration_id)
+    updated_base_url: str | None = None
+    updated_api_key: str | None = None
+    if "base_url" in payload:
+        try:
+            updated_base_url = normalize_partner_url(payload["base_url"])
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+    if "api_key" in payload:
+        updated_api_key = str(payload["api_key"] or "").strip()
+        if not updated_api_key:
+            raise HTTPException(status_code=422, detail="Ключ API не может быть пустым")
+
+    # Сначала обновляем рабочую интеграцию в сервисе. Иначе карточка CRM
+    # показывает новый адрес, а синк продолжает ходить по старому.
+    effective_external_id = (
+        str(payload.get("external_id") or "").strip()
+        if "external_id" in payload
+        else str(integration.external_id or "").strip()
+    )
+    if effective_external_id and (
+        updated_base_url is not None or updated_api_key is not None
+    ):
+        try:
+            await PartnerServiceClient().update_integration(
+                effective_external_id,
+                base_url=updated_base_url,
+                api_key=updated_api_key,
+            )
+        except PartnerIntegrationError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
     if "name" in payload and str(payload["name"]).strip():
         integration.name = str(payload["name"]).strip()
     if "partner_name" in payload and str(payload["partner_name"]).strip():
@@ -197,12 +242,17 @@ async def update_integration(
         if "name" not in payload and integration.name == integration.partner_name:
             integration.name = await _free_name(db, current.workspace_id, renamed)
         integration.partner_name = renamed
-    if "base_url" in payload and str(payload["base_url"]).strip():
-        integration.base_url = str(payload["base_url"]).strip()
+    if "platform" in payload and str(payload["platform"]).strip():
+        platform = str(payload["platform"]).strip().lower()
+        if platform_template_id(platform) is None:
+            raise HTTPException(status_code=422, detail="Неизвестная платформа партнёрки")
+        integration.platform = platform
+    if updated_base_url is not None:
+        integration.base_url = updated_base_url
     if "external_id" in payload:
         integration.external_id = str(payload["external_id"] or "").strip() or None
-    if "api_key" in payload and str(payload["api_key"]).strip():
-        integration.api_key_encrypted = encrypt_secret(str(payload["api_key"]).strip())
+    if updated_api_key is not None:
+        integration.api_key_encrypted = encrypt_secret(updated_api_key)
     if "is_enabled" in payload:
         integration.is_enabled = bool(payload["is_enabled"])
     await audit(
@@ -300,11 +350,30 @@ async def run_sync(
     }
 
 
+PLATFORM_LABELS = {"affise": "Affise", "alanbase": "Alanbase", "afftech": "AffTech"}
+
+
+@router.get("/platforms")
+async def list_platforms(
+    current: User = Depends(require_permission("settings.view")),
+) -> list[dict]:
+    """Платформы, под которые у сервиса есть готовый шаблон коннектора.
+
+    Список отдаёт бэкенд, а не зашивает форма: соответствие «платформа →
+    шаблон» живёт в настройках развёртывания, и добавление четвёртой ПП не
+    должно требовать правки интерфейса.
+    """
+    return [
+        {"value": key, "label": PLATFORM_LABELS.get(key, key.title())}
+        for key in settings.partner_platform_templates
+    ]
+
+
 @router.get("/service/integrations")
 async def service_integrations(
     integration_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("settings.manage")),
+    current: User = Depends(require_permission("settings.view")),
 ) -> list[dict]:
     """Интеграции, заведённые на самом сервисе, — чтобы выбрать, с какой связать.
 

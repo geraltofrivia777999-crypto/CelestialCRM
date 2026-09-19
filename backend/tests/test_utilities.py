@@ -1,7 +1,7 @@
 """Утилиты: Alert и CAP — ТЗ 9."""
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,8 @@ from app.models import (
     AlertRule,
     CapRule,
     IntegrationConnection,
+    KeitaroCampaign,
+    KeitaroGroup,
     MediaRecord,
     Offer,
     Role,
@@ -25,7 +27,7 @@ from app.models import (
     User,
     UserParent,
 )
-from app.services import telegram
+from app.services import alerts, telegram
 from app.services.alert_fields import window_range
 from app.services.alerts import (
     AlertEngine,
@@ -206,6 +208,117 @@ async def test_report_can_use_a_custom_daily_time(utilities) -> None:
     assert invalid.status_code == 422
 
 
+async def test_reference_contains_only_all_active_keitaro_offers(utilities) -> None:
+    """CAP не смешивает актуальный каталог с ручными и архивными офферами."""
+    marker = uuid.uuid4().hex
+    async with SessionLocal() as db:
+        connection = await db.scalar(
+            select(IntegrationConnection).where(
+                IntegrationConnection.workspace_id == utilities["workspace"]
+            )
+        )
+        offers = [
+            Offer(
+                workspace_id=utilities["workspace"],
+                connection_id=connection.id,
+                external_id=f"cap-live-{marker}-{index}",
+                name=f"CAP live {marker} {index:03d}",
+                group_name="LIVE",
+                keitaro_state=Status.active,
+            )
+            for index in range(505)
+        ]
+        offers.extend(
+            [
+                Offer(
+                    workspace_id=utilities["workspace"],
+                    external_id=f"cap-manual-{marker}",
+                    name=f"CAP manual {marker}",
+                    keitaro_state=Status.active,
+                ),
+                Offer(
+                    workspace_id=utilities["workspace"],
+                    connection_id=connection.id,
+                    external_id=f"cap-inactive-{marker}",
+                    name=f"CAP inactive {marker}",
+                    group_name="LIVE",
+                    keitaro_state=Status.inactive,
+                ),
+                Offer(
+                    workspace_id=utilities["workspace"],
+                    connection_id=connection.id,
+                    external_id=f"cap-offers-{marker}",
+                    name=f"CAP OFFERS group {marker}",
+                    group_name="OFFERS",
+                    keitaro_state=Status.active,
+                ),
+            ]
+        )
+        db.add_all(offers)
+        await db.commit()
+        created_ids = [offer.id for offer in offers]
+
+    with _admin_client() as client:
+        response = client.get("/api/v1/utilities/reference")
+
+    async with SessionLocal() as db:
+        await db.execute(delete(Offer).where(Offer.id.in_(created_ids)))
+        await db.commit()
+
+    assert response.status_code == 200
+    names = {item["name"] for item in response.json()["offers"]}
+    assert f"CAP live {marker} 504" in names
+    assert f"CAP manual {marker}" not in names
+    assert f"CAP inactive {marker}" not in names
+    assert f"CAP OFFERS group {marker}" not in names
+
+
+async def test_reference_uses_current_keitaro_groups_not_historical_campaigns(
+    utilities,
+) -> None:
+    """Удалённая группа остаётся в истории кампаний, но не возвращается в форму."""
+    marker = uuid.uuid4().hex
+    async with SessionLocal() as db:
+        connection = await db.scalar(
+            select(IntegrationConnection).where(
+                IntegrationConnection.workspace_id == utilities["workspace"]
+            )
+        )
+        current = KeitaroGroup(
+            workspace_id=utilities["workspace"],
+            connection_id=connection.id,
+            resource_type="campaigns",
+            external_id=f"current-{marker}",
+            name=f"Current {marker}",
+        )
+        stale = KeitaroCampaign(
+            workspace_id=utilities["workspace"],
+            connection_id=connection.id,
+            external_id=f"campaign-{marker}",
+            name=f"Historical campaign {marker}",
+            group_external_id=f"stale-{marker}",
+            group_name=f"Stale {marker}",
+            status=Status.inactive,
+        )
+        db.add_all([current, stale])
+        await db.commit()
+        current_id = current.id
+        stale_id = stale.id
+
+    with _admin_client() as client:
+        response = client.get("/api/v1/utilities/reference")
+
+    async with SessionLocal() as db:
+        await db.execute(delete(KeitaroCampaign).where(KeitaroCampaign.id == stale_id))
+        await db.execute(delete(KeitaroGroup).where(KeitaroGroup.id == current_id))
+        await db.commit()
+
+    assert response.status_code == 200
+    groups = {item["code"]: item["label"] for item in response.json()["campaign_groups"]}
+    assert groups[f"current-{marker}"] == f"Current {marker}"
+    assert f"stale-{marker}" not in groups
+
+
 async def test_a_cap_needs_an_offer_or_a_person(utilities) -> None:
     with _admin_client() as client:
         response = client.post(
@@ -303,6 +416,50 @@ async def test_a_failed_delivery_is_written_down_with_its_reason(
     assert "исключён" in events[0]["error"]
 
 
+async def test_the_journal_filters_by_delivery(utilities, monkeypatch) -> None:
+    """Фильтр «отправлено / не ушло» отбирает записи на сервере.
+
+    Журнал отдаётся последними пятьюдесятью записями: среди них может не быть
+    ни одной неудачной, а ищут в нём именно их. Фильтровать в браузере значило
+    бы искать в том, что и так уже обрезано.
+    """
+    async with SessionLocal() as db:
+        now = datetime.now(UTC)
+        db.add_all(
+            [
+                AlertEvent(
+                    workspace_id=utilities["workspace"],
+                    rule_name="Ушло",
+                    kind="alert",
+                    message="доставлено",
+                    delivered=True,
+                    created_at=now,
+                ),
+                AlertEvent(
+                    workspace_id=utilities["workspace"],
+                    rule_name="Не ушло",
+                    kind="alert",
+                    message="не доставлено",
+                    delivered=False,
+                    error="Telegram: chat not found",
+                    created_at=now - timedelta(minutes=1),
+                ),
+            ]
+        )
+        await db.commit()
+
+    with _admin_client() as client:
+        every = client.get("/api/v1/utilities/events").json()["items"]
+        sent = client.get("/api/v1/utilities/events?delivered=true").json()["items"]
+        stuck = client.get("/api/v1/utilities/events?delivered=false").json()["items"]
+
+    assert {"Ушло", "Не ушло"} <= {row["rule_name"] for row in every}
+    assert {row["delivered"] for row in sent} == {True}
+    assert {row["delivered"] for row in stuck} == {False}
+    assert "Не ушло" in {row["rule_name"] for row in stuck}
+    assert "Не ушло" not in {row["rule_name"] for row in sent}
+
+
 async def test_a_switched_off_rule_is_skipped(utilities, monkeypatch) -> None:
     sent = []
 
@@ -336,7 +493,7 @@ async def test_a_cap_warns_once_per_threshold(utilities, monkeypatch) -> None:
     assert first["caps"] == 1
     assert second["caps"] == 0
     assert len(sent) == 1
-    assert "80 %" in sent[0]
+    assert sent[0].startswith("⚠️ CAP Alert: 80% достигнуто")
 
 
 async def test_a_new_period_lets_the_cap_warn_again(utilities, monkeypatch) -> None:
@@ -586,6 +743,46 @@ async def test_several_offers_add_up_into_one_cap(utilities) -> None:
             await db.commit()
 
 
+async def test_selected_offers_are_not_intersected_with_cap_owner(utilities) -> None:
+    """Тимлид может держать капу на оффер баера своей команды."""
+    async with SessionLocal() as db:
+        buyer_role = await db.scalar(select(Role).where(Role.name == "Buyer"))
+        other = User(
+            workspace_id=utilities["workspace"],
+            role_id=buyer_role.id,
+            login=f"cap-owner-{uuid.uuid4().hex[:8]}",
+            name="Другой владелец капы",
+            password_hash="not-used",
+            status=Status.active,
+        )
+        db.add(other)
+        await db.commit()
+        other_id = other.id
+
+    try:
+        with _admin_client() as client:
+            created = client.post(
+                "/api/v1/utilities/caps",
+                json=_cap(
+                    utilities,
+                    name="CAP тимлида на оффер баера",
+                    user_id=str(other_id),
+                ),
+            ).json()
+            progress = client.get(
+                f"/api/v1/utilities/caps/{created['id']}/progress"
+            ).json()
+
+        assert Decimal(str(progress["value"])) == Decimal("8")
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(
+                delete(CapRule).where(CapRule.name == "CAP тимлида на оффер баера")
+            )
+            await db.execute(delete(User).where(User.id == other_id))
+            await db.commit()
+
+
 async def test_the_cap_list_counts_total_active_and_reached(utilities) -> None:
     with _admin_client() as client:
         client.post("/api/v1/utilities/caps", json=_cap(utilities, name="CAP выбран"))
@@ -611,8 +808,8 @@ async def test_the_cap_counter_resets_by_its_own_timezone() -> None:
     from app.services.alerts import cap_today
 
     assert cap_today("UTC") is not None
-    # Неизвестная зона не роняет расчёт, а откатывается к UTC.
-    assert cap_today("Nowhere/Nothing") == cap_today("UTC")
+    # Неизвестная зона не роняет расчёт, а откатывается к рабочей зоне CRM.
+    assert cap_today("Nowhere/Nothing") == cap_today("Europe/Moscow")
 
 
 async def test_a_cap_names_its_offers_in_the_message(utilities) -> None:
@@ -629,11 +826,11 @@ async def test_a_cap_names_its_offers_in_the_message(utilities) -> None:
         )
         db.add(rule)
         await db.commit()
-        subject = await AlertEngine(SessionLocal)._cap_subject(db, rule)
+        offers = await AlertEngine(SessionLocal)._cap_offers(db, rule)
         await db.execute(delete(CapRule).where(CapRule.id == rule.id))
         await db.commit()
 
-    assert subject and "Оффер для алертов" in subject
+    assert "Оффер для алертов" in offers
 
 
 async def test_a_total_cap_never_resets(utilities, monkeypatch) -> None:
@@ -990,3 +1187,402 @@ def test_html_tags_survive_but_values_are_escaped() -> None:
     assert text.endswith("</blockquote>")
     # Скобки из названия оффера не должны стать разметкой Telegram.
     assert "&lt;DE&gt;" in text
+
+
+async def test_a_lead_that_becomes_a_sale_reaches_the_chat(
+    utilities, monkeypatch
+) -> None:
+    """Keitaro заводит конверсию лидом и переводит её в sale тем же id.
+
+    Пропуская известные строки целиком, синхронизация навсегда оставляла такой
+    депозит лидом, и уведомление по нему не приходило никогда.
+    """
+    from app.models import KeitaroConversion
+    from app.services.keitaro_sync import _upsert_conversions
+
+    sent = []
+
+    async def fake_send(token, chat_id, text, thread_id=None):
+        sent.append(text)
+
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+
+    async with SessionLocal() as db:
+        connection = await db.scalar(
+            select(IntegrationConnection).where(
+                IntegrationConnection.workspace_id == utilities["workspace"]
+            )
+        )
+        config = {
+            "id": connection.id,
+            "workspace_id": utilities["workspace"],
+            "timezone": "Europe/Moscow",
+        }
+        row = {
+            "conversion_id": "conv-lead-then-sale",
+            "status": "lead",
+            "campaign_id": "77",
+            "offer_id": "120",
+            "offer": "Vulkan DE 250$",
+            "revenue": "0",
+        }
+        assert await _upsert_conversions(db, config, [row], {}) == 1
+        await db.commit()
+    rule_id = await _deposit_rule(utilities)
+    await _open_cursor(rule_id)
+    # Лид уведомления не даёт: правило смотрит только на продажи.
+    assert (await AlertEngine(SessionLocal).run())["alerts"] == 0
+
+    async with SessionLocal() as db:
+        connection = await db.scalar(
+            select(IntegrationConnection).where(
+                IntegrationConnection.workspace_id == utilities["workspace"]
+            )
+        )
+        config = {"id": connection.id, "workspace_id": utilities["workspace"]}
+        row["status"] = "sale"
+        row["revenue"] = "250"
+        assert await _upsert_conversions(db, config, [row], {}) == 1
+        await db.commit()
+
+    assert (await AlertEngine(SessionLocal).run())["alerts"] == 1
+    assert len(sent) == 1
+
+    async with SessionLocal() as db:
+        stored = await db.scalar(
+            select(KeitaroConversion).where(
+                KeitaroConversion.external_id == "conv-lead-then-sale"
+            )
+        )
+        assert stored.status == "sale"
+        assert stored.revenue == Decimal("250")
+        await db.delete(stored)
+        await db.commit()
+
+
+async def test_keitaro_event_aliases_are_saved_with_revenue_as_payout(utilities) -> None:
+    """Реальный журнал Keitaro использует event_id и datetime."""
+    from app.models import KeitaroConversion
+    from app.services.keitaro_sync import _upsert_conversions
+
+    observed_at = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    async with SessionLocal() as db:
+        connection = await db.scalar(
+            select(IntegrationConnection).where(
+                IntegrationConnection.workspace_id == utilities["workspace"]
+            )
+        )
+        config = {"id": connection.id, "workspace_id": utilities["workspace"]}
+        assert await _upsert_conversions(
+            db,
+            config,
+            [
+                {
+                    "event_id": "real-keitaro-event",
+                    "datetime": "2026-09-03 11:59:30",
+                    "status": "sale",
+                    "revenue": "42.50",
+                    "country": "DE",
+                },
+                {
+                    "event_id": "real-keitaro-lead",
+                    "datetime": "2026-09-03 11:58:00",
+                    "status": "lead",
+                    "revenue": "0",
+                    "country": "DE",
+                },
+            ],
+            {},
+            observed_at=observed_at,
+        ) == 2
+        await db.commit()
+
+        stored = await db.scalar(
+            select(KeitaroConversion).where(
+                KeitaroConversion.external_id == "real-keitaro-event"
+            )
+        )
+        assert stored is not None
+        assert stored.conversion_at.replace(tzinfo=UTC) == datetime(
+            2026, 9, 3, 8, 59, 30, tzinfo=UTC
+        )
+        assert stored.revenue == Decimal("42.50")
+        assert stored.payout == Decimal("42.50")
+        assert stored.seen_at.replace(tzinfo=UTC) == observed_at
+        lead = await db.scalar(
+            select(KeitaroConversion).where(
+                KeitaroConversion.external_id == "real-keitaro-lead"
+            )
+        )
+        assert lead is not None
+        assert lead.status == "lead"
+        await db.delete(stored)
+        await db.delete(lead)
+        await db.commit()
+
+
+async def test_first_conversion_import_moves_deposit_cursor_past_history(utilities) -> None:
+    """Первичный импорт заполняет дедупликацию, но не рассылает старые sale."""
+    from app.models import KeitaroConversion
+    from app.services.keitaro_sync import KeitaroSyncEngine
+
+    class ConversionClient:
+        async def conversions(self, *_args, **_kwargs):
+            return [
+                {
+                    "event_id": "bootstrap-history-event",
+                    "datetime": "2026-09-02 08:00:00",
+                    "status": "sale",
+                    "revenue": "10",
+                    "sub_id": "bootstrap-click",
+                }
+            ]
+
+        async def click_times(self, sub_ids, **kwargs):
+            assert sub_ids == ["bootstrap-click"]
+            assert kwargs == {
+                "start": date(2026, 6, 4),
+                "end": date(2026, 9, 3),
+                "timezone": "UTC",
+            }
+            return {"bootstrap-click": "2026-09-02 07:30:00"}
+
+    async with SessionLocal() as db:
+        connection = IntegrationConnection(
+            workspace_id=utilities["workspace"],
+            name=f"Bootstrap {uuid.uuid4()}",
+            base_url="https://bootstrap.example",
+            api_key_encrypted=encrypt_secret("test-key"),
+            timezone="UTC",
+        )
+        rule = AlertRule(
+            workspace_id=utilities["workspace"],
+            name="Bootstrap deposits",
+            kind="deposit",
+            channel_id=utilities["channel"],
+            cursor_at=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        db.add_all([connection, rule])
+        await db.commit()
+        connection_id = connection.id
+        rule_id = rule.id
+
+    config = {
+        "id": connection_id,
+        "workspace_id": utilities["workspace"],
+        "timezone": "UTC",
+    }
+    saved = await KeitaroSyncEngine(SessionLocal)._sync_conversions(
+        config,
+        ConversionClient(),
+        date(2026, 9, 2),
+        date(2026, 9, 3),
+    )
+    assert saved == 1
+
+    async with SessionLocal() as db:
+        stored = await db.scalar(
+            select(KeitaroConversion).where(
+                KeitaroConversion.connection_id == connection_id
+            )
+        )
+        rule = await db.get(AlertRule, rule_id)
+        assert stored is not None
+        assert stored.click_at.replace(tzinfo=UTC) == datetime(
+            2026, 9, 2, 7, 30, tzinfo=UTC
+        )
+        assert rule.cursor_at >= stored.seen_at
+        await db.delete(rule)
+        await db.delete(stored)
+        await db.delete(await db.get(IntegrationConnection, connection_id))
+        await db.commit()
+
+
+async def _deposits(utilities, count: int) -> list:
+    """Пачка продаж в журнале — как всплеск после запуска связки."""
+    from app.models import KeitaroConversion
+
+    made = []
+    async with SessionLocal() as db:
+        connection = await db.scalar(
+            select(IntegrationConnection).where(
+                IntegrationConnection.workspace_id == utilities["workspace"]
+            )
+        )
+        for index in range(count):
+            row = KeitaroConversion(
+                workspace_id=utilities["workspace"],
+                connection_id=connection.id,
+                external_id=f"burst-{index}-{uuid.uuid4()}",
+                status="sale",
+                conversion_at=datetime(2026, 8, 8, 15, index % 60, tzinfo=UTC),
+                click_at=datetime(2026, 8, 8, 11, index % 60, tzinfo=UTC),
+                campaign_external_id="77",
+                campaign_name="FB | RU | Vulkan",
+                offer_external_id="120",
+                offer_name="Vulkan DE 250$",
+                revenue=Decimal("10"),
+                sub_values={},
+            )
+            db.add(row)
+            made.append(row)
+        await db.commit()
+        return [row.id for row in made]
+
+
+async def _drop(ids) -> None:
+    from app.models import KeitaroConversion
+
+    async with SessionLocal() as db:
+        await db.execute(delete(KeitaroConversion).where(KeitaroConversion.id.in_(ids)))
+        await db.commit()
+
+
+async def test_a_burst_of_deposits_goes_as_one_message(utilities, monkeypatch) -> None:
+    """Иначе сотня депозитов упрётся в лимит Telegram и растянется на часы."""
+    sent = []
+
+    async def fake_send(token, chat_id, text, thread_id=None):
+        sent.append(text)
+
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+    monkeypatch.setattr(alerts, "SEND_PAUSE_SECONDS", 0)
+    ids = await _deposits(utilities, 12)
+    try:
+        rule_id = await _deposit_rule(utilities, message_template="{offer} · {revenue}")
+        await _open_cursor(rule_id)
+
+        result = await AlertEngine(SessionLocal).run()
+
+        assert result["alerts"] == 12
+        assert len(sent) == 1
+        assert sent[0].startswith("🔔 Депозитов: 12")
+        assert sent[0].count("Vulkan DE 250$") == 12
+    finally:
+        await _drop(ids)
+
+
+async def test_a_few_deposits_stay_separate_messages(utilities, monkeypatch) -> None:
+    """До порога склейка только мешала бы: депозит в чате читается по одному."""
+    sent = []
+
+    async def fake_send(token, chat_id, text, thread_id=None):
+        sent.append(text)
+
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+    monkeypatch.setattr(alerts, "SEND_PAUSE_SECONDS", 0)
+    ids = await _deposits(utilities, 3)
+    try:
+        rule_id = await _deposit_rule(utilities, message_template="{offer} · {revenue}")
+        await _open_cursor(rule_id)
+
+        assert (await AlertEngine(SessionLocal).run())["alerts"] == 3
+        assert len(sent) == 3
+    finally:
+        await _drop(ids)
+
+
+async def test_messages_to_one_chat_keep_a_pause(utilities, monkeypatch) -> None:
+    """Telegram принимает около 20 сообщений в минуту в одну группу."""
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    async def fake_send(token, chat_id, text, thread_id=None):
+        return None
+
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+    monkeypatch.setattr(alerts.asyncio, "sleep", fake_sleep)
+    ids = await _deposits(utilities, 3)
+    try:
+        rule_id = await _deposit_rule(utilities, message_template="{offer}")
+        await _open_cursor(rule_id)
+        await AlertEngine(SessionLocal).run()
+    finally:
+        await _drop(ids)
+
+    # Первое сообщение уходит сразу, каждое следующее ждёт своей паузы.
+    assert len(waits) == 2
+    assert all(0 < wait <= alerts.SEND_PAUSE_SECONDS for wait in waits)
+
+
+def test_a_cap_message_reads_like_the_agreed_card() -> None:
+    """Порядок и подписи согласованы с заказчиком — проверяем целиком."""
+    from app.models import CapRule
+    from app.services.alerts import render_cap_message
+
+    rule = CapRule(
+        name="LuckyStar PE 10$ - 500 ftd",
+        metric="sales",
+        limit_value=Decimal("500.0000"),
+        period="total",
+        timezone="Europe/Moscow",
+    )
+    offers = ["LuckyStar burz PE 10$", "LuckyStar EVS PE 10$"]
+
+    text = render_cap_message(rule, Decimal("500"), 100, offers)
+
+    assert text == (
+        "🔴 CAP Alert: 100% достигнуто\n\n"
+        "<blockquote>LuckyStar PE 10$ - 500 ftd</blockquote>\n\n"
+        "🎰 Офферы: LuckyStar burz PE 10$, LuckyStar EVS PE 10$\n"
+        "📈 Прогресс: 500 / 500 (100.0%)\n"
+        "⏰ Период: Общий лимит (без сброса)"
+    )
+
+
+def test_an_unreached_cap_only_warns() -> None:
+    """До лимита — предупреждение, а не «достигнуто»."""
+    from app.models import CapRule
+    from app.services.alerts import render_cap_message
+
+    rule = CapRule(
+        name="Расход по связке",
+        metric="spend",
+        limit_value=Decimal("1500.0000"),
+        period="day",
+        timezone="Europe/Moscow",
+    )
+
+    text = render_cap_message(rule, Decimal("1349.5"), 90, ["Оффер А"])
+
+    assert text.startswith("⚠️ CAP Alert: 90% достигнуто")
+    # Баера в сообщении нет: кап и так адресный, а строка занимала место.
+    assert "Баер" not in text
+    # Лимит без хвоста нулей, а сумма — с копейками: это деньги.
+    assert "📈 Прогресс: 1349.50 / 1500 (90.0%)" in text
+
+
+def test_a_long_offer_list_is_cut_at_twenty() -> None:
+    """Иначе сообщение упрётся в предел длины Telegram и не уйдёт вовсе."""
+    from app.models import CapRule
+    from app.services.alerts import render_cap_message
+
+    rule = CapRule(
+        name="Связка", metric="sales", limit_value=Decimal("10"),
+        period="day", timezone="Europe/Moscow",
+    )
+    offers = ["Оффер %d" % index for index in range(1, 26)]
+
+    text = render_cap_message(rule, Decimal("10"), 100, offers)
+
+    assert "Оффер 20" in text
+    assert "Оффер 21" not in text
+    assert "+5" in text
+
+
+def test_a_name_with_a_tag_stays_text() -> None:
+    """Иначе угловая скобка в названии сломает разбор HTML у Telegram."""
+    from app.models import CapRule
+    from app.services.alerts import render_cap_message
+
+    rule = CapRule(
+        name="Кап <b>жирный</b>", metric="sales", limit_value=Decimal("5"),
+        period="day", timezone="Europe/Moscow",
+    )
+
+    text = render_cap_message(rule, Decimal("5"), 100, ["Оффер <i>А</i>"])
+
+    assert "<blockquote>Кап &lt;b&gt;жирный&lt;/b&gt;</blockquote>" in text
+    assert "Оффер &lt;i&gt;А&lt;/i&gt;" in text

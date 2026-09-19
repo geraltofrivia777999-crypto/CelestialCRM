@@ -42,10 +42,13 @@ uploads/
 
 # Local design and assistant artifacts
 .claude/
+.playwright-cli/
 .design-qa/
 design-qa.md
 .thumbnail
 tmp/
+output/
+SECURITY_*.md
 CRM Dashboard дизайн v2/
 
 # Editors and operating systems

@@ -76,10 +76,12 @@
     user: null,
     offers: [],
     people: [],
+    teamLeads: [],
     geos: [],
     partners: [],
     integrations: [],
     canManage: false,
+    canAssign: false,
     canManageCaps: false,
     // Какие оффера раскрыты: KPI и комментарий показываются под строкой.
     opened: {},
@@ -240,9 +242,26 @@
     });
   }
 
-  function removeOffer(offer) {
-    if (!window.confirm("Удалить оффер «" + offer.name + "»?")) return;
-    api.delete("/offers/" + offer.id)
+  /* Подтверждение в стиле CRM, а не окном браузера: оно рисуется у верхней
+     кромки и подписано адресом сервера — на фоне интерфейса это выглядит как
+     сообщение постороннего сайта. Контракт тот же, ответ приходит промисом. */
+  function askConfirm(options) {
+    if (window.CelestialShell && window.CelestialShell.confirm) {
+      return window.CelestialShell.confirm(options);
+    }
+    return Promise.resolve(window.confirm(options.message || options.title));
+  }
+
+  async function removeOffer(offer) {
+    var confirmed = await askConfirm({
+      title: "Удалить оффер?",
+      message: "«" + offer.name + "» исчезнет из справочника. Записи, где он уже " +
+        "проставлен, останутся.",
+      confirmLabel: "Удалить",
+      danger: true
+    });
+    if (!confirmed) return;
+    return api.delete("/offers/" + offer.id)
       .then(function () {
         toast("Оффер удалён");
         return loadOffers();
@@ -370,7 +389,8 @@
         (people.length - 3) + "</span>"
       : "";
     var empty = '<span style="font-size:12px;color:#9B9292;white-space:nowrap">Не назначены</span>';
-    var button = offersState.canManage
+    var mayTouch = kind === "leads" ? offersState.canManage : offersState.canAssign;
+    var button = mayTouch
       ? '<button type="button" data-assign="' + escapeHtml(offer.id) + '" data-assign-kind="' + kind +
         '" title="Назначить" aria-label="' + (kind === "leads" ? "Назначить тимлидов" : "Назначить баеров") +
         " для " + escapeHtml(offer.name) +
@@ -402,19 +422,22 @@
   }
 
   function offerCapFor(offer) {
+    // Администратор ведёт общую капу партнёрки и видит её как раньше.
+    if (offersState.canManage) return offer.cap || "";
     var me = offersState.user && String(offersState.user.id);
-    var mine = null;
+    var mine = "";
     (offer.leads || []).forEach(function (person) {
-      if (String(person.id) === me && person.cap) mine = person.cap;
+      if (String(person.id) === me) mine = person.cap || "";
     });
-    // Своей капы у тимлида может и не быть — тогда действует общий лимит оффера.
-    return mine || offer.cap || "";
+    // Если индивидуальную капу не задали при назначении, тимлид видит пустое
+    // значение. Общая капа оффера не должна подставляться ему автоматически.
+    return mine;
   }
 
   function offerCapCell(offer) {
     if (!showsCapColumn()) return "";
     var value = offerCapFor(offer);
-    return '<td style="padding:15px 14px;font-weight:700' +
+    return '<td style="padding:15px 14px;font-size:14px;font-weight:400' +
       (value ? "" : ";color:#9B9292") + '">' + escapeHtml(value || "—") + "</td>";
   }
 
@@ -465,13 +488,14 @@
           '<svg class="offer-open__arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" ' +
           'aria-hidden="true"><path d="m7 10 5 5 5-5" stroke="#9B9292" stroke-width="2" ' +
           'stroke-linecap="round" stroke-linejoin="round"/></svg></button></td>' +
-          '<td style="padding:15px 14px;font-weight:700">' +
+          '<td style="padding:15px 14px;font-size:14px;font-weight:400">' +
           escapeHtml(offer.partner || "—") + "</td>" +
-          '<td style="padding:15px 14px"><span class="offer-id' +
+          '<td style="padding:15px 14px;font-size:14px"><span class="offer-id' +
           (offer.external_id ? "" : " offer-id--empty") + '">' +
           escapeHtml(offer.external_id || "—") + "</span></td>" +
-          '<td style="padding:15px 14px;font-weight:700">' + escapeHtml(offer.geo || "—") + "</td>" +
-          '<td style="padding:15px 14px;font-weight:700;white-space:nowrap">' +
+          '<td style="padding:15px 14px;font-size:14px;font-weight:400">' +
+          escapeHtml(offer.geo || "—") + "</td>" +
+          '<td style="padding:15px 14px;font-size:14px;font-weight:400;white-space:nowrap">' +
           escapeHtml(cpaLabel(offer)) + "</td>" +
           offerCapCell(offer) +
           capCell(offer) +
@@ -673,10 +697,8 @@
       "</div>" +
       '<div style="padding:16px 24px;overflow-y:auto">' + bodyHtml + "</div>" +
       '<div style="display:flex;justify-content:flex-end;gap:10px;padding:15px 24px 18px;border-top:1px solid #EBE6E6">' +
-      '<button data-modal-cancel style="border:1px solid #EBE6E6;background:#fff;border-radius:10px;padding:10px 18px;' +
-      'font:700 13px Inter,sans-serif;color:#6A6161;cursor:pointer">Отмена</button>' +
-      '<button data-modal-save style="border:none;background:#B91414;color:#fff;font-family:Alumni Sans,Inter,sans-serif;text-transform:uppercase;letter-spacing:.02em;border-radius:10px;padding:10px 22px;' +
-      'font:600 15px Alumni Sans,Inter,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.28)">' +
+      '<button data-modal-cancel style="height:40px;padding:0 16px;border:1px solid #EBE6E6;border-radius:10px;background:#fff;font:700 12px Inter,sans-serif;color:#6A6161;cursor:pointer">Отмена</button>' +
+      '<button data-modal-save style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:Inter,-apple-system,Helvetica Neue,sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">' +
       escapeHtml(saveLabel || "Сохранить") + "</button></div></div>";
     document.body.appendChild(overlay);
     overlay.addEventListener("click", function (event) {
@@ -710,13 +732,14 @@
     });
   }
 
-  function peopleChecklist(name, selectedIds, caps) {
+  function peopleChecklist(name, selectedIds, caps, people) {
     var selected = {};
     (selectedIds || []).forEach(function (id) { selected[String(id)] = true; });
-    if (!offersState.people.length) {
+    people = people || (name === "lead" ? offersState.teamLeads : offersState.people);
+    if (!people.length) {
       return '<div style="color:#9B9292;font-size:13px;text-align:center;padding:20px">Нет доступных людей</div>';
     }
-    return offersState.people.map(function (person, index) {
+    return people.map(function (person, index) {
       var id = String(person.id);
       var on = !!selected[id];
       // Поле капы гаснет вместе со снятой галочкой: цифра без назначения
@@ -774,7 +797,12 @@
       "assignPeopleModal",
       leads ? "Назначить тимлидов" : "Назначить баеров",
       offer.name + (leads ? " · оффер станет «Активен»" : " · оффер уйдёт «В работу»"),
-      peopleChecklist("person", current.map(function (person) { return person.id; }), caps)
+      peopleChecklist(
+        "person",
+        current.map(function (person) { return person.id; }),
+        caps,
+        leads ? offersState.teamLeads : offersState.people
+      )
     );
     if (leads) {
       overlay.addEventListener("change", function (event) {
@@ -804,6 +832,23 @@
     var pressed = byId("offerFormCpaCurrency")
       .querySelector('[aria-pressed="true"]');
     return pressed && pressed.getAttribute("data-currency") === "EUR" ? "EUR" : "USD";
+  }
+
+  /* В форме — все страны: новое GEO заводят до первого клика из Keitaro. Код
+     стоит первым, чтобы поиск «VE» находил Венесуэлу, а не всё подряд. GEO,
+     которых нет в справочнике стран (например, WW), остаются как есть. */
+  function offerGeoOptions(current) {
+    var seen = {};
+    var options = (offersState.countries || []).map(function (country) {
+      seen[country.code] = true;
+      return { value: country.code, label: country.code + " · " + (country.ru || country.name) };
+    });
+    offersState.geos.concat(current ? [current] : []).forEach(function (geo) {
+      if (seen[geo]) return;
+      seen[geo] = true;
+      options.push({ value: geo, label: geo });
+    });
+    return options.sort(function (a, b) { return a.value < b.value ? -1 : a.value > b.value ? 1 : 0; });
   }
 
   function selectOptions(values, current, placeholder) {
@@ -859,8 +904,8 @@
       '<div class="offer-grid">' +
       '<div><label class="offer-label" for="offerFormGeo">GEO</label>' +
       '<select id="offerFormGeo" class="offer-field">' +
-      selectOptions(offersState.geos.map(function (g) { return { value: g, label: g }; }),
-        editing ? offer.geo : "", "Не выбрано") + "</select></div>" +
+      selectOptions(offerGeoOptions(editing ? offer.geo : ""), editing ? offer.geo : "",
+        "Не выбрано") + "</select></div>" +
       '<div><label class="offer-label" for="offerFormPartner">Партнёрка</label>' +
       '<select id="offerFormPartner" class="offer-field">' +
       selectOptions(offersState.partners.map(function (p) {
@@ -966,13 +1011,16 @@
     var results = await Promise.all([
       api.getAll(OFFERS_QUERY),
       api.get("/users/options"),
+      api.get("/users/options?role_name=" + encodeURIComponent("Team Lead")),
       api.get("/offers/reference")
     ]);
     offersState.offers = results[0].items || [];
     offersState.people = results[1] || [];
-    offersState.geos = (results[2] || {}).geos || [];
-    offersState.partners = (results[2] || {}).partners || [];
-    offersState.integrations = (results[2] || {}).partner_integrations || [];
+    offersState.teamLeads = results[2] || [];
+    offersState.geos = (results[3] || {}).geos || [];
+    offersState.countries = (results[3] || {}).countries || [];
+    offersState.partners = (results[3] || {}).partners || [];
+    offersState.integrations = (results[3] || {}).partner_integrations || [];
     populateOfferFilters();
     renderOfferStats();
     renderOfferRows();
@@ -981,6 +1029,8 @@
   async function initOffers(user) {
     offersState.user = user;
     offersState.canManage = hasPermission(user, "offers.manage");
+    offersState.canAssign = offersState.canManage ||
+      hasPermission(user, "offers.assign");
     offersState.canManageCaps = hasPermission(user, "utilities.manage");
     var create = byId("offerCreate");
     if (create) create.style.display = offersState.canManage ? "inline-flex" : "none";

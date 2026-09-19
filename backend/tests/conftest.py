@@ -11,6 +11,9 @@ os.environ["ADMIN_LOGIN"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "test-password"
 # Браузерные сессии Meta Ads не должны трогать реальные каталоги проекта.
 os.environ["META_SESSION_DIR"] = str(Path(tempfile.gettempdir()) / "celestial_meta_sessions")
+# Тесты ходят по http://test: Secure-куки с продового .env там просто не
+# отправятся, и весь сьют упадёт в 401. Явно выключаем.
+os.environ["COOKIE_SECURE"] = "false"
 
 from app.core.database import engine  # noqa: E402
 from app.models import Base  # noqa: E402

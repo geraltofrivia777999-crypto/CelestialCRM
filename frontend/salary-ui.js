@@ -57,6 +57,16 @@
     });
   }
 
+  /* Число в поле ввода без хвостовых нулей: сервер отдаёт «5.0000», а правят
+     руками «5». Точку меняем на запятую только на показ — в number-поле
+     браузер ждёт точку, поэтому здесь именно она. */
+  function numberValue(value) {
+    if (value === null || value === undefined || value === "") return "";
+    var amount = Number(value);
+    if (!isFinite(amount)) return String(value);
+    return String(Math.round(amount * 10000) / 10000);
+  }
+
   function hasPermission(user, code) {
     if (!user || !user.role) return false;
     return (user.role.permissions || []).some(function (permission) {
@@ -101,10 +111,11 @@
         (component.base_label || component.base || "—");
     } else if (component.kind === "deduction") {
       text += ": " + (component.base
-        ? component.percent + "% от «" + (component.base_label || component.base) + "»"
+        ? numberValue(component.percent) + "% от «" +
+          (component.base_label || component.base) + "»"
         : money(component.amount));
     } else {
-      text += ": " + component.percent + "% от «" +
+      text += ": " + numberValue(component.percent) + "% от «" +
         (component.base_label || component.base || "—") + "»";
     }
     return '<span style="display:inline-flex;align-items:center;background:#F4F0F0;' +
@@ -176,12 +187,12 @@
           '<label><span class="field-label">До суммы</span>' +
           '<input class="form-input" type="number" step="0.01" data-part="tier_up_to" ' +
           'data-index="' + index + '" data-level="' + level + '" value="' +
-          escapeHtml(tier.up_to === null || tier.up_to === undefined ? "" : tier.up_to) +
+          escapeHtml(numberValue(tier.up_to)) +
           '" placeholder="пусто = и выше"></label>' +
           '<label><span class="field-label">Процент, %</span>' +
           '<input class="form-input" type="number" step="0.01" data-part="tier_percent" ' +
           'data-index="' + index + '" data-level="' + level + '" value="' +
-          escapeHtml(tier.percent) + '"></label>' +
+          escapeHtml(numberValue(tier.percent)) + '"></label>' +
           '<button type="button" data-tier-remove="' + index + ":" + level +
           '" style="height:44px;border:1px solid #F1D9D9;border-radius:10px;background:#fff;' +
           'color:#B91414;padding:0 12px;font-size:11.5px;font-weight:700">Убрать</button></div>';
@@ -196,7 +207,7 @@
     if (component.kind === "fixed") {
       body = '<label><span class="field-label">Сумма</span>' +
         '<input class="form-input" type="number" step="0.01" data-part="amount" data-index="' +
-        index + '" value="' + escapeHtml(component.amount) + '"></label>';
+        index + '" value="' + escapeHtml(numberValue(component.amount)) + '"></label>';
     } else if (component.kind === "grid") {
       body = '<label style="grid-column:1/-1"><span class="field-label">База</span>' +
         baseSelectHtml(index, component.base) + "</label>" +
@@ -212,16 +223,16 @@
         (component.base
           ? '<label><span class="field-label">Процент, %</span>' +
             '<input class="form-input" type="number" step="0.01" data-part="percent" ' +
-            'data-index="' + index + '" value="' + escapeHtml(component.percent) + '"></label>'
+            'data-index="' + index + '" value="' + escapeHtml(numberValue(component.percent)) + '"></label>'
           : '<label><span class="field-label">Сумма вычета</span>' +
             '<input class="form-input" type="number" step="0.01" data-part="amount" ' +
-            'data-index="' + index + '" value="' + escapeHtml(component.amount) + '"></label>');
+            'data-index="' + index + '" value="' + escapeHtml(numberValue(component.amount)) + '"></label>');
     } else {
       body = '<label><span class="field-label">База</span>' +
         baseSelectHtml(index, component.base) + "</label>" +
         '<label><span class="field-label">Процент, %</span>' +
         '<input class="form-input" type="number" step="0.01" data-part="percent" data-index="' +
-        index + '" value="' + escapeHtml(component.percent) + '"></label>';
+        index + '" value="' + escapeHtml(numberValue(component.percent)) + '"></label>';
     }
     return '<div style="border:1px solid #EBE6E6;border-radius:14px;padding:15px 17px;' +
       'background:#FCFBFB">' +
@@ -566,7 +577,7 @@
     }
     state.canManage = hasPermission(user, "salary.manage");
     byId("salaryRuleCreate").style.display = state.canManage ? "" : "none";
-    var now = new Date();
+    var now = window.CelestialTime.today();
     byId("salaryPeriod").value = now.getFullYear() + "-" +
       String(now.getMonth() + 1).padStart(2, "0");
     bind();

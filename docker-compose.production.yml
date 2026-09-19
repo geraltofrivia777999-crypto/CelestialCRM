@@ -27,6 +27,14 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  keitaro-worker:
+    restart: unless-stopped
+    logging: *default-logging
+
+  meta-worker:
+    restart: unless-stopped
+    logging: *default-logging
+
   scheduler:
     restart: unless-stopped
     logging: *default-logging
@@ -38,3 +46,11 @@ services:
   nginx:
     restart: unless-stopped
     logging: *default-logging
+    # TLS живёт здесь, а не только в tls-оверлее: деплой с явными -f без
+    # оверлея иначе терял биндинг 443, и Cloudflare отдавал 521.
+    ports:
+      - "443:443"
+    volumes:
+      - ${CRM_NGINX_CONFIG:-./infra/nginx/nginx.production.conf}:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/tls/letsencrypt:/etc/letsencrypt:ro
+      - ./infra/tls/webroot:/var/www/certbot:ro

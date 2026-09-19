@@ -70,8 +70,17 @@ async def has_full_access(db: AsyncSession, user: User) -> bool:
 
 
 async def accessible_user_ids(db: AsyncSession, user: User) -> set[uuid.UUID]:
-    """Return the user and every descendant visible through the parent hierarchy."""
-    if await has_full_access(db, user):
+    """Чьи данные видит человек — по области доступа его роли.
+
+    "all" — весь воркспейс, "own" — только свои строки, "team" (по умолчанию) —
+    он сам и все, кто ниже по структуре подчинённости. Область данных имеет
+    приоритет над правами разделов: роль с широкими правами и scope=team всё
+    равно не должна видеть людей из соседних команд.
+    """
+    scope = getattr(user.role, "data_scope", None) or "team"
+    if scope == "own":
+        return {user.id}
+    if scope == "all":
         rows = await db.scalars(
             select(User.id).where(User.workspace_id == user.workspace_id)
         )

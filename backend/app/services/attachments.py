@@ -29,8 +29,8 @@ async def delete_stale_unbound(
 
     Незакреплённое вложение — это файл, чей редактор закрыли не сохранив. Через
     сутки такой файл уже точно никому не нужен, но место в квоте занимает.
-    Вложение задачи узнаётся по `task_id`, статьи — по `article_id`; пустые обе
-    ссылки только у брошенных.
+    Вложение задачи узнаётся по `task_id`, статьи — по `article_id`, запись
+    интервью — по `candidate_id`; пустые все три только у брошенных.
     """
     cutoff = datetime.now(UTC) - timedelta(hours=settings.upload_unbound_ttl_hours)
     rows = list(
@@ -41,6 +41,7 @@ async def delete_stale_unbound(
                     KnowledgeAttachment.workspace_id == workspace_id,
                     KnowledgeAttachment.article_id.is_(None),
                     KnowledgeAttachment.task_id.is_(None),
+                    KnowledgeAttachment.candidate_id.is_(None),
                     KnowledgeAttachment.created_at < cutoff,
                 )
                 .with_for_update(skip_locked=True)
@@ -67,7 +68,7 @@ async def receive_upload(
     finally:
         await file.close()
     mime_type = storage.normalize_mime_type(
-        file.content_type or "application/octet-stream"
+        file.content_type or "application/octet-stream", content
     )
 
     # Блокировка воркспейса выстраивает проверки квоты в очередь: без неё две

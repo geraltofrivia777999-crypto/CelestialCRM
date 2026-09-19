@@ -31,22 +31,48 @@ ZERO = Decimal("0")
 # Показатели, от которых можно считать зарплату. Ключ хранится в базе, поэтому
 # переименовывать его нельзя — только добавлять новые.
 BASES = {
+    "finance_profit_t1": {
+        "label": "Профит T1 (Финансы)",
+        "hint": "Книга Tier1 этого человека: доход минус спенд, косты и долг",
+    },
+    "finance_profit_t23": {
+        "label": "Профит T2/3 (Финансы)",
+        "hint": "Книга Tier2/3 этого человека: доход минус спенд, косты и долг",
+    },
+    # Обе книги одной базой. Ключ хранится в правилах, заведённых до разделения
+    # на тиры, поэтому запись остаётся — но в выборе новых правил её нет:
+    # проценты по Tier1 и Tier2/3 обычно разные, и общая база это скрывала.
     "finance_profit": {
         "label": "Профит (Финансы)",
-        "hint": "Книга Финансов этого человека: доход минус спенд, косты и долг",
+        "hint": "Обе книги этого человека — старая база, оставлена для прежних правил",
+        "hidden": True,
     },
     "team_profit": {
         "label": "Профит команды (Финансы)",
-        "hint": "Сумма книг человека и всех его подчинённых",
+        "hint": "Сумма книг подчинённых — без книги самого тимлида",
     },
     "company_profit": {
         "label": "Весь профит (Финансы)",
         "hint": "Сумма книг всех баеров компании — база для CMO",
     },
 }
-# База, которая меняется прямо во время правки книги: её компоненты Финансы
-# пересчитывают у себя, остальные приходят готовой суммой.
+# Базы, которые меняются прямо во время правки книги: их компоненты Финансы
+# пересчитывают у себя, остальные приходят готовой суммой. Книга у баера своя
+# на каждый тир, поэтому у каждой книги своя база; общая осталась от правил,
+# заведённых до разделения.
 BOOK_BASE = "finance_profit"
+TIER_BASES = {"T1": "finance_profit_t1", "T23": "finance_profit_t23"}
+
+
+def book_bases(tier: str | None) -> set[str]:
+    """Базы, которые считает сама книга этого тира.
+
+    Тир неизвестен — считаем обе: так вела себя единственная база до
+    разделения, и правило без тира не должно молча терять компоненты.
+    """
+    if tier in TIER_BASES:
+        return {BOOK_BASE, TIER_BASES[tier]}
+    return {BOOK_BASE, *TIER_BASES.values()}
 KINDS = {"percent", "fixed", "grid", "deduction"}
 MODES = {"replace", "add"}
 SCOPES = {"role", "user"}
@@ -92,6 +118,17 @@ def normalize_tiers(raw: object) -> list[dict]:
     return capped + open_ended[:1]
 
 
+async def subordinates(db: AsyncSession, user_id: uuid.UUID) -> set[uuid.UUID]:
+    """Ветка подчинённых без самого человека — это и есть «команда».
+
+    Свою книгу тимлид отрабатывает по своей же ставке (сетка от «Профит
+    (Финансы)»), и если она попадёт ещё и в базу команды, процент за команду
+    начислится на тот же профит второй раз: в «Шкале зарплаты» подсвечена одна
+    ступень, а зарплата выходит по другой.
+    """
+    return await descendants(db, user_id) - {user_id}
+
+
 async def descendants(db: AsyncSession, user_id: uuid.UUID) -> set[uuid.UUID]:
     """Сам человек и вся его ветка подчинённых."""
     links = list(
@@ -111,12 +148,31 @@ async def descendants(db: AsyncSession, user_id: uuid.UUID) -> set[uuid.UUID]:
     return seen
 
 
+async def _workspace_profit_parts(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    year: int,
+    month: int,
+) -> dict[uuid.UUID, list[dict]]:
+    """Один свежий снимок книг для всех зарплатных баз месяца.
+
+    В расчёт компании входят и книги неактивных сотрудников. Сам список
+    получателей зарплаты по-прежнему ограничен активными сотрудниками.
+    """
+    buyer_ids = set(
+        await db.scalars(select(User.id).where(User.workspace_id == workspace_id))
+    )
+    return await finance_books.profits(db, workspace_id, buyer_ids, year, month)
+
+
 async def base_values(
     db: AsyncSession,
     workspace_id: uuid.UUID,
     user_id: uuid.UUID,
     year: int,
     month: int,
+    *,
+    profit_parts: dict[uuid.UUID, list[dict]] | None = None,
 ) -> dict[str, Decimal]:
     """Обе базы одного человека за месяц — одним расчётом на всё правило.
 
@@ -124,16 +180,28 @@ async def base_values(
     со ступенью считаются по каждой отдельно. По сумме ступень получилась бы
     выше — это была бы уже другая зарплата, чем показывают сами Финансы.
     """
-    team = await descendants(db, user_id)
-    by_buyer = await finance_books.profits(db, workspace_id, team, year, month)
-    own = by_buyer.get(user_id, [])
-    team_parts = [part for parts in by_buyer.values() for part in parts]
-    company_parts = await finance_books.workspace_profits(
-        db, workspace_id, year, month
-    )
+    if profit_parts is None:
+        profit_parts = await _workspace_profit_parts(db, workspace_id, year, month)
+    team = await subordinates(db, user_id)
+    own = profit_parts.get(user_id, [])
+    team_parts = [
+        part
+        for buyer_id, parts in profit_parts.items()
+        if buyer_id in team
+        for part in parts
+    ]
+    company_parts = [part for parts in profit_parts.values() for part in parts]
+    # Свои книги по тирам: у Tier1 и Tier2/3 обычно разные проценты, и правило
+    # должно уметь посчитать каждую отдельно. «Общая» зарплата — сумма двух.
+    own_t1 = [part for part in own if part["tier"] == "T1"]
+    own_t23 = [part for part in own if part["tier"] != "T1"]
     return {
         "finance_profit": q(sum((part["profit"] for part in own), ZERO)),
         "finance_profit_parts": own,
+        "finance_profit_t1": q(sum((part["profit"] for part in own_t1), ZERO)),
+        "finance_profit_t1_parts": own_t1,
+        "finance_profit_t23": q(sum((part["profit"] for part in own_t23), ZERO)),
+        "finance_profit_t23_parts": own_t23,
         "team_profit": q(sum((part["profit"] for part in team_parts), ZERO)),
         "team_profit_parts": team_parts,
         "company_profit": q(sum((part["profit"] for part in company_parts), ZERO)),
@@ -272,7 +340,11 @@ def plan_steps(tiers: list[dict]) -> list[dict]:
     return steps
 
 
-def build_plan(rules: list[SalaryRule], values: dict[str, Decimal]) -> dict | None:
+def build_plan(
+    rules: list[SalaryRule],
+    values: dict[str, Decimal],
+    bases: set[str] | None = None,
+) -> dict | None:
     """Правило в виде, который Финансы применяют к профиту книги.
 
     Части, которые зависят от профита книги, уезжают как есть — они
@@ -282,12 +354,19 @@ def build_plan(rules: list[SalaryRule], values: dict[str, Decimal]) -> dict | No
     """
     if not rules:
         return None
+    if bases is None:
+        bases = book_bases(None)
     parts: list[dict] = []
     flat = ZERO
     steps: list[dict] | None = None
     for rule in rules:
         for component in rule.components:
-            on_book = component.base == BOOK_BASE
+            # Компонент чужого тира к этой книге не относится вовсе: посчитать
+            # его здесь суммой значило бы начислить зарплату второй книги ещё
+            # и в этой.
+            if component.base in TIER_BASES.values() and component.base not in bases:
+                continue
+            on_book = component.base in bases
             if component.kind == "grid" and on_book:
                 tiers = normalize_tiers(component.tiers)
                 parts.append({"kind": "grid", "tiers": tiers})
@@ -357,13 +436,18 @@ async def payroll(
 
     rows = []
     total = ZERO
+    profit_parts = None
     for person in people:
         chosen = effective_rules(
             [rule for rule in rules if rule_applies(rule, person, first, last)]
         )
         if not chosen:
             continue
-        values = await base_values(db, workspace_id, person.id, year, month)
+        if profit_parts is None:
+            profit_parts = await _workspace_profit_parts(db, workspace_id, year, month)
+        values = await base_values(
+            db, workspace_id, person.id, year, month, profit_parts=profit_parts
+        )
         lines = []
         amount = ZERO
         by_tier: dict[str | None, Decimal] = {}
@@ -419,6 +503,7 @@ async def plan_for_book(
     buyer: User,
     year: int,
     month: int,
+    tier: str | None = None,
 ) -> dict | None:
     """Правило зарплаты этого баера за этот месяц; None — правил нет.
 
@@ -449,22 +534,35 @@ async def plan_for_book(
         for component in rule.components
         if component.base
     }
-    values = {"finance_profit": ZERO, "team_profit": ZERO, "company_profit": ZERO}
+    values = {
+        "finance_profit": ZERO,
+        "finance_profit_t1": ZERO,
+        "finance_profit_t23": ZERO,
+        "team_profit": ZERO,
+        "company_profit": ZERO,
+    }
+    profit_parts = None
     if "company_profit" in needs:
-        company_parts = await finance_books.workspace_profits(
-            db, workspace_id, year, month
-        )
+        profit_parts = await _workspace_profit_parts(db, workspace_id, year, month)
+        company_parts = [part for parts in profit_parts.values() for part in parts]
         values["company_profit"] = q(
             sum((part["profit"] for part in company_parts), ZERO)
         )
         values["company_profit_parts"] = company_parts
     if "team_profit" in needs:
-        team = await descendants(db, buyer.id)
-        by_buyer = await finance_books.profits(db, workspace_id, team, year, month)
+        team = await subordinates(db, buyer.id)
+        by_buyer = profit_parts
+        if by_buyer is None:
+            by_buyer = await finance_books.profits(db, workspace_id, team, year, month)
         # Профит приходит частями — по книге на каждый тир, — поэтому суммируем
         # поле, а не сами объекты. Разбивка едет дальше: от неё считаются
         # процент и ступень, как и в самих Финансах.
-        parts = [part for books in by_buyer.values() for part in books]
+        parts = [
+            part
+            for buyer_id, books in by_buyer.items()
+            if buyer_id in team
+            for part in books
+        ]
         values["team_profit"] = q(sum((part["profit"] for part in parts), ZERO))
         values["team_profit_parts"] = parts
-    return build_plan(chosen, values)
+    return build_plan(chosen, values, book_bases(tier))

@@ -22,6 +22,14 @@
   var cache = { reference: null, channels: null };
   var form = null;
 
+  /* Лимит приходит как Decimal — «50.0000». В поле ввода и в подписи это
+     мешает: человек вводил целое число и ждёт увидеть его же. */
+  function trimNumber(value) {
+    var text = String(value == null ? "" : value);
+    if (!/^-?\d+\.\d+$/.test(text)) return text;
+    return text.replace(/0+$/, "").replace(/\.$/, "");
+  }
+
   function escapeHtml(value) {
     return String(value == null ? "" : value)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -66,11 +74,7 @@
   }
 
   function browserTimezone() {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    } catch (error) {
-      return "UTC";
-    }
+    return "Europe/Moscow";
   }
 
   /* Список зон берём у самого браузера — он знает актуальный набор IANA и не
@@ -168,6 +172,10 @@
 
     overlay.addEventListener("click", function (event) {
       if (event.target === overlay) return close();
+      var inPicker = event.target.closest ? event.target.closest("[data-capf-ms]") : null;
+      if (inPicker) return offerClick(event);
+      // Клик в любом другом месте формы закрывает список офферов.
+      openOfferList(false);
       var action = event.target.closest
         ? event.target.closest("[data-capf]")
         : null;
@@ -182,13 +190,21 @@
         ? event.target.closest("[data-capf-threshold]")
         : null;
       if (chip) chip.parentElement.classList.toggle("capf-chip--on", chip.checked);
-      if (event.target.matches && event.target.matches('[data-capf-field="period"]')) {
-        applyPeriod(event.target.value);
-      }
     });
     overlay.addEventListener("input", function (event) {
       if (!event.target.matches || !event.target.matches("[data-capf-search]")) return;
+      openOfferList(true);
       filterOffers(event.target.value);
+    });
+    overlay.addEventListener("keydown", function (event) {
+      if (!event.target.matches || !event.target.matches("[data-capf-search]")) return;
+      offerKeydown(event);
+    });
+    // Клик по варианту не должен уводить фокус из поля ввода.
+    overlay.addEventListener("mousedown", function (event) {
+      if (event.target.closest && event.target.closest("[data-capf-offers]")) {
+        event.preventDefault();
+      }
     });
     document.addEventListener("keydown", function (event) {
       if (event.key === "Escape" && overlay.classList.contains("capf-open")) close();
@@ -196,21 +212,201 @@
     return overlay;
   }
 
-  // Офферов у команды сотни, и список без поиска пролистывать бесполезно.
+  /* Офферы — полем с выбранными чипами. Раньше это был список из сотен строк
+     с галочками: отмеченный оффер приходилось искать прокруткой, а понять,
+     что вообще выбрано, можно было только пролистав всё. Теперь выбранное
+     видно в самом поле, ввод там же ищет по названию, а уже выбранные из
+     списка пропадают. */
+  var OFFER_PLACEHOLDER = "Выберите офферы";
+
+  function crossSvg(size) {
+    return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" ' +
+      'aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" ' +
+      'stroke-width="2.2" stroke-linecap="round"/></svg>';
+  }
+
+  function offerChipHtml(id, name) {
+    return '<span class="capf-ms__chip" data-capf-chip="' + escapeHtml(id) + '" title="' +
+      escapeHtml(name) + '"><span class="capf-ms__chip-text">' + escapeHtml(name) + "</span>" +
+      '<button type="button" class="capf-ms__chip-x" data-capf-chip-drop="' + escapeHtml(id) +
+      '" aria-label="Убрать ' + escapeHtml(name) + '">' + crossSvg(12) + "</button></span>";
+  }
+
+  function offerPickerHtml(offers, selected) {
+    var names = {};
+    offers.forEach(function (offer) { names[String(offer.id)] = offer.name; });
+    var taken = {};
+    // Оффер, которого уже нет в справочнике, остаётся чипом: иначе первое же
+    // сохранение молча убрало бы его из капы.
+    var chips = selected.map(function (id) {
+      taken[id] = true;
+      return offerChipHtml(id, names[id] || "Оффер недоступен");
+    }).join("");
+    return '<div class="capf-ms" data-capf-ms>' +
+      '<div class="capf-ms__box" data-capf-ms-box>' + chips +
+      '<input class="capf-ms__input" data-capf-search autocomplete="off" ' +
+      'aria-label="Поиск офферов" placeholder="' + (selected.length ? "" : OFFER_PLACEHOLDER) + '">' +
+      '<span class="capf-ms__tools">' +
+      '<button type="button" class="capf-ms__clear" data-capf-ms-clear ' +
+      'aria-label="Снять все офферы"' + (selected.length ? "" : " hidden") + ">" +
+      crossSvg(14) + "</button>" +
+      '<span class="capf-ms__sep" aria-hidden="true"></span>' +
+      '<button type="button" class="capf-ms__caret" data-capf-ms-toggle aria-label="Список офферов">' +
+      '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2.2" ' +
+      'stroke-linecap="round" stroke-linejoin="round"/></svg></button></span></div>' +
+      '<div class="capf-ms__list" data-capf-offers hidden>' +
+      offers.map(function (offer) {
+        return '<button type="button" class="capf-ms__option" data-capf-option="' +
+          escapeHtml(offer.id) + '"' + (taken[String(offer.id)] ? " hidden" : "") + ">" +
+          escapeHtml(offer.name) + "</button>";
+      }).join("") +
+      '<div class="capf-none" data-capf-nooffers hidden>Ничего не найдено</div>' +
+      "</div></div>";
+  }
+
+  function picker() {
+    return document.querySelector("[data-capf-ms]");
+  }
+
+  // Офферов у команды сотни: список сужается по мере ввода.
   function filterOffers(query) {
+    var ms = picker();
+    if (!ms) return;
     var clean = String(query || "").trim().toLowerCase();
-    var host = document.querySelector("[data-capf-offers]");
-    if (!host) return;
-    var shown = 0;
-    Array.prototype.forEach.call(host.querySelectorAll("label"), function (row) {
-      var hit = !clean || row.textContent.toLowerCase().indexOf(clean) >= 0;
-      // Уже отмеченные не прячем: иначе поиск выглядел бы как снятие галочек.
-      var checked = row.querySelector("input").checked;
-      row.style.display = hit || checked ? "" : "none";
-      if (hit) shown += 1;
+    var taken = {};
+    Array.prototype.forEach.call(ms.querySelectorAll("[data-capf-chip]"), function (chip) {
+      taken[chip.getAttribute("data-capf-chip")] = true;
     });
-    var empty = document.querySelector("[data-capf-nooffers]");
-    if (empty) empty.style.display = shown ? "none" : "";
+    var first = null;
+    Array.prototype.forEach.call(ms.querySelectorAll("[data-capf-option]"), function (node) {
+      var hit = !taken[node.getAttribute("data-capf-option")] &&
+        (!clean || node.textContent.toLowerCase().indexOf(clean) >= 0);
+      node.hidden = !hit;
+      if (!hit) node.classList.remove("is-active");
+      if (hit && !first) first = node;
+    });
+    ms.querySelector("[data-capf-nooffers]").hidden = !!first;
+    // Ищут, чтобы выбрать: первое совпадение сразу под Enter.
+    if (clean && first && !ms.querySelector(".capf-ms__option.is-active")) {
+      first.classList.add("is-active");
+    }
+  }
+
+  function openOfferList(show) {
+    var ms = picker();
+    if (!ms) return;
+    var list = ms.querySelector("[data-capf-offers]");
+    if (list.hidden === !show) return;
+    list.hidden = !show;
+    ms.classList.toggle("is-open", show);
+    if (!show) {
+      var active = list.querySelector(".is-active");
+      if (active) active.classList.remove("is-active");
+      return;
+    }
+    filterOffers(ms.querySelector("[data-capf-search]").value);
+    // Поле бывает у нижнего края формы — список не должен уходить за него.
+    if (list.scrollIntoView) list.scrollIntoView({ block: "nearest" });
+  }
+
+  function offersChanged() {
+    var ms = picker();
+    var input = ms.querySelector("[data-capf-search]");
+    var count = ms.querySelectorAll("[data-capf-chip]").length;
+    input.placeholder = count ? "" : OFFER_PLACEHOLDER;
+    ms.querySelector("[data-capf-ms-clear]").hidden = !count;
+    filterOffers(input.value);
+    input.focus();
+  }
+
+  function pickOffer(option) {
+    var ms = picker();
+    var input = ms.querySelector("[data-capf-search]");
+    var holder = document.createElement("span");
+    holder.innerHTML = offerChipHtml(option.getAttribute("data-capf-option"), option.textContent);
+    ms.querySelector("[data-capf-ms-box]").insertBefore(holder.firstChild, input);
+    option.classList.remove("is-active");
+    input.value = "";
+    offersChanged();
+  }
+
+  function dropOffer(id) {
+    var ms = picker();
+    Array.prototype.forEach.call(ms.querySelectorAll("[data-capf-chip]"), function (chip) {
+      if (chip.getAttribute("data-capf-chip") === id) chip.remove();
+    });
+    offersChanged();
+  }
+
+  function moveActive(step) {
+    var ms = picker();
+    var options = Array.prototype.filter.call(
+      ms.querySelectorAll("[data-capf-option]"),
+      function (node) { return !node.hidden; }
+    );
+    if (!options.length) return;
+    var current = ms.querySelector(".capf-ms__option.is-active");
+    var index = options.indexOf(current);
+    var next = index < 0
+      ? options[step > 0 ? 0 : options.length - 1]
+      : options[(index + step + options.length) % options.length];
+    if (current) current.classList.remove("is-active");
+    next.classList.add("is-active");
+    if (next.scrollIntoView) next.scrollIntoView({ block: "nearest" });
+  }
+
+  function offerClick(event) {
+    var target = event.target;
+    var drop = target.closest("[data-capf-chip-drop]");
+    if (drop) return dropOffer(drop.getAttribute("data-capf-chip-drop"));
+    var ms = picker();
+    if (target.closest("[data-capf-ms-clear]")) {
+      Array.prototype.forEach.call(ms.querySelectorAll("[data-capf-chip]"), function (chip) {
+        chip.remove();
+      });
+      return offersChanged();
+    }
+    var option = target.closest("[data-capf-option]");
+    if (option) return pickOffer(option);
+    var input = ms.querySelector("[data-capf-search]");
+    if (target.closest("[data-capf-ms-toggle]")) {
+      openOfferList(!ms.classList.contains("is-open"));
+      return input.focus();
+    }
+    if (target.closest("[data-capf-ms-box]")) {
+      openOfferList(true);
+      input.focus();
+    }
+  }
+
+  function offerKeydown(event) {
+    var input = event.target;
+    var ms = picker();
+    var listOpen = ms.classList.contains("is-open");
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      openOfferList(true);
+      return moveActive(event.key === "ArrowDown" ? 1 : -1);
+    }
+    if (event.key === "Enter") {
+      var active = ms.querySelector(".capf-ms__option.is-active");
+      if (listOpen && active && !active.hidden) {
+        event.preventDefault();
+        pickOffer(active);
+      }
+      return;
+    }
+    if (event.key === "Escape" && listOpen) {
+      // Esc сначала закрывает список, а не всю форму с несохранёнными правками.
+      event.preventDefault();
+      event.stopPropagation();
+      return openOfferList(false);
+    }
+    if (event.key === "Backspace" && !input.value) {
+      var chips = ms.querySelectorAll("[data-capf-chip]");
+      if (chips.length) dropOffer(chips[chips.length - 1].getAttribute("data-capf-chip"));
+    }
   }
 
   function fieldsHtml(rule, data) {
@@ -243,20 +439,10 @@
 
       '<label class="' + half + '"><span class="capf-label">Thread ID</span>' +
       '<input class="capf-input" data-capf-field="thread_id" value="' +
-      escapeHtml(rule.thread_id || "") + '">' +
-      '<span class="capf-hint">Только для супергрупп с темами</span></label>' +
+      escapeHtml(rule.thread_id || "") + '"></label>' +
 
       '<div class="capf-field"><span class="capf-label">Офферы</span>' +
-      '<input class="capf-input capf-search" data-capf-search placeholder="Поиск по названию">' +
-      '<div class="capf-list" data-capf-offers>' +
-      data.reference.offers.map(function (offer) {
-        var on = (rule.offer_ids || []).indexOf(String(offer.id)) >= 0;
-        return '<label class="capf-check"><input type="checkbox" data-capf-offer="' +
-          escapeHtml(offer.id) + '"' + (on ? " checked" : "") + ">" +
-          escapeHtml(offer.name) + "</label>";
-      }).join("") +
-      '<div class="capf-none" data-capf-nooffers style="display:none">Ничего не найдено</div>' +
-      "</div>" +
+      offerPickerHtml(data.reference.offers, rule.offer_ids || []) +
       '<span class="capf-hint">Можно выбрать несколько — их показатели ' +
       "складываются в один лимит</span></div>" +
 
@@ -266,17 +452,16 @@
 
       '<label class="' + half + '"><span class="capf-label">Лимит</span>' +
       '<input class="capf-input" type="number" step="any" min="1" ' +
-      'data-capf-field="limit_value" value="' + escapeHtml(rule.limit_value) +
+      'data-capf-field="limit_value" value="' + escapeHtml(trimNumber(rule.limit_value)) +
       '"></label>' +
 
       '<label class="' + half + '"><span class="capf-label">Период сброса</span>' +
       '<select class="capf-input capf-select" data-capf-field="period">' +
       optionsHtml(data.reference.cap_periods, rule.period) + "</select></label>" +
 
-      '<label class="' + half + ' capf-tz"><span class="capf-label">Таймзона</span>' +
+      '<label class="' + half + '"><span class="capf-label">Таймзона</span>' +
       '<select class="capf-input capf-select" data-capf-field="timezone">' +
-      timezoneOptions(rule.timezone) + "</select>" +
-      '<span class="capf-hint">В её полночь счётчик и обнуляется</span></label>' +
+      timezoneOptions(rule.timezone) + "</select></label>" +
 
       '<div class="capf-field"><span class="capf-label">Пороги уведомлений</span>' +
       '<div class="capf-chips">' + thresholdChoices(rule.notify_at).map(function (percent) {
@@ -286,11 +471,7 @@
           (on ? " checked" : "") + ">" + percent + " %</label>";
       }).join("") + "</div>" +
       '<span class="capf-hint">Сообщение уйдёт, когда прогресс дойдёт до ' +
-      "выбранного порога</span></div>" +
-
-      '<div class="capf-note">Нужно выбрать офферы или пользователя — иначе ' +
-      "непонятно, чей это лимит. Пороги считаются заново в каждом периоде — " +
-      "кроме общего лимита, у которого периода нет вовсе.</div>";
+      "выбранного порога</span></div>";
   }
 
   function siblingsHtml(siblings) {
@@ -301,21 +482,10 @@
         return '<button type="button" class="capf-sibling" data-capf-open="' +
           escapeHtml(rule.id) + '"><span>' + escapeHtml(rule.name) + "</span>" +
           '<span class="capf-sibling-note">' +
-          escapeHtml((rule.metric_label || rule.metric) + " · до " + rule.limit_value) +
+          escapeHtml((rule.metric_label || rule.metric) + " · до " +
+            trimNumber(rule.limit_value)) +
           "</span></button>";
       }).join("") + "</div>";
-  }
-
-  /* У общего лимита периода нет, а значит нет и полуночи, в которую что-то
-     обнуляется. Подсказка про таймзону там врала бы, поэтому меняется вместе
-     с периодом: зона всё ещё нужна — по ней считается «сегодня» у верхней
-     границы, — но обнуления не будет. */
-  function applyPeriod(period) {
-    var hint = document.querySelector(".capf-tz .capf-hint");
-    if (!hint) return;
-    hint.textContent = period === "total"
-      ? "Счётчик не обнуляется — зона задаёт только границу «сегодня»"
-      : "В её полночь счётчик и обнуляется";
   }
 
   function readForm() {
@@ -326,8 +496,8 @@
       function (input) { values[input.getAttribute("data-capf-field")] = input.value; }
     );
     values.offer_ids = Array.prototype.map.call(
-      overlay.querySelectorAll("[data-capf-offer]:checked"),
-      function (input) { return input.getAttribute("data-capf-offer"); }
+      overlay.querySelectorAll("[data-capf-chip]"),
+      function (chip) { return chip.getAttribute("data-capf-chip"); }
     );
     values.notify_at = Array.prototype.map.call(
       overlay.querySelectorAll("[data-capf-threshold]:checked"),
@@ -347,7 +517,7 @@
       metric: values.metric,
       limit_value: Number(values.limit_value),
       period: values.period,
-      timezone: String(values.timezone || "").trim() || "UTC",
+      timezone: String(values.timezone || "").trim() || "Europe/Moscow",
       notify_at: (values.notify_at || []).length ? values.notify_at : [100]
     };
   }
@@ -459,7 +629,6 @@
       document.querySelector(".capf-del").style.display =
         settings.rule ? "" : "none";
       showError("");
-      applyPeriod(rule.period);
       overlay.classList.add("capf-open");
 
       overlay.querySelectorAll("[data-capf-open]").forEach(function (button) {

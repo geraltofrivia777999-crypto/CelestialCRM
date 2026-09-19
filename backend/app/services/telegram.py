@@ -6,7 +6,13 @@
 «почему алерт не пришёл» нечем ответить — в чате-то пусто.
 """
 
+import logging
+
 import httpx
+
+# Bot API puts the token directly in the request URL. httpx logs that URL at
+# INFO, so its normal access line would leak the credential into container logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 API_ROOT = "https://api.telegram.org"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)

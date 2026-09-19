@@ -163,6 +163,93 @@ async def test_hh_status_and_connect_are_proxied(fake_service) -> None:
     assert "authorize_url" in connect.json()
 
 
+async def test_hh_areas_are_proxied_without_exposing_the_service_token(
+    fake_service,
+) -> None:
+    fake_service["responses"][("GET", "/providers/hh/areas")] = {
+        "items": [
+            {"id": "88", "name": "Казань", "parent": "Республика Татарстан"}
+        ]
+    }
+    with _admin_client() as client:
+        response = client.get("/api/v1/recruitment/hh/areas?query=Казан&limit=7")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["id"] == "88"
+    forwarded = fake_service["calls"][-1]
+    assert forwarded == {
+        "method": "GET",
+        "path": "/providers/hh/areas",
+        "params": {"query": "Казан", "limit": 7},
+        "json": None,
+    }
+
+
+async def test_hh_areas_require_recruitment_permission(fake_service) -> None:
+    """Справочник нельзя использовать как обход закрытого раздела."""
+    from sqlalchemy import delete, select
+
+    from app.core.database import SessionLocal
+    from app.core.security import hash_password
+    from app.models import Role, User
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        role = await db.scalar(
+            select(Role).where(
+                Role.workspace_id == admin.workspace_id,
+                Role.name == "Buyer",
+            )
+        )
+        db.add(
+            User(
+                workspace_id=admin.workspace_id,
+                role_id=role.id,
+                name="Area Buyer",
+                login="recruitment-area-buyer",
+                password_hash=hash_password("test-password"),
+            )
+        )
+        await db.commit()
+
+    try:
+        client = TestClient(app)
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"login": "recruitment-area-buyer", "password": "test-password"},
+        )
+        assert login.status_code == 200
+        with client:
+            response = client.get("/api/v1/recruitment/hh/areas?query=Казань")
+        assert response.status_code == 403
+        assert fake_service["calls"] == []
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(
+                delete(User).where(User.login == "recruitment-area-buyer")
+            )
+            await db.commit()
+
+
+async def test_telegram_file_is_proxied_through_crm(monkeypatch) -> None:
+    application_id = "1a706e8d-bd3b-437c-a84f-dff9c3668120"
+
+    async def fake_file(self, received_id):
+        assert received_id == application_id
+        return b"pdf-data", "application/pdf", 'inline; filename="resume.pdf"', None
+
+    monkeypatch.setattr(recruitment_module.RecruitmentClient, "telegram_file", fake_file)
+    with _admin_client() as client:
+        response = client.get(
+            f"/api/v1/recruitment/telegram/applications/{application_id}/file"
+        )
+
+    assert response.status_code == 200
+    assert response.content == b"pdf-data"
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
 # --- воронка найма -----------------------------------------------------------
 #
 # Recruitment Service этапы найма не хранит — они целиком наши. Проверяется то,
@@ -226,7 +313,7 @@ async def test_adding_a_candidate_puts_them_on_screening(
     assert review.status_code == 200
     payload = board.json()
     assert [stage["key"] for stage in payload["stages"]] == [
-        "screening", "interview", "offer", "hired", "rejected"
+        "screening", "interview", "tech_interview", "offer", "hired", "rejected"
     ]
     assert len(payload["items"]) == 1
     row = payload["items"][0]
@@ -392,3 +479,287 @@ async def test_incoming_responses_are_asked_by_source(fake_service) -> None:
     params = fake_service["calls"][-1]["params"]
     assert params["source"] == "telegram"
     assert params["review_status"] == "pending"
+
+
+async def test_hh_negotiations_are_asked_apart_from_search(fake_service) -> None:
+    """У HH две ветки под одним источником: поиск по базе и входящий отклик.
+
+    Без `via` экран «Отклики» показывал бы вперемешку и то, и другое — а это
+    разные разговоры: человек написал сам или его нашли.
+    """
+    fake_service["responses"]["GET"] = []
+    with _admin_client() as client:
+        client.get(
+            "/api/v1/recruitment/candidates"
+            "?review_status=pending&limit=200&source=hh&via=negotiation"
+        )
+
+    params = fake_service["calls"][-1]["params"]
+    assert params["source"] == "hh"
+    assert params["via"] == "negotiation"
+
+
+async def test_a_template_carries_its_hh_vacancy(fake_service) -> None:
+    """`hh_vacancy_id` — ключ к откликам с hh.ru, и он должен доехать до сервиса."""
+    fake_service["responses"]["POST"] = {"id": "tpl-1"}
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/recruitment/search-templates",
+            json={
+                "name": "Media Buyer",
+                "crm_vacancy_id": "vac-123",
+                "hh_vacancy_id": "116958765",
+                "criteria": [],
+            },
+        )
+
+    assert created.status_code == 201, created.text
+    body = fake_service["calls"][-1]["json"]
+    assert body["hh_vacancy_id"] == "116958765"
+    # Вакансия CRM и вакансия HH — разные поля, одно другое не подменяет.
+    assert body["crm_vacancy_id"] == "vac-123"
+
+
+TELEGRAM_EXTERNAL = {
+    "id": "ext-tg-1",
+    "parsed_profile": {
+        "position_title": "Media Buyer",
+        "full_name": "Leon",
+        "text_blob": "Добрый вечер, медиабайер с опытом более пяти лет…",
+        "resume_file_url": "https://example.com/cv.pdf",
+        "resume_file_name": "cv.pdf",
+    },
+    "review_status": "added",
+    "sources": [
+        {"source": "telegram", "external_id": "77",
+         "external_url": "https://t.me/LEON_WP"}
+    ],
+    "scores": [],
+}
+
+TELEGRAM_FILE_ID_EXTERNAL = {
+    **TELEGRAM_EXTERNAL,
+    "id": "ext-tg-file-id",
+    "parsed_profile": {
+        **TELEGRAM_EXTERNAL["parsed_profile"],
+        "resume_file_url": (
+            "http://recruitment-api:8000/telegram/applications/"
+            "1a706e8d-bd3b-437c-a84f-dff9c3668120/file"
+        ),
+    },
+}
+
+HH_EXTERNAL = {
+    "id": "ext-hh-2",
+    "parsed_profile": {
+        "position_title": "Media Buyer",
+        "full_name": "Хайров Руслан",
+        "birth_date": "1994-06-12",
+        "geo": "Казань",
+    },
+    "review_status": "added",
+    "sources": [
+        {"source": "hh", "external_id": "999", "external_url": "https://hh.ru/resume/999"}
+    ],
+    "scores": [],
+}
+
+
+async def test_the_card_keeps_what_it_shows_about_the_person(
+    fake_service, clean_pipeline
+) -> None:
+    """Имя, дата рождения, город, ник и текст отклика живут в снимке CRM.
+
+    Доска обязана открываться, когда сервис рекрутинга недоступен, поэтому всё,
+    что рисует карточка, снимается в момент добавления. Полей, которых сервис
+    пока не отдаёт, в снимке просто нет — карточка не рисует такую строку.
+    """
+    fake_service["responses"]["PATCH"] = HH_EXTERNAL
+    fake_service["responses"]["GET"] = []
+    with _admin_client() as client:
+        client.patch(
+            "/api/v1/recruitment/candidates/ext-hh-2/review", json={"decision": "added"}
+        )
+        board = client.get("/api/v1/recruitment/pipeline").json()
+
+    row = board["items"][0]
+    assert row["profile"]["full_name"] == "Хайров Руслан"
+    assert row["profile"]["birth_date"] == "1994-06-12"
+    assert row["geo"] == "Казань"
+    # У кандидата с HH телеграма нет — поле остаётся пустым для ручного ввода.
+    assert row["telegram_contact"] is None
+
+
+async def test_a_telegram_candidate_brings_their_handle_and_message(
+    fake_service, clean_pipeline
+) -> None:
+    """Ник телеграма подставляется сам: у заявки это единственный контакт."""
+    fake_service["responses"]["PATCH"] = TELEGRAM_EXTERNAL
+    fake_service["responses"]["GET"] = []
+    with _admin_client() as client:
+        client.patch(
+            "/api/v1/recruitment/candidates/ext-tg-1/review", json={"decision": "added"}
+        )
+        board = client.get("/api/v1/recruitment/pipeline").json()
+        row = board["items"][0]
+        # Введённое человеком сильнее снимка: повторный разбор его не затирает.
+        client.patch(
+            "/api/v1/recruitment/pipeline/" + row["id"],
+            json={"telegram_contact": "@leon_work"},
+        )
+        client.patch(
+            "/api/v1/recruitment/candidates/ext-tg-1/review", json={"decision": "added"}
+        )
+        again = client.get("/api/v1/recruitment/pipeline").json()["items"][0]
+
+    assert row["telegram_contact"] == "@LEON_WP"
+    assert row["profile"]["telegram_username"] == "@LEON_WP"
+    assert row["profile"]["application_text"].startswith("Добрый вечер")
+    assert row["profile"]["resume_file_url"] == "https://example.com/cv.pdf"
+    assert again["telegram_contact"] == "@leon_work"
+
+
+async def test_internal_telegram_file_url_is_rewritten_for_the_browser(
+    fake_service, clean_pipeline
+) -> None:
+    fake_service["responses"]["PATCH"] = TELEGRAM_FILE_ID_EXTERNAL
+    fake_service["responses"]["GET"] = []
+    with _admin_client() as client:
+        client.patch(
+            "/api/v1/recruitment/candidates/ext-tg-file-id/review",
+            json={"decision": "added"},
+        )
+        row = client.get("/api/v1/recruitment/pipeline").json()["items"][0]
+
+    assert row["profile"]["resume_file_url"] == (
+        "/api/v1/recruitment/telegram/applications/"
+        "1a706e8d-bd3b-437c-a84f-dff9c3668120/file"
+    )
+
+
+async def test_a_candidate_can_be_created_by_hand(fake_service, clean_pipeline) -> None:
+    """Человека приводят по рекомендации — он должен попасть в ту же воронку."""
+    with _admin_client() as client:
+        admin_id = client.get("/api/v1/auth/me").json()["id"]
+        created = client.post(
+            "/api/v1/recruitment/pipeline",
+            json={
+                "full_name": "Иванов Иван",
+                "position_title": "Media Buyer",
+                "telegram_contact": "@ivan",
+                "geo": "Казань",
+                "owner_id": admin_id,
+                "external_url": "https://example.com/resume",
+                "interview_record": "https://example.com/interview",
+            },
+        )
+        assert created.status_code == 201, created.text
+        row = created.json()
+        assert row["stage"] == "screening"
+        assert row["source"] == "manual"
+        assert row["profile"]["full_name"] == "Иванов Иван"
+        assert row["external_id"].startswith("manual:")
+        assert row["owner_id"] == admin_id
+        assert row["owner_name"] == "Administrator"
+        assert row["external_url"] == "https://example.com/resume"
+        assert row["interview_record"] == "https://example.com/interview"
+
+        # Заведённый руками кандидат ходит по этапам, как любой другой.
+        moved = client.patch(
+            "/api/v1/recruitment/pipeline/" + row["id"],
+            json={"stage": "tech_interview"},
+        )
+        assert moved.status_code == 200
+        assert moved.json()["stage_label"] == "Тех. интервью"
+
+        # Имя и город из формы убрали: кандидата заводят по позиции или нику.
+        by_nick = client.post(
+            "/api/v1/recruitment/pipeline",
+            json={"telegram_contact": "@only_nick"},
+        )
+        assert by_nick.status_code == 201, by_nick.text
+        assert by_nick.json()["telegram_contact"] == "@only_nick"
+
+        empty = client.post("/api/v1/recruitment/pipeline", json={"note": "без имени"})
+        assert empty.status_code == 422
+
+
+async def test_a_record_file_lands_in_a_hand_made_candidate(
+    fake_service, clean_pipeline, monkeypatch
+) -> None:
+    """Форма «Новый кандидат» прикрепляет файл записи сразу после заведения.
+
+    Кандидата до сохранения нет, поэтому окно сначала создаёт его, а затем
+    грузит файл в его карточку — ссылка на запись должна вести на этот файл.
+    """
+    from app.services import storage
+
+    fake_service["responses"]["GET"] = []
+    # Байты на диск не пишем: проверяем, что файл закрепился за кандидатом.
+    monkeypatch.setattr(storage, "store", lambda *args, **kwargs: "tests/interview.pdf")
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/recruitment/pipeline",
+            json={"position_title": "Media Buyer", "telegram_contact": "@with_file"},
+        )
+        assert created.status_code == 201, created.text
+        row_id = created.json()["id"]
+
+        uploaded = client.post(
+            f"/api/v1/recruitment/pipeline/{row_id}/record",
+            files={"file": ("interview.pdf", b"%PDF-1.4\n%probe\n", "application/pdf")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        assert uploaded.json()["interview_record"].startswith("/api/v1/recruitment/records/")
+
+        board = client.get("/api/v1/recruitment/pipeline").json()
+        row = [item for item in board["items"] if item["id"] == row_id][0]
+        assert row["interview_record"] == uploaded.json()["interview_record"]
+
+
+async def test_a_removed_candidate_does_not_come_back_with_the_next_sync(
+    fake_service, clean_pipeline
+) -> None:
+    """Убрали с доски — значит убрали.
+
+    Сервис по-прежнему считает находку разобранной и отдаёт её в списке
+    `added`. Раньше доска подтягивала её обратно при каждом открытии, и
+    карточка «удалялась» лишь до следующего запроса.
+    """
+    fake_service["responses"]["PATCH"] = EXTERNAL
+    fake_service["responses"]["GET"] = [EXTERNAL]
+    with _admin_client() as client:
+        client.patch(
+            "/api/v1/recruitment/candidates/ext-1/review", json={"decision": "added"}
+        )
+        row_id = client.get("/api/v1/recruitment/pipeline").json()["items"][0]["id"]
+        removed = client.delete(f"/api/v1/recruitment/pipeline/{row_id}")
+        assert removed.status_code == 200
+        board = client.get("/api/v1/recruitment/pipeline").json()
+        again = client.get("/api/v1/recruitment/pipeline").json()
+
+    assert board["items"] == []
+    assert again["items"] == []
+    assert all(stage["count"] == 0 for stage in board["stages"])
+
+
+async def test_adding_the_same_person_again_brings_the_card_back(
+    fake_service, clean_pipeline
+) -> None:
+    """Решение передумали — карточка возвращается на доску."""
+    fake_service["responses"]["PATCH"] = EXTERNAL
+    fake_service["responses"]["GET"] = []
+    with _admin_client() as client:
+        client.patch(
+            "/api/v1/recruitment/candidates/ext-1/review", json={"decision": "added"}
+        )
+        row_id = client.get("/api/v1/recruitment/pipeline").json()["items"][0]["id"]
+        client.delete(f"/api/v1/recruitment/pipeline/{row_id}")
+        assert client.get("/api/v1/recruitment/pipeline").json()["items"] == []
+        client.patch(
+            "/api/v1/recruitment/candidates/ext-1/review", json={"decision": "added"}
+        )
+        board = client.get("/api/v1/recruitment/pipeline").json()
+
+    assert len(board["items"]) == 1
+    assert board["items"][0]["stage"] == "screening"

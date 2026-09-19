@@ -259,8 +259,11 @@
     var requests = [
       api.getAll("/users"),
       api.get("/roles"),
-      api.getAll("/campaigns").catch(function () { return { items: [] }; }),
-      api.getAll("/offers").catch(function () { return { items: [] }; }),
+      canManage
+        ? api.get("/integrations/keitaro/groups").catch(function () {
+          return { campaign_groups: [], offer_groups: [] };
+        })
+        : Promise.resolve({ campaign_groups: [], offer_groups: [] }),
       canManage
         ? api.get("/permissions").catch(function () { return []; })
         : Promise.resolve([])
@@ -271,13 +274,12 @@
     teamState = {
       users: users,
       roles: roles,
-      permissions: results[4] || [],
-      campaignGroups: uniqueValues((results[2].items || []).map(function (item) {
-        return item.group_name;
-      })),
-      offerGroups: uniqueValues((results[3].items || []).map(function (item) {
-        return item.group_name;
-      })),
+      permissions: results[3] || [],
+      // Группа может быть новой и пока не содержать ни одной кампании или
+      // оффера. Поэтому берём сам справочник Keitaro, а не выводим группы из
+      // активных сущностей — именно из-за этого раньше пропадала XEI.
+      campaignGroups: uniqueValues(results[2].campaign_groups || []),
+      offerGroups: uniqueValues(results[2].offer_groups || []),
       canManage: Boolean(canManage)
     };
     text("teamTotal", number(results[0].total));
@@ -616,7 +618,6 @@
     if (passwordField) passwordField.style.display = user ? "none" : "";
     passwordInput.required = !user;
     if (user) {
-      form.elements.name.value = user.name;
       form.elements.login.value = user.login;
       form.elements.role.value = user.role.id;
       form.elements.status.value = user.status;
@@ -626,6 +627,7 @@
     setPickerSelection("parent", Array.from(pickerState.parent.selectedIds));
     setPickerSelection("child", Array.from(pickerState.child.selectedIds));
     closeAllPickers();
+    keitaroGroupsStatus("");
     byId("userModal").classList.add("open");
     document.body.style.overflow = "hidden";
   }
@@ -660,10 +662,14 @@
   var PERMISSION_ACTIONS = {
     view: "просмотр",
     view_all: "весь справочник",
+    channels: "каналы",
+    events: "журнал",
+    assign: "раздача баерам",
     manage: "изменение",
     export: "экспорт",
     launch: "заливы",
-    comments: "комментарии"
+    comments: "комментарии",
+    details: "приоритет, сроки, исполнители"
   };
 
   function permissionOrder(code) {
@@ -717,6 +723,53 @@
       icon: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="' +
         found.color + '" stroke-width="2" stroke-linejoin="round">' + found.path + "</svg>"
     };
+  }
+
+  async function deleteRole(roleId) {
+    var role = teamState.roles.find(function (row) { return row.id === roleId; });
+    if (!role) return;
+    var assigned = teamState.users.filter(function (user) {
+      return user.role.id === role.id;
+    });
+    var query = "";
+    var message = "Роль пропадёт из списка. Пользователей с ней нет — ни у кого " +
+      "доступ не изменится.";
+    if (assigned.length) {
+      // Человек без роли не войдёт в CRM, поэтому сначала спрашиваем, куда
+      // перенести людей, и только вторым нажатием — удаляем.
+      var move = byId("roleDeleteMove");
+      var select = byId("roleDeleteReplacement");
+      var others = teamState.roles.filter(function (row) { return row.id !== role.id; });
+      if (move.hidden) {
+        byId("roleDeleteMoveText").textContent = "Роль назначена: " + assigned.length + " " +
+          (assigned.length === 1 ? "пользователь" : "пользователей") +
+          ". Выберите роль, на которую их перенести, и нажмите «Перенести и удалить».";
+        select.innerHTML = others.map(function (row) {
+          return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name) +
+            "</option>";
+        }).join("");
+        move.hidden = false;
+        byId("deleteRoleButton").textContent = "Перенести и удалить";
+        move.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+      var target = others.find(function (row) { return row.id === select.value; });
+      if (!target) return;
+      query = "?replacement_role_id=" + encodeURIComponent(target.id);
+      message = assigned.length + " " +
+        (assigned.length === 1 ? "пользователь получит" : "пользователей получат") +
+        " роль «" + target.name + "» и её права.";
+    }
+    if (!(await askConfirm({
+      title: "Удалить роль «" + role.name + "»?",
+      message: message,
+      confirmLabel: assigned.length ? "Перенести и удалить" : "Удалить",
+      danger: true
+    }))) return;
+    await api.delete("/roles/" + roleId + query);
+    closeTeamModal("roleModal");
+    toast("Роль удалена");
+    await loadTeam();
   }
 
   function renderRoles() {
@@ -829,27 +882,51 @@
         "В структуре найдена циклическая связь. Проверьте назначенных руководителей.</div>"
       : "";
 
-    // Дерево строим по первому руководителю; остальные показываем бейджем на карточке.
-    var childrenByParent = new Map();
+    // Иерархия — граф, а не обычное дерево: один человек может подчиняться
+    // нескольким руководителям. Поэтому строим ветку для каждого руководителя,
+    // а не назначаем сотруднику одного «основного» родителя по алфавиту.
+    var allChildrenByParent = new Map();
     var roots = [];
     teamState.users.forEach(function (user) {
-      var primaryParent = (user.parents || []).map(function (parent) {
+      var parentIds = (user.parents || []).map(function (parent) {
         return parent.id;
       }).filter(function (parentId) {
         return usersById.has(parentId) && parentId !== user.id;
-      })[0];
-      if (primaryParent) {
-        if (!childrenByParent.has(primaryParent)) childrenByParent.set(primaryParent, []);
-        childrenByParent.get(primaryParent).push(user);
-      } else {
-        roots.push(user);
-      }
+      });
+      if (!parentIds.length) roots.push(user);
+      parentIds.forEach(function (parentId) {
+        if (!allChildrenByParent.has(parentId)) allChildrenByParent.set(parentId, []);
+        allChildrenByParent.get(parentId).push(user);
+      });
     });
     var byName = function (left, right) {
       return left.name.localeCompare(right.name, "ru");
     };
     roots.sort(byName);
-    childrenByParent.forEach(function (children) { children.sort(byName); });
+    allChildrenByParent.forEach(function (children) { children.sort(byName); });
+
+    // Верхний руководитель часто добавлен родителем и тимлиду, и всем людям
+    // тимлида. Такая транзитивная связь нужна для прав доступа, но в дереве
+    // она дублировала бы человека рядом с его же веткой. Скрываем только эти
+    // повторные рёбра; сама связь остаётся в базе и видна в счётчиках/бейджах.
+    function reaches(fromId, targetId, visited) {
+      if (fromId === targetId) return true;
+      if (visited.has(fromId)) return false;
+      visited.add(fromId);
+      return (allChildrenByParent.get(fromId) || []).some(function (child) {
+        return reaches(child.id, targetId, visited);
+      });
+    }
+
+    var childrenByParent = new Map();
+    allChildrenByParent.forEach(function (children, parentId) {
+      var structural = children.filter(function (child) {
+        return !children.some(function (other) {
+          return other.id !== child.id && reaches(other.id, child.id, new Set([parentId]));
+        });
+      });
+      childrenByParent.set(parentId, structural);
+    });
 
     // Ветки с большим числом подчинённых сворачиваем по умолчанию,
     // чтобы дерево не растягивалось на несколько экранов по горизонтали.
@@ -860,16 +937,17 @@
       var nextPath = new Set(path);
       nextPath.add(user.id);
       var children = childrenByParent.get(user.id) || [];
+      var directChildCount = (allChildrenByParent.get(user.id) || []).length;
       var childHtml = children.map(function (child) {
         return renderBranch(child, nextPath);
       }).join("");
-      if (!childHtml) return "<li>" + hierarchyNode(user, children.length) + "</li>";
+      if (!childHtml) return "<li>" + hierarchyNode(user, directChildCount) + "</li>";
       var collapsed = children.length >= AUTO_COLLAPSE_FROM;
       var toggle = '<button type="button" class="org-toggle" data-org-toggle ' +
         'data-count="' + children.length + '" title="Свернуть или развернуть ветку">' +
         (collapsed ? "+" + children.length : "–") + "</button>";
       return '<li class="' + (collapsed ? "org-collapsed" : "") + '">' +
-        hierarchyNode(user, children.length) + toggle +
+        hierarchyNode(user, directChildCount) + toggle +
         "<ul>" + childHtml + "</ul></li>";
     }
 
@@ -936,6 +1014,27 @@
     form.elements.roleName.value = role ? role.name : "";
     form.elements.roleName.disabled = Boolean(role && role.name === "Administrator");
     form.elements.roleDescription.value = role ? role.description || "" : "";
+    // Область доступа: чьи строки увидит человек с этой ролью.
+    var scope = (role && role.data_scope) || "team";
+    Array.prototype.forEach.call(form.elements.dataScope, function (input) {
+      input.checked = input.value === scope;
+    });
+    var summaries = !role || role.show_finance_summaries !== false;
+    // «Удалить роль» — внутри окна: на карточке кнопка стояла рядом с
+    // «Редактировать», и промахнуться было слишком легко. Удалить можно любую
+    // роль, в том числе стандартную; людей с ней переносят на другую роль.
+    var deleteButton = byId("deleteRoleButton");
+    if (deleteButton) {
+      var own = Boolean(role && currentSessionUser && currentSessionUser.role &&
+        currentSessionUser.role.id === role.id);
+      deleteButton.hidden = !role;
+      deleteButton.disabled = own;
+      deleteButton.style.opacity = own ? ".5" : "";
+      deleteButton.textContent = "Удалить роль";
+      deleteButton.title = own ? "Это ваша роль — её удаление отрежет вам доступ" : "";
+    }
+    var move = byId("roleDeleteMove");
+    if (move) move.hidden = true;
     var selected = new Set((role && role.permissions || []).map(function (permission) {
       return permission.code;
     }));
@@ -946,13 +1045,28 @@
       var byModule = permissionOrder(left) - permissionOrder(right);
       return byModule || permissionLabel(left).localeCompare(permissionLabel(right), "ru");
     });
-    byId("rolePermissions").innerHTML = codes.map(function (code) {
+    var cell = function (name, value, label, checked, title) {
       return '<label style="display:flex;align-items:center;gap:9px;border:1px solid #E8E2E2;' +
-        'border-radius:10px;padding:10px 11px;font-size:11.5px;font-weight:700;color:#5A5050">' +
-        '<input type="checkbox" name="permission" value="' + escapeHtml(code) + '"' +
-        (selected.has(code) ? " checked" : "") + "> " +
-        escapeHtml(permissionLabel(code)) + "</label>";
-    }).join("");
+        'border-radius:10px;padding:10px 11px;font-size:11.5px;font-weight:700;color:#5A5050"' +
+        (title ? ' title="' + escapeHtml(title) + '"' : "") + ">" +
+        '<input type="checkbox" name="' + name + '" value="' + escapeHtml(value) + '"' +
+        (checked ? " checked" : "") + "> " + escapeHtml(label) + "</label>";
+    };
+    // Сводки — не отдельное право в базе, а флаг роли, но выбирают его там же,
+    // где и остальной доступ к Финансам: сразу за «Финансы · просмотр».
+    var summariesCell = cell(
+      "showFinanceSummaries", "1", "Финансы · сводки верхнего уровня", summaries,
+      "«Общая», «Tier1» и «Tier2/3». Своя книга и сводки по командам — по доступу к данным"
+    );
+    var placed = false;
+    byId("rolePermissions").innerHTML = codes.map(function (code) {
+      var html = cell("permission", code, permissionLabel(code), selected.has(code));
+      if (code === "finance.view") {
+        placed = true;
+        return html + summariesCell;
+      }
+      return html;
+    }).join("") + (placed ? "" : summariesCell);
     byId("roleModal").classList.add("open");
     document.body.style.overflow = "hidden";
   }
@@ -971,8 +1085,7 @@
       '<div style="display:flex;justify-content:flex-end;gap:9px;margin-top:17px">' +
       '<button type="button" data-team-action="close-secret" style="height:40px;border:1px solid #E5DFDF;' +
       'background:#fff;border-radius:9px;padding:0 14px">Закрыть</button>' +
-      '<button type="button" data-team-action="copy-secret" style="height:40px;border:0;background:#B91414;' +
-      'color:#fff;border-radius:9px;padding:0 14px;font-weight:700">Копировать</button>' +
+      '<button type="button" data-team-action="copy-secret" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:Inter,-apple-system,Helvetica Neue,sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Копировать</button>' +
       "</div></div>";
     document.body.appendChild(dialog);
   }
@@ -1021,6 +1134,12 @@
         openRoleEditor(null);
         return;
       }
+      var deleteRoleButton = event.target.closest("#deleteRoleButton");
+      if (deleteRoleButton) {
+        event.preventDefault();
+        if (!deleteRoleButton.disabled) deleteRole(byId("roleForm").dataset.roleId).catch(fail);
+        return;
+      }
       if (event.target.closest("#closeRoleModal") || event.target.closest("#cancelRoleModal")) {
         closeTeamModal("roleModal");
         return;
@@ -1053,6 +1172,8 @@
         } catch (error) {
           fail(error);
         }
+      } else if (name === "delete-role") {
+        if (!action.disabled) deleteRole(action.dataset.roleId).catch(fail);
       } else if (name === "edit-role") {
         openRoleEditor(teamState.roles.find(function (role) {
           return role.id === action.dataset.roleId;
@@ -1157,9 +1278,75 @@
     if (userForm) {
       userForm.addEventListener("submit", saveUser, true);
     }
+    var groupsButton = byId("refreshKeitaroGroups");
+    if (groupsButton) {
+      groupsButton.addEventListener("click", function () {
+        refreshKeitaroGroups().catch(fail);
+      });
+    }
     var roleForm = byId("roleForm");
     if (roleForm) {
       roleForm.addEventListener("submit", saveRole, true);
+    }
+    // «Выбрать всё» и «Снять всё»: у роли вроде владельца прав три десятка,
+    // и отмечать их по одному — отдельное занятие.
+    [["rolePermissionsAll", true], ["rolePermissionsNone", false]].forEach(function (pair) {
+      var button = byId(pair[0]);
+      if (!button) return;
+      button.addEventListener("click", function () {
+        document.querySelectorAll('#rolePermissions input[type="checkbox"]').forEach(
+          function (input) { input.checked = pair[1]; }
+        );
+      });
+    });
+  }
+
+  function keitaroGroupsStatus(message, kind) {
+    var host = byId("keitaroGroupsStatus");
+    if (!host) return;
+    host.textContent = message || "";
+    host.hidden = !message;
+    host.classList.toggle("is-error", kind === "error");
+    host.classList.toggle("is-muted", kind === "muted");
+  }
+
+  /* Нового баера заводят так: в Keitaro открывают CRM доступ к его группе, а
+     здесь привязывают к ней пользователя. Ждать синхронизации по расписанию,
+     чтобы группа появилась в списке, незачем — кнопка забирает справочники
+     Keitaro сразу. Уже выбранные в форме значения при этом не сбрасываются. */
+  async function refreshKeitaroGroups() {
+    var form = byId("createUserForm");
+    var button = byId("refreshKeitaroGroups");
+    if (!form || !button || button.disabled) return;
+    var picked = {
+      company: form.elements.companyGroup.value,
+      offer: form.elements.offerGroup.value
+    };
+    button.disabled = true;
+    button.classList.add("is-busy");
+    keitaroGroupsStatus("Загружаем группы из Keitaro…", "muted");
+    try {
+      var result = await api.post("/integrations/keitaro/groups/refresh", {});
+      teamState.campaignGroups = uniqueValues(
+        teamState.campaignGroups.concat(result.campaign_groups || [])
+      );
+      teamState.offerGroups = uniqueValues(
+        teamState.offerGroups.concat(result.offer_groups || [])
+      );
+      selectOptions(form.elements.companyGroup, teamState.campaignGroups, "Без привязки");
+      selectOptions(form.elements.offerGroup, teamState.offerGroups, "Без привязки");
+      form.elements.companyGroup.value = picked.company;
+      form.elements.offerGroup.value = picked.offer;
+      var fresh = (result.new_campaign_groups || []).concat(result.new_offer_groups || []);
+      if (fresh.length) keitaroGroupsStatus("Новые группы: " + fresh.join(", "));
+      else keitaroGroupsStatus("Новых групп нет — списки актуальны", "muted");
+    } catch (error) {
+      if (error && error.status === 401) return fail(error);
+      keitaroGroupsStatus(error && error.message ? error.message
+        : "Не удалось загрузить группы из Keitaro", "error");
+    } finally {
+      button.disabled = false;
+      button.classList.remove("is-busy");
     }
   }
 
@@ -1170,9 +1357,12 @@
     var form = event.currentTarget;
     var userId = form.dataset.userId;
     var submit = byId("saveUserButton");
+    // Логин — он же имя пользователя: два поля значили одно и то же, и в
+    // списке команды человек искал себя то по имени, то по логину.
+    var login = form.elements.login.value.trim().replace(/^@/, "");
     var payload = {
-      name: form.elements.name.value.trim(),
-      login: form.elements.login.value.trim().replace(/^@/, ""),
+      name: login,
+      login: login,
       role_id: form.elements.role.value,
       status: form.elements.status.value,
       parent_ids: Array.from(pickerState.parent.selectedIds),
@@ -1204,9 +1394,14 @@
     var form = event.currentTarget;
     var roleId = form.dataset.roleId;
     var submit = byId("saveRoleButton");
+    var scopeInput = form.querySelector('input[name="dataScope"]:checked');
     var payload = {
       name: form.elements.roleName.value.trim(),
       description: form.elements.roleDescription.value.trim(),
+      data_scope: scopeInput ? scopeInput.value : "team",
+      show_finance_summaries: Boolean(
+        form.querySelector('input[name="showFinanceSummaries"]:checked')
+      ),
       permission_codes: Array.from(
         form.querySelectorAll('input[name="permission"]:checked')
       ).map(function (input) { return input.value; })
@@ -1266,7 +1461,8 @@
     if (!value) return "Ещё не запускалась";
     return new Intl.DateTimeFormat("ru-RU", {
       dateStyle: "short",
-      timeStyle: "short"
+      timeStyle: "short",
+      timeZone: "Europe/Moscow"
     }).format(new Date(value));
   }
 
@@ -1375,10 +1571,10 @@
   function updateSettingsHeaderAction() {
     var button = byId("openEntityModal");
     if (!button) return;
-    // У интеграций и расчёта ЗП свои кнопки внутри вкладки — общая «Добавить
-    // агента» там ни при чём.
-    if (["tracker", "partners", "salary"].indexOf(settingsState.activeTab) >= 0 ||
-      !settingsCanManage()) {
+    // Кнопка заводит агента и принадлежит одной вкладке. Перечислять остальные
+    // в запрете нельзя: список разделов растёт, и «Тиры стран» уже оказались
+    // не учтены — кнопка висела над справочником стран.
+    if (settingsState.activeTab !== "agents" || !settingsCanManage()) {
       button.style.display = "none";
       return;
     }
@@ -1404,12 +1600,10 @@
   function applySettingsFilters() {
     var search = byId("settingsSearch");
     var query = (search ? search.value : "").trim().toLowerCase();
-    var type = byId("agentTypeFilter") ? byId("agentTypeFilter").value : "";
     document.querySelectorAll("[data-settings-row]").forEach(function (row) {
       var current = row.dataset.kind === settingsState.activeTab;
       var matches = current &&
-        (!query || row.textContent.toLowerCase().indexOf(query) >= 0) &&
-        (settingsState.activeTab !== "agents" || !type || row.dataset.type === type);
+        (!query || row.textContent.toLowerCase().indexOf(query) >= 0);
       row.style.display = matches ? "" : "none";
     });
   }
@@ -1629,8 +1823,6 @@
     });
     var search = byId("settingsSearch");
     if (search) search.addEventListener("input", applySettingsFilters);
-    var typeFilter = byId("agentTypeFilter");
-    if (typeFilter) typeFilter.addEventListener("change", applySettingsFilters);
     document.addEventListener("click", function (event) {
       var action = event.target.closest("[data-setting-action]");
       if (!action) return;
@@ -1801,8 +1993,11 @@
     byId("connectionInterval").value = intervalLabel(
       connection ? connection.sync_interval_minutes : 15
     );
-    byId("connectionStatusField").style.display = connection ? "block" : "none";
-    byId("connectionStatus").value = connection ? connection.status : "active";
+    // «Интеграция включена» и пересинхронизация — только у существующего
+    // подключения: новому нечего выключать и нечего загружать заново.
+    byId("connectionStatusField").style.display = connection ? "flex" : "none";
+    byId("connectionEnabled").checked = connection ? connection.status === "active" : true;
+    resetResync(connection);
     text("connectionModalTitle", connection ? "Изменение подключения" : "Подключение Keitaro");
     text(
       "connectionModalSubtitle",
@@ -1842,10 +2037,172 @@
     if (window.CelestialShell) await window.CelestialShell.refreshSync();
   }
 
+  /* Пересинхронизация из «Дополнительно» в окне подключения: заново загрузить
+     из Keitaro выбранный период. Обычная синхронизация только дописывает дни,
+     а эта заменяет их — то, чего в трекере уже нет, из CRM тоже уходит. */
+  var RESYNC_PERIODS = { 30: "30 дней", 90: "90 дней", 180: "180 дней", 365: "год" };
+  var resyncState = { connectionId: null, days: 30, runId: null };
+
+  function resyncStatus(message, isError) {
+    var host = byId("connectionResyncStatus");
+    if (!host) return;
+    host.textContent = message || "";
+    host.hidden = !message;
+    host.classList.toggle("is-error", !!isError);
+  }
+
+  function paintResyncPeriods() {
+    document.querySelectorAll("[data-resync-days]").forEach(function (button) {
+      var on = Number(button.getAttribute("data-resync-days")) === resyncState.days;
+      button.classList.toggle("is-on", on);
+      button.setAttribute("aria-checked", on ? "true" : "false");
+    });
+  }
+
+  function setResyncBusy(busy, label) {
+    var run = byId("connectionResync");
+    if (run) {
+      run.disabled = busy;
+      run.textContent = label || "Пересинхронизировать";
+    }
+    document.querySelectorAll("[data-resync-days]").forEach(function (button) {
+      button.disabled = busy;
+    });
+  }
+
+  function toggleAdvanced(open) {
+    var toggle = byId("connectionAdvancedToggle");
+    var body = byId("connectionAdvancedBody");
+    if (!toggle || !body) return;
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    body.hidden = !open;
+  }
+
+  function resetResync(connection) {
+    var advanced = byId("connectionAdvanced");
+    if (!advanced) return;
+    advanced.style.display = connection ? "block" : "none";
+    // Окно того же подключения открыли, пока идёт пересинхронизация, —
+    // прогресс остаётся на месте, а не сбрасывается в «ничего не запущено».
+    if (connection && resyncState.connectionId === connection.id && resyncState.runId) {
+      toggleAdvanced(true);
+      return;
+    }
+    toggleAdvanced(false);
+    resyncState.connectionId = connection ? connection.id : null;
+    resyncState.days = 30;
+    resyncState.runId = null;
+    paintResyncPeriods();
+    setResyncBusy(false);
+    resyncStatus("");
+  }
+
+  async function startResync() {
+    var connectionId = resyncState.connectionId;
+    if (!connectionId || resyncState.runId) return;
+    var days = resyncState.days;
+    var period = RESYNC_PERIODS[days];
+    if (!(await askConfirm({
+      title: "Пересинхронизировать данные за " + period + "?",
+      message: "Статистика и показатели Медиаборда за этот период загрузятся из Keitaro " +
+        "заново — то, чего в трекере уже нет, из CRM уйдёт. Ручные правки и расходы " +
+        "агентов останутся. Загрузка идёт в фоне, окно можно закрыть.",
+      confirmLabel: "Пересинхронизировать"
+    }))) return;
+    setResyncBusy(true, "Запускаю…");
+    resyncStatus("");
+    try {
+      var result = await api.post(
+        "/integrations/keitaro/" + connectionId + "/sync?mode=resync&days=" + days,
+        {},
+        "ui-resync-" + connectionId + "-" + Date.now()
+      );
+      if (result.already_running && result.mode !== "resync") {
+        setResyncBusy(false);
+        resyncStatus("Сейчас идёт обычная синхронизация. Пересинхронизацию можно " +
+          "запустить, когда она закончится.", true);
+        return;
+      }
+      resyncState.runId = result.run_id;
+      await followResync(connectionId, result.run_id, period);
+    } catch (error) {
+      if (error && error.status === 401) return fail(error);
+      if (resyncState.connectionId === connectionId) {
+        resyncState.runId = null;
+        setResyncBusy(false);
+        resyncStatus(error && error.message ? error.message
+          : "Не удалось запустить пересинхронизацию", true);
+      }
+    }
+  }
+
+  /* Год по дню — это минуты, а не секунды: окно показывает, сколько дней уже
+     загружено, и не бросает опрос через пару минут, как короткая синхронизация.
+     Окно закрыли или открыли другое подключение — опрос идёт дальше молча и
+     сообщает только итог. */
+  async function followResync(connectionId, runId, period) {
+    var deadline = Date.now() + 130 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise(function (resolve) { window.setTimeout(resolve, 3000); });
+      var page = await api.get("/integrations/keitaro/" + connectionId + "/runs?limit=10");
+      var run = (page.items || []).find(function (item) { return item.id === runId; });
+      var visible = resyncState.runId === runId;
+      if (!run) continue;
+      if (run.status === "success") {
+        if (visible) {
+          resyncState.runId = null;
+          setResyncBusy(false);
+          resyncStatus("Готово: данные за " + period + " загружены заново, строк обработано — " +
+            number(run.rows_processed) + ".");
+        }
+        toast("Пересинхронизация Keitaro завершена");
+        await reloadCurrentPage();
+        return;
+      }
+      if (run.status === "failed") {
+        if (visible) {
+          resyncState.runId = null;
+          setResyncBusy(false);
+          resyncStatus(run.error || "Пересинхронизация завершилась с ошибкой", true);
+        } else {
+          toast(run.error || "Пересинхронизация Keitaro завершилась с ошибкой", "error");
+        }
+        return;
+      }
+      if (visible) {
+        var details = run.details || {};
+        setResyncBusy(true, "Пересинхронизация " + number(run.progress_pct) + "%");
+        resyncStatus(details.days_total
+          ? "Загружено дней: " + number(details.days_completed) + " из " +
+            number(details.days_total)
+          : "Загружаем справочники Keitaro…");
+      }
+    }
+    if (resyncState.runId === runId) {
+      resyncState.runId = null;
+      setResyncBusy(false);
+      resyncStatus("Пересинхронизация продолжается в фоне");
+    }
+  }
+
   function bindConnectionForm() {
     var form = byId("connectionForm");
     if (!form || form.dataset.liveBound) return;
     form.dataset.liveBound = "true";
+    var advancedToggle = byId("connectionAdvancedToggle");
+    if (advancedToggle) advancedToggle.addEventListener("click", function () {
+      toggleAdvanced(advancedToggle.getAttribute("aria-expanded") !== "true");
+    });
+    document.querySelectorAll("[data-resync-days]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        resyncState.days = Number(button.getAttribute("data-resync-days"));
+        paintResyncPeriods();
+      });
+    });
+    var resyncButton = byId("connectionResync");
+    if (resyncButton) resyncButton.addEventListener("click", function () {
+      startResync().catch(fail);
+    });
     form.addEventListener("submit", async function (event) {
       event.preventDefault();
       event.stopPropagation();
@@ -1860,7 +2217,7 @@
           var changes = {
             name: byId("connectionName").value.trim(),
             base_url: byId("connectionUrl").value.trim(),
-            status: byId("connectionStatus").value,
+            status: byId("connectionEnabled").checked ? "active" : "inactive",
             sync_interval_minutes: intervalMinutes(byId("connectionInterval").value)
           };
           var newKey = byId("connectionKey").value;
@@ -1878,7 +2235,7 @@
           base_url: byId("connectionUrl").value.trim(),
           api_key: byId("connectionKey").value,
           sync_interval_minutes: intervalMinutes(byId("connectionInterval").value),
-          timezone: "Asia/Qyzylorda",
+          timezone: "Europe/Moscow",
           buyer_sub_id: 1,
           lookback_days: 2
         });

@@ -217,7 +217,11 @@
     close(false);
     var rows = entries(select);
     if (!rows.length) return;
-    var searchable = rows.filter(function (row) { return !row.group; }).length >= SEARCH_FROM;
+    // Поиск обычно нужен только длинным спискам, но есть поля, где ищут не
+    // глазами, а по ID из чужой ссылки: там он включается атрибутом, сколько
+    // бы вариантов ни было.
+    var searchable = select.hasAttribute("data-search") ||
+      rows.filter(function (row) { return !row.group; }).length >= SEARCH_FROM;
 
     var panel = document.createElement("div");
     panel.className = "csel-panel";

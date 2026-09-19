@@ -30,9 +30,21 @@ WorkerSessionLocal = async_sessionmaker(
 )
 
 
-async def _run_sync(connection_id: str, run_id: str, mode: str) -> dict:
+async def _run_sync(
+    connection_id: str, run_id: str, mode: str, days: int | None = None
+) -> dict:
     engine = KeitaroSyncEngine(WorkerSessionLocal)
-    return await engine.run(connection_id, run_id, mode)
+    result = await engine.run(connection_id, run_id, mode, days)
+    if result.get("status") == "success":
+        # Капы, депозитные уведомления и отчёты должны увидеть те же свежие
+        # цифры сразу после коммита Keitaro, а не ждать следующего минутного
+        # прохода общей очереди. Ошибка Telegram не должна превращать уже
+        # успешную синхронизацию в повторную загрузку статистики.
+        try:
+            result["alerts"] = await AlertEngine(WorkerSessionLocal).run()
+        except Exception:  # noqa: BLE001 — синхронизация данных уже завершена
+            logger.exception("Immediate alerts after Keitaro sync failed")
+    return result
 
 
 async def _run_meta_sync(connection_id: str, run_id: str, mode: str) -> dict:
@@ -54,14 +66,16 @@ def sync_keitaro_connection(
     connection_id: str,
     run_id: str,
     mode: str = "incremental",
+    days: int | None = None,
 ):
     logger.info(
-        "Starting Keitaro sync connection=%s run=%s mode=%s",
+        "Starting Keitaro sync connection=%s run=%s mode=%s days=%s",
         connection_id,
         run_id,
         mode,
+        days,
     )
-    return asyncio.run(_run_sync(connection_id, run_id, mode))
+    return asyncio.run(_run_sync(connection_id, run_id, mode, days))
 
 
 @celery_app.task(
@@ -301,9 +315,32 @@ def schedule_keitaro_syncs() -> int:
 
 
 @celery_app.task
+def poll_keitaro_conversions() -> int:
+    """Журнал конверсий отдельно от общей синхронизации — ради депозитов.
+
+    Уведомление о депозите не должно ждать общего круга в четверть часа,
+    поэтому журнал забирается своей лёгкой задачей раз в минуту.
+    """
+    if not settings.keitaro_sync_enabled:
+        return 0
+    return asyncio.run(_poll_keitaro_conversions_and_alert())
+
+
+async def _poll_keitaro_conversions_and_alert() -> int:
+    count = await KeitaroSyncEngine(WorkerSessionLocal).poll_conversions()
+    if count:
+        # Депозит уже записан — уведомление отправляем этим же критичным
+        # воркером, не оставляя его ждать периодической общей проверки.
+        try:
+            await AlertEngine(WorkerSessionLocal).run()
+        except Exception:  # noqa: BLE001 — следующий минутный тик подстрахует
+            logger.exception("Immediate alerts after conversion poll failed")
+    return count
+
+
+@celery_app.task
 def schedule_meta_syncs() -> int:
     if not settings.meta_sync_enabled:
         logger.info("Scheduled Meta sync is disabled")
         return 0
     return asyncio.run(_schedule_connections("meta", sync_meta_connection))
-

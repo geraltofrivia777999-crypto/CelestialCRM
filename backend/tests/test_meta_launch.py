@@ -1,7 +1,7 @@
 """Записывающая часть Meta Ads: заливы, публикация, автоправила (ТЗ 3.3–3.6, 3.8)."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import httpx
@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
 
+from app.core.clock import business_today
 from app.core.database import SessionLocal
 from app.core.security import encrypt_secret, hash_password
 from app.main import app
@@ -57,6 +58,8 @@ SUB_ID = 5
 def _write_handler(request: httpx.Request) -> httpx.Response:
     """Graph API, отвечающий на запись. Каждый уровень — свой ID."""
     path = request.url.path
+    if request.method == "GET" and path.endswith("/" + ACCOUNT_ID):
+        return httpx.Response(200, json={"id": ACCOUNT_ID, "account_status": 1, "disable_reason": 0})
     if request.method == "POST":
         if path.endswith("/campaigns"):
             return httpx.Response(200, json={"id": CAMPAIGN_ID})
@@ -74,6 +77,19 @@ def _write_handler(request: httpx.Request) -> httpx.Response:
         if path.endswith("/advideos"):
             return httpx.Response(200, json={"id": "video-1"})
         return httpx.Response(200, json={"success": True})
+    if request.method == "GET" and request.url.params.get("ids"):
+        # Чтение созданных объектов поимённо: залив записывает их в раздел
+        # сразу, не дожидаясь синхронизации кабинета.
+        names = {
+            CAMPAIGN_ID: {"id": CAMPAIGN_ID, "name": "DE broad", "effective_status": "PAUSED",
+                          "objective": "OUTCOME_LEADS", "daily_budget": "1000"},
+            ADSET_ID: {"id": ADSET_ID, "name": "adset #1", "campaign_id": CAMPAIGN_ID,
+                       "effective_status": "PAUSED", "optimization_goal": "LINK_CLICKS"},
+            AD_ID: {"id": AD_ID, "name": "ad #1", "adset_id": ADSET_ID,
+                    "effective_status": "PAUSED"},
+        }
+        asked = [item for item in request.url.params["ids"].split(",") if item in names]
+        return httpx.Response(200, json={item: names[item] for item in asked})
     if path.endswith("/search") and request.url.params.get("type") == "adlocale":
         # Словарь локалей для правил мультиязычности: числа — ключи adlocale.
         query = request.url.params.get("q", "").lower()
@@ -273,7 +289,7 @@ def test_multi_language_rule_requires_a_numeric_locale() -> None:
 
 async def test_scheduled_budget_increase_applies_once(launch_setup) -> None:
     """Период увеличения бюджета: применяется один раз, к последнему значению."""
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     from app.services.budget_increase import apply_due_budget_increases
     from app.services.meta_launch import MetaLaunchPublisher
@@ -364,6 +380,62 @@ def test_targeting_omits_empty_placements() -> None:
     # Пустых плейсментов быть не должно: для Meta пустой список — ошибка,
     # а отсутствие поля — автоматические плейсменты.
     assert "publisher_platforms" not in targeting
+
+
+def test_placement_positions_travel_only_for_the_chosen_platforms() -> None:
+    """Места размещения уходят в Meta вместе со своими платформами.
+
+    Позиция чужой платформы — не лишнее поле, а ошибка запроса: Meta проверяет
+    `*_positions` против `publisher_platforms` и отбивает весь adset. Поэтому
+    места неотмеченных платформ отсекаются на нашей стороне.
+    """
+    template = MetaTemplate(
+        workspace_id=uuid.uuid4(),
+        name="places",
+        settings={"campaign": {}, "adset": {"auto_placements": False}},
+        geo=["DE"],
+        age_min=18,
+        age_max=65,
+        genders=[],
+        languages=[],
+        interests=[],
+        placements={
+            "publisher_platforms": ["facebook", "instagram"],
+            "facebook_positions": ["feed", "story"],
+            "instagram_positions": ["stream"],
+            # Платформы нет в списке — её места остаются на берегу.
+            "messenger_positions": ["messenger_home"],
+            # Кода нет в справочнике: опечатка не должна уехать в Meta.
+            "audience_network_positions": ["classic"],
+        },
+    )
+
+    targeting = build_targeting(template)
+
+    assert targeting["publisher_platforms"] == ["facebook", "instagram"]
+    assert targeting["facebook_positions"] == ["feed", "story"]
+    assert targeting["instagram_positions"] == ["stream"]
+    assert "messenger_positions" not in targeting
+    assert "audience_network_positions" not in targeting
+
+
+def test_placement_catalog_speaks_the_api_vocabulary() -> None:
+    """Коды групп — это значения `*_positions`, и платформа у каждого своя."""
+    from app.services.meta import PLACEMENT_KEYS, PUBLISHER_PLATFORMS, placement_catalog
+
+    groups = placement_catalog()
+    assert [group["code"] for group in groups][:2] == ["feeds", "stories"]
+    seen = set()
+    for group in groups:
+        assert group["positions"], group["code"]
+        for position in group["positions"]:
+            assert position["platform"] in PUBLISHER_PLATFORMS
+            assert position["platform"] in PLACEMENT_KEYS
+            assert position["label"]
+            # Пара «платформа + код» уникальна: интерфейс адресует места именно ею.
+            key = (position["platform"], position["code"])
+            assert key not in seen
+            seen.add(key)
 
 
 def test_tracking_link_gets_the_campaign_macro_once() -> None:
@@ -460,7 +532,7 @@ async def test_publish_creates_the_full_chain_and_stays_paused(launch_setup) -> 
         )
         # Порядок гарантирован кодом, а не временем создания: в SQLite у всех
         # четырёх записей совпадает секунда, поэтому сверяем состав.
-        assert set(kinds) == {"campaign_create", "adset_create", "creative_create", "ad_create"}
+        assert set(kinds) == {"account_check", "campaign_create", "adset_create", "creative_create", "ad_create"}
         failed = await db.scalar(
             select(func.count())
             .select_from(MetaOperation)
@@ -470,6 +542,54 @@ async def test_publish_creates_the_full_chain_and_stays_paused(launch_setup) -> 
             )
         )
         assert failed == 0
+
+
+async def test_published_objects_appear_in_the_section_without_a_sync(launch_setup) -> None:
+    """Созданные кампания, адсет и объявление сразу видны в разделе Meta Ads.
+
+    Синхронизация кабинета приходит минутами позже, и до неё залив выглядел
+    как «в Meta есть, в CRM нет»: объект не найти поиском и не выбрать в
+    автоправиле. Поэтому публикация дочитывает созданное у Meta и пишет те же
+    строки, что напишет синк.
+    """
+    publisher = MetaLaunchPublisher(SessionLocal, client_factory=_client_factory())
+    await publisher.publish(str(launch_setup["launch"]), str(launch_setup["admin"]))
+
+    async with SessionLocal() as db:
+        rows = {
+            entity.external_id: entity
+            for entity in (
+                await db.execute(
+                    select(MetaEntity).where(
+                        MetaEntity.account_id == launch_setup["account"]
+                    )
+                )
+            ).scalars()
+        }
+
+    assert set(rows) == {CAMPAIGN_ID, ADSET_ID, AD_ID}
+    assert rows[CAMPAIGN_ID].level == "campaign"
+    assert rows[CAMPAIGN_ID].name == "DE broad"
+    # Статус берётся у самой Meta, а не выдумывается по факту создания.
+    assert rows[CAMPAIGN_ID].effective_status == "PAUSED"
+    assert rows[ADSET_ID].parent_external_id == CAMPAIGN_ID
+    assert rows[AD_ID].parent_external_id == ADSET_ID
+
+
+async def test_a_second_publish_does_not_duplicate_the_recorded_objects(launch_setup) -> None:
+    """Повторная публикация обновляет строку, а не заводит вторую."""
+    publisher = MetaLaunchPublisher(SessionLocal, client_factory=_client_factory())
+    await publisher.publish(str(launch_setup["launch"]), str(launch_setup["admin"]))
+    await publisher.publish(str(launch_setup["launch"]), str(launch_setup["admin"]))
+
+    async with SessionLocal() as db:
+        count = await db.scalar(
+            select(func.count())
+            .select_from(MetaEntity)
+            .where(MetaEntity.account_id == launch_setup["account"])
+        )
+
+    assert count == 3
 
 
 async def test_republishing_resumes_instead_of_duplicating(launch_setup) -> None:
@@ -583,7 +703,7 @@ def test_a_rule_without_conditions_matches_everything() -> None:
 
 
 async def _seed_stats(ids: dict, spend: Decimal, revenue: Decimal | None) -> None:
-    today = datetime.now(UTC).date()
+    today = business_today()
     async with SessionLocal() as db:
         db.add(
             MetaEntity(
@@ -686,6 +806,54 @@ async def test_a_losing_campaign_is_paused_and_logged(launch_setup) -> None:
     second = await engine.run()
     assert second["triggered"] == 0
     assert paused["count"] == 1
+
+
+async def test_session_rule_uses_stored_token_without_waiting_for_refresh(
+    launch_setup, monkeypatch
+) -> None:
+    """Стоп через session-подключение не зависит от загрузки Ads Manager.
+
+    Живой браузерный транспорт сохраняет cookies и прокси, а уже сохранённый
+    EAAB служит резервом, если фоновое извлечение свежего токена не закончено.
+    """
+    await _seed_stats(launch_setup, Decimal("100.00"), Decimal("0.00"))
+    async with SessionLocal() as db:
+        connection = await db.get(IntegrationConnection, launch_setup["connection"])
+        connection.auth_method = "session"
+        connection.proxy_url = "http://proxy.example:8080"
+        db.add(
+            MetaRule(
+                workspace_id=launch_setup["workspace"],
+                name="Быстрый стоп через сессию",
+                account_id=launch_setup["account"],
+                entity_status="any",
+                conditions=[{"metric": "spend", "operator": "gte", "value": "50"}],
+                action="pause",
+            )
+        )
+        await db.commit()
+
+    calls = []
+
+    async def fake_open(*args, **kwargs):
+        calls.append(kwargs)
+        return {"transport": object(), "owned": False, "token": None}
+
+    seen_tokens = []
+
+    def factory(access_token: str, **kwargs) -> MetaClient:
+        seen_tokens.append(access_token)
+        kwargs.pop("transport", None)
+        return MetaClient(
+            access_token, transport=httpx.MockTransport(_write_handler), **kwargs
+        )
+
+    monkeypatch.setattr("app.services.meta_rules.open_session_access", fake_open)
+    result = await MetaRuleEngine(SessionLocal, client_factory=factory).run()
+
+    assert result == {"rules": 1, "triggered": 1, "applied": 1}
+    assert calls[0]["refresh_token"] is False
+    assert seen_tokens == ["meta-launch-token-long-enough-value"]
 
 
 async def test_low_spend_keeps_the_rule_quiet(launch_setup) -> None:
@@ -1506,7 +1674,7 @@ async def test_a_rule_can_work_at_the_ad_level(launch_setup) -> None:
                 workspace_id=launch_setup["workspace"],
                 connection_id=launch_setup["connection"],
                 account_id=launch_setup["account"],
-                record_date=datetime.now(UTC).date(),
+                record_date=business_today(),
                 campaign_external_id=CAMPAIGN_ID,
                 adset_external_id=ADSET_ID,
                 ad_external_id=AD_ID,
@@ -1816,3 +1984,248 @@ async def test_the_connection_remembers_how_the_token_was_issued(launch_setup) -
         body = checked.json()
         assert body["auth_method"] == "session"
         assert "сессии" in body["auth_method_hint"]
+
+
+def test_account_offset_counts_from_moscow() -> None:
+    """Окно человек задаёт по Москве, а Meta считает по зоне кабинета."""
+    from app.services import meta_spend
+
+    summer = date(2026, 9, 4)
+    # Аддис-Абеба тоже UTC+3 — пересобирать нечего.
+    assert meta_spend.account_offset("Africa/Addis_Ababa", summer) == 0
+    # Нью-Йорк летом UTC−4: Москва впереди на семь часов.
+    assert meta_spend.account_offset("America/New_York", summer) == 7
+    # Бангкок UTC+7 — Москва позади на четыре.
+    assert meta_spend.account_offset("Asia/Bangkok", summer) == -4
+    # Незнакомая зона не должна ронять фиксацию.
+    assert meta_spend.account_offset("Nowhere/Nothing", summer) == 0
+    assert meta_spend.account_offset(None, summer) == 0
+
+
+def test_hours_are_rebuilt_in_the_reporting_zone() -> None:
+    """Час окна берётся из того часа кабинета, который тогда и шёл."""
+    from app.services import meta_spend
+
+    def hours(values):
+        return [
+            {"hour": index, "spend": value, "impressions": 0, "clicks": 0, "link_clicks": 0}
+            for index, value in enumerate(values)
+        ]
+
+    previous = hours([1.0] * 24)
+    current = hours([float(index) for index in range(24)])
+    following = hours([100.0] * 24)
+
+    shifted = meta_spend.shift_hours(previous, current, following, 7)
+
+    # 12:00 по Москве — это 05:00 у кабинета.
+    assert shifted[12]["spend"] == 5.0
+    # Первые часы московских суток пришлись на вчерашний день кабинета.
+    assert shifted[3]["spend"] == 1.0
+    # А поздние — всё ещё на его сегодняшний.
+    assert shifted[23]["spend"] == 16.0
+    # Без сдвига разбивка возвращается как есть, без лишней работы.
+    assert meta_spend.shift_hours(previous, current, following, 0) is current
+
+
+def test_missing_neighbour_days_leave_zeros_not_wrong_money() -> None:
+    """Пустые соседние сутки дают ноль на краю, а не чужие числа."""
+    from app.services import meta_spend
+
+    current = [
+        {"hour": index, "spend": 10.0, "impressions": 0, "clicks": 0, "link_clicks": 0}
+        for index in range(24)
+    ]
+
+    shifted = meta_spend.shift_hours([], current, [], 7)
+
+    assert shifted[0]["spend"] == 0.0
+    assert shifted[6]["spend"] == 0.0
+    assert shifted[7]["spend"] == 10.0
+
+
+@pytest.mark.parametrize("status,reason", [(2, 1), (3, 0), (7, 0), (1, 1), (None, 0)])
+async def test_preflight_stops_unavailable_account_before_any_write(launch_setup, status, reason):
+    writes = []
+
+    def handler(request):
+        if request.method == "POST":
+            writes.append(request.url.path)
+        if request.method == "GET" and request.url.path.endswith("/" + ACCOUNT_ID):
+            return httpx.Response(200, json={"account_status": status, "disable_reason": reason})
+        return _write_handler(request)
+
+    publisher = MetaLaunchPublisher(SessionLocal, _client_factory(handler))
+    with pytest.raises(MetaError):
+        await publisher.publish(str(launch_setup["launch"]))
+    assert writes == []
+    async with SessionLocal() as db:
+        launch = await db.get(MetaLaunch, launch_setup["launch"])
+        assert launch.status == LaunchStatus.failed
+        assert launch.campaign_external_id is None
+        operation = await db.scalar(select(MetaOperation).where(
+            MetaOperation.launch_id == launch.id, MetaOperation.kind == "account_check",
+        ))
+        assert operation.status == "failed"
+
+
+async def test_policy_error_keeps_diagnostics_and_resume_reuses_campaign(launch_setup):
+    blocked = True
+    campaigns = 0
+    attempts = 0
+
+    def handler(request):
+        nonlocal campaigns, attempts
+        if request.method == "POST" and request.url.path.endswith("/campaigns"):
+            campaigns += 1
+        if request.method == "POST" and request.url.path.endswith("/adsets"):
+            attempts += 1
+            if blocked:
+                return httpx.Response(400, json={"error": {
+                    "code": 10, "error_subcode": 123456,
+                    "error_user_title": "Business restricted", "fbtrace_id": "test-trace-123",
+                    "error_user_msg": "Этот бизнес-аккаунт не соответствует правилам.",
+                    "access_token": "must-not-be-stored", "error_data": {"secret": "private"},
+                }})
+        return _write_handler(request)
+
+    publisher = MetaLaunchPublisher(SessionLocal, _client_factory(handler))
+    with pytest.raises(MetaError):
+        await publisher.publish(str(launch_setup["launch"]))
+    assert attempts == 1  # Policy refusal must not be retried automatically.
+    async with SessionLocal() as db:
+        operation = await db.scalar(select(MetaOperation).where(
+            MetaOperation.launch_id == launch_setup["launch"], MetaOperation.kind == "adset_create",
+        ))
+        assert operation.response["error"]["error_subcode"] == 123456
+        assert operation.response["error"]["fbtrace_id"] == "test-trace-123"
+        assert "access_token" not in operation.response["error"]
+        assert "error_data" not in operation.response["error"]
+        assert operation.response["context"]["connection_name"] == "Meta launch BM"
+    with _admin_client() as client:
+        result = client.get(f'/api/v1/meta/operations?launch_id={launch_setup["launch"]}')
+        assert result.status_code == 200
+        failed = next(row for row in result.json()["items"] if row["status"] == "failed")
+        assert failed["diagnostics"]["error_subcode"] == 123456
+        assert failed["connection_name"] == "Meta launch BM"
+    blocked = False
+    result = await publisher.publish(str(launch_setup["launch"]))
+    assert result["status"] == "paused"
+    assert campaigns == 1
+
+
+async def test_rule_metrics_cover_spend_total_and_budget_percents(launch_setup) -> None:
+    """«Потрачено за все время» и проценты от бюджетов — не 422 и не пустота.
+
+    Форма предлагает эти метрики, а движок раньше их не знал: схема отбивала
+    сохранение, а агрегатов lifetime/today в расчёте не было вовсе.
+    """
+    from datetime import timedelta
+
+    today = business_today()
+    yesterday = today - timedelta(days=1)
+    async with SessionLocal() as db:
+        db.add(MetaEntity(
+            workspace_id=launch_setup["workspace"],
+            connection_id=launch_setup["connection"],
+            account_id=launch_setup["account"],
+            level="campaign",
+            external_id=CAMPAIGN_ID,
+            name="DE test campaign",
+            effective_status="ACTIVE",
+        ))
+        db.add(MetaEntity(
+            workspace_id=launch_setup["workspace"],
+            connection_id=launch_setup["connection"],
+            account_id=launch_setup["account"],
+            level="adset",
+            external_id=ADSET_ID,
+            parent_external_id=CAMPAIGN_ID,
+            name="DE test adset",
+            daily_budget=Decimal("50.00"),
+        ))
+        # Кампания: расход сегодня 60 и вчера 60 — за всё время 120.
+        db.add(MetaStatDaily(
+            workspace_id=launch_setup["workspace"],
+            connection_id=launch_setup["connection"],
+            account_id=launch_setup["account"],
+            record_date=yesterday,
+            campaign_external_id=CAMPAIGN_ID,
+            dimension_key=f"rule-lt-{uuid.uuid4().hex}",
+            spend=Decimal("60.00"),
+        ))
+        # Адсет: сегодня 60 при дневном бюджете 50 — 120 % бюджета;
+        # за всё время 60 при бюджете на весь срок 200 — 30 %.
+        db.add(MetaStatDaily(
+            workspace_id=launch_setup["workspace"],
+            connection_id=launch_setup["connection"],
+            account_id=launch_setup["account"],
+            record_date=today,
+            campaign_external_id=CAMPAIGN_ID,
+            adset_external_id=ADSET_ID,
+            dimension_key=f"rule-la-{uuid.uuid4().hex}",
+            spend=Decimal("60.00"),
+        ))
+        adset = await db.scalar(
+            select(MetaEntity).where(
+                MetaEntity.workspace_id == launch_setup["workspace"],
+                MetaEntity.level == "adset",
+                MetaEntity.external_id == ADSET_ID,
+            )
+        )
+        adset.lifetime_budget = Decimal("200.00")
+        db.add(MetaRule(
+            workspace_id=launch_setup["workspace"],
+            name="Всё время",
+            account_id=launch_setup["account"],
+            conditions=[{"metric": "spend_total", "operator": "gte", "value": "100"}],
+            entity_status="any",
+            action="notify",
+        ))
+        db.add(MetaRule(
+            workspace_id=launch_setup["workspace"],
+            name="Дневной процент",
+            account_id=launch_setup["account"],
+            level="adset",
+            conditions=[{"metric": "spend_day_pct", "operator": "gte", "value": "100"}],
+            entity_status="any",
+            action="notify",
+        ))
+        db.add(MetaRule(
+            workspace_id=launch_setup["workspace"],
+            name="Процент за всё время",
+            account_id=launch_setup["account"],
+            level="adset",
+            conditions=[{"metric": "spend_total_pct", "operator": "gte", "value": "50"}],
+            entity_status="any",
+            action="notify",
+        ))
+        await db.commit()
+
+    engine = MetaRuleEngine(SessionLocal, client_factory=_client_factory())
+    result = await engine.run()
+    # Сработали «Всё время» и «Дневной процент»; 30 % не дотянули до 50 %.
+    assert result["triggered"] == 2
+
+
+async def test_rule_form_accepts_the_new_spend_metrics() -> None:
+    """Схема условий пропускает метрики, которые предлагает форма правил."""
+    with _admin_client() as client:
+        response = client.post(
+            "/api/v1/meta/rules",
+            json={
+                "name": "Стоп по расходу за всё время",
+                "action": "pause",
+                "conditions": [
+                    {"metric": "spend_total", "operator": "lt", "value": "0.5"},
+                    {"metric": "spend_day_pct", "operator": "gte", "value": "80"},
+                    {"metric": "spend_total_pct", "operator": "gte", "value": "90"},
+                ],
+            },
+        )
+        assert response.status_code == 201, response.text
+        rule_id = response.json()["id"]
+    async with SessionLocal() as db:
+        rule = await db.get(MetaRule, uuid.UUID(rule_id))
+        await db.delete(rule)
+        await db.commit()

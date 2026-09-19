@@ -11,8 +11,25 @@
     items: [], loading: false, form: null, runs: null, error: "",
     // Реестр «тег → баер»: без него депозит некуда адресовать, и раскладка
     // раньше писала его в книгу каждому баеру оффера.
-    tags: null, pending: []
+    tags: null, pending: [],
+    // Глубина ручного синка в днях, по интеграции. Семь дней покрывают
+    // обычную задержку партнёрки, но после простоя или правки тегов нужно
+    // перетянуть больше — поэтому период выбирается, а не зашит.
+    syncDays: {},
+    // Платформы, под которые у сервиса есть шаблон коннектора. Список приходит
+    // с бэкенда: соответствие «платформа → шаблон» живёт в его настройках.
+    platforms: []
   };
+
+  /* Подтверждение в стиле CRM, а не окном браузера: оно рисуется у верхней
+     кромки и подписано адресом сервера — на фоне интерфейса это выглядит как
+     сообщение постороннего сайта. Контракт тот же, ответ приходит промисом. */
+  function askConfirm(options) {
+    if (window.CelestialShell && window.CelestialShell.confirm) {
+      return window.CelestialShell.confirm(options);
+    }
+    return Promise.resolve(window.confirm(options.message || options.title));
+  }
 
   function byId(id) { return document.getElementById(id); }
 
@@ -133,17 +150,41 @@
       '<div class="pi-pills">' + chips + "</div></div>" +
       '<div class="pi-actions">' +
       '<button class="settings-btn settings-btn--primary" type="button" data-pi-sync="' +
-      escapeHtml(item.id) + '">' + SYNC_ICON + "<span>Синхронизировать за 7 дней</span></button>" +
-
+      escapeHtml(item.id) + '">' + SYNC_ICON + "<span>Синхронизировать за " +
+      syncDays(item.id) + " " + dayWord(syncDays(item.id)) + "</span></button>" +
+      '<select class="settings-btn pi-period" data-pi-days="' + escapeHtml(item.id) +
+      '" aria-label="Период синхронизации">' +
+      SYNC_PERIODS.map(function (days) {
+        return '<option value="' + days + '"' +
+          (days === syncDays(item.id) ? " selected" : "") + ">" +
+          days + " " + dayWord(days) + "</option>";
+      }).join("") + "</select>" +
       '<button type="button" class="settings-btn" data-pi-runs="' + escapeHtml(item.id) +
       '">История синков</button></div></article>';
+  }
+
+  var SYNC_PERIODS = [7, 14, 30];
+
+  function syncDays(id) {
+    var picked = Number(state.syncDays[id]);
+    return SYNC_PERIODS.indexOf(picked) >= 0 ? picked : 7;
+  }
+
+  function dayWord(days) {
+    var tail = days % 100;
+    if (tail < 11 || tail > 14) {
+      tail = days % 10;
+      if (tail === 1) return "день";
+      if (tail >= 2 && tail <= 4) return "дня";
+    }
+    return "дней";
   }
 
   function formatMoment(value) {
     if (!value) return "—";
     var parsed = new Date(value);
     return isNaN(parsed.getTime()) ? String(value)
-      : parsed.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit",
+      : window.CelestialTime.format(parsed, { day: "2-digit", month: "2-digit",
         hour: "2-digit", minute: "2-digit" });
   }
 
@@ -175,6 +216,16 @@
         : "") + "</label>";
   }
 
+  function selectInput(name, value, options) {
+    return '<select class="form-input" data-pi-form="' + name + '">' +
+      '<option value="">Выберите платформу</option>' +
+      options.map(function (option) {
+        return '<option value="' + escapeHtml(option.value) + '"' +
+          (option.value === value ? " selected" : "") + ">" +
+          escapeHtml(option.label) + "</option>";
+      }).join("") + "</select>";
+  }
+
   function textInput(name, value, placeholder, type) {
     return '<input class="form-input" data-pi-form="' + name + '" type="' + (type || "text") +
       '" placeholder="' + escapeHtml(placeholder || "") + '" value="' + escapeHtml(value || "") +
@@ -189,10 +240,11 @@
       '<div class="modal-card" role="dialog" aria-modal="true">' +
       modalHead(f.id ? "Изменить интеграцию" : "Новая интеграция с ПП") +
       '<div style="padding:22px 24px;display:grid;gap:17px">' +
-      field("Партнёрка", textInput("partner_name", f.partner_name, "Affise (famecpa)")) +
-      field("Адрес сервиса", textInput("base_url", f.base_url, "http://partner-service:8000")) +
+      field("Партнёрка", textInput("partner_name", f.partner_name, "Jugabet CO")) +
+      field("Платформа", selectInput("platform", f.platform, state.platforms)) +
+      field("API адрес", textInput("base_url", f.base_url, "https://api.jugabet.com")) +
       field(
-        "API-ключ" + (f.id ? " (пусто — не менять)" : ""),
+        "API ключ" + (f.id ? " (пусто — не менять)" : ""),
         textInput("api_key", "", "", "password")
       ) +
       "</div>" +
@@ -328,6 +380,10 @@
     render();
     try {
       state.items = await api.get("/partner-integrations");
+      if (!state.platforms.length) {
+        // Справочник запрашиваем один раз: он не меняется между открытиями.
+        state.platforms = await api.get("/partner-integrations/platforms");
+      }
       state.loading = false;
     } catch (error) {
       state.loading = false;
@@ -362,9 +418,16 @@
     var del = closest("[data-pi-delete]");
     if (del) {
       var id = del.getAttribute("data-pi-delete");
-      if (!window.confirm("Удалить интеграцию? Привязки офферов удалятся вместе с ней.")) return;
-      api.delete("/partner-integrations/" + id).then(load).catch(function (error) {
-        window.alert(error && error.message || "Не удалось удалить");
+      askConfirm({
+        title: "Удалить интеграцию?",
+        message: "Привязки офферов к этой партнёрке удалятся вместе с ней.",
+        confirmLabel: "Удалить",
+        danger: true
+      }).then(function (confirmed) {
+        if (!confirmed) return;
+        return api.delete("/partner-integrations/" + id).then(load);
+      }).catch(function (error) {
+        notify(error && error.message || "Не удалось удалить");
       });
       return;
     }
@@ -372,9 +435,10 @@
     if (sync) {
       var syncId = sync.getAttribute("data-pi-sync");
       sync.disabled = true;
-      var today = new Date();
-      var iso = function (d) { return d.toISOString().slice(0, 10); };
-      var from = new Date(today.getTime() - 6 * 86400000);
+      var today = window.CelestialTime.today();
+      var iso = window.CelestialTime.dateISO;
+      // Период включает сегодняшний день, поэтому шагов назад на один меньше.
+      var from = new Date(today.getTime() - (syncDays(syncId) - 1) * 86400000);
       api.post("/partner-integrations/" + syncId + "/sync", {
         date_from: iso(from), date_to: iso(today)
       }).then(function (result) {
@@ -406,10 +470,13 @@
       return render();
     }
     if (closest("#partnerIntegrationCreate") || closest("[data-pi-create]")) {
-      // Название, ID на сервисе и расписание в форме не спрашиваем: первое —
-      // подпись партнёрки, второе CRM выясняет у самого сервиса, третье имеет
-      // разумное значение по умолчанию.
-      state.form = { partner_name: "", base_url: "", api_key: "", is_enabled: true };
+      // Ни названия, ни ID интеграции на сервисе форма не спрашивает: первое —
+      // подпись партнёрки, второе выдаёт сам сервис, когда бэкенд заводит там
+      // интеграцию по шаблону платформы. Адреса сервиса в форме тоже нет — он
+      // и ключ к нему живут в .env бэкенда.
+      state.form = {
+        partner_name: "", platform: "", base_url: "", api_key: "", is_enabled: true
+      };
       return render();
     }
     if (closest("[data-pi-close]")) {
@@ -422,6 +489,11 @@
   document.addEventListener("change", function (event) {
     var field = event.target.closest ? event.target.closest("[data-pi-form]") : null;
     if (field && state.form) state.form[field.getAttribute("data-pi-form")] = field.value;
+    var period = event.target.closest ? event.target.closest("[data-pi-days]") : null;
+    if (period) {
+      state.syncDays[period.getAttribute("data-pi-days")] = Number(period.value);
+      render();
+    }
   });
 
   function formValue(name) {
@@ -434,6 +506,7 @@
     if (!f) return;
     var payload = {
       partner_name: formValue("partner_name"),
+      platform: formValue("platform"),
       base_url: formValue("base_url"),
       api_key: formValue("api_key")
     };

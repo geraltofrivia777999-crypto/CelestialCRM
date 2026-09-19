@@ -14,6 +14,19 @@
   ::-webkit-scrollbar{width:9px;height:9px}
   ::-webkit-scrollbar-thumb{background:#D8D0D0;border-radius:8px}
   ::-webkit-scrollbar-track{background:#F7F4F4}
+  .board-export{position:relative;flex-shrink:0}
+  .board-export__btn{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 14px;
+    border:1px solid #E8E2E2;border-radius:10px;background:#fff;color:#3A3030;
+    font:700 12px Inter,sans-serif;cursor:pointer}
+  .board-export__btn:hover{border-color:#D9CFCF;background:#FBF9F9}
+  .board-export__menu{position:absolute;right:0;top:calc(100% + 6px);z-index:20;min-width:150px;
+    background:#fff;border:1px solid #EBE6E6;border-radius:12px;padding:5px;
+    box-shadow:0 18px 40px -18px rgba(28,18,18,.4)}
+  .board-export__menu[hidden]{display:none}
+  .board-export__menu button{display:block;width:100%;text-align:left;height:34px;padding:0 11px;
+    border:0;border-radius:9px;background:none;font:700 12px Inter,sans-serif;color:#3A3030;
+    cursor:pointer}
+  .board-export__menu button:hover{background:#F7F4F4;color:#B91414}
 </style>
 </head>
 <body>
@@ -104,19 +117,19 @@
         <h1 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:32px;font-weight:700;letter-spacing:-.6px">Медиаборд</h1>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
-        <button id="mediaEditBtn" type="button" style="height:44px;padding:0 18px;border:0;border-radius:12px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;font-size:15px;font-weight:600;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Изменить данные</button>
+        <button id="mediaEditBtn" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Изменить данные</button>
       </div>
     </div>
 
     <!-- FILTERS (2.2) -->
     <div id="mediaFilters" style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:16px">
       <div class="cmf" id="mediaFilterBuyer" data-label="Баер" data-placeholder="Все"></div>
-      <label style="display:flex;align-items:center;gap:8px;min-height:38px;background:#fff;border:1px solid #EBE6E6;border-radius:11px;padding:5px 13px">
-        <span style="font-size:12.5px;color:#6A6161;font-weight:500">С:</span>
-        <input id="mediaFilterDateFrom" type="date" style="border:none;background:transparent;font:700 12.5px Inter,sans-serif;color:#070505;outline:none">
-        <span style="font-size:12.5px;color:#6A6161;font-weight:500">по:</span>
-        <input id="mediaFilterDateTo" type="date" style="border:none;background:transparent;font:700 12.5px Inter,sans-serif;color:#070505;outline:none">
-      </label>
+      <!-- Период одной плашкой: пресеты и два месяца в одной панели. Сами
+           даты остаются в скрытых полях — их читает доска, сохранение
+           фильтров и выгрузка. -->
+      <div class="cdr" data-date-range data-from="mediaFilterDateFrom" data-to="mediaFilterDateTo"></div>
+      <input id="mediaFilterDateFrom" type="date" data-native-date hidden>
+      <input id="mediaFilterDateTo" type="date" data-native-date hidden>
       <div class="cmf" id="mediaFilterGeo" data-label="GEO" data-placeholder="Все"></div>
       <div class="cmf" id="mediaFilterPartner" data-label="Партнёрка" data-placeholder="Все"></div>
       <div class="cmf" id="mediaFilterOffer" data-label="Оффер" data-placeholder="Все"></div>
@@ -126,6 +139,17 @@
     <div style="display:flex;align-items:center;gap:14px;background:#fff;border:1px solid #EBE6E6;border-radius:14px;padding:14px 18px;margin-bottom:16px">
       <span style="font-size:12px;font-weight:700;color:#9B9292;text-transform:uppercase;letter-spacing:.6px">Структура</span>
       <div id="mediaStructureBar" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"></div>
+      <div style="flex:1"></div>
+      <div class="board-export">
+        <button id="mediaExport" type="button" class="board-export__btn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"/></svg>Экспорт</button>
+        <div class="board-export__menu" id="mediaExportMenu" hidden>
+          <button type="button" data-export="csv">CSV</button>
+          <button type="button" data-export="xlsx">Excel</button>
+        </div>
+      </div>
     </div>
 
     <!-- TABLE -->
@@ -138,7 +162,7 @@
               <th colspan="1" style="position:sticky;top:0;z-index:4;background:#FDF4EA;text-align:center;padding:11px;border-bottom:1px solid #F0DECA;border-left:2px solid #D8AE7C;border-right:1px solid #E8E2E2;font-size:11px;font-weight:800;color:#A66A32;text-transform:uppercase;letter-spacing:.7px">Агенты и платёжки</th>
               <th colspan="3" style="position:sticky;top:0;z-index:4;background:#F4F9FA;text-align:center;padding:11px;border-bottom:1px solid #DEE8ED;border-left:2px solid #AFC5D0;border-right:1px solid #E8E2E2;font-size:11px;font-weight:800;color:#5F7582;text-transform:uppercase;letter-spacing:.7px">Воронка</th>
               <th colspan="2" style="position:sticky;top:0;z-index:4;background:#FCEEEE;text-align:center;padding:11px;border-bottom:1px solid #F2D9DF;border-left:2px solid #DF9FB0;border-right:1px solid #E8E2E2;font-size:11px;font-weight:800;color:#C3536E;text-transform:uppercase;letter-spacing:.7px">Затраты</th>
-              <th colspan="4" style="position:sticky;top:0;z-index:4;background:#E6FAF1;text-align:center;padding:11px;border-bottom:1px solid #D1EDDF;border-left:2px solid #84CBAA;font-size:11px;font-weight:800;color:#25835E;text-transform:uppercase;letter-spacing:.7px">Результат</th>
+              <th colspan="4" style="position:sticky;top:0;z-index:4;background:#E7EFE8;text-align:center;padding:11px;border-bottom:1px solid #D6E2D8;border-left:2px solid #A8C0AE;font-size:11px;font-weight:800;color:#25835E;text-transform:uppercase;letter-spacing:.7px">Результат</th>
             </tr>
             <tr>
               <th style="position:sticky;top:41px;z-index:4;background:#FFF9F2;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;border-left:2px solid #D8AE7C;border-right:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#A66A32;font-family:Inter">Итого</th>
@@ -147,10 +171,10 @@
               <th style="position:sticky;top:41px;z-index:4;background:#F8FAFC;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;border-right:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#5F7582;font-family:Inter">FTD</th>
               <th style="position:sticky;top:41px;z-index:4;background:#FFF6F7;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;border-left:2px solid #DF9FB0;font-size:11px;font-weight:700;color:#C3536E;font-family:Inter">RENT</th>
               <th style="position:sticky;top:41px;z-index:4;background:#FFF6F7;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;border-right:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#C3536E;font-family:Inter">SPEND</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#F1FCF7;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;border-left:2px solid #84CBAA;font-size:11px;font-weight:700;color:#25835E;font-family:Inter">REVENUE</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#F1FCF7;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#25835E;font-family:Inter">PROFIT</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#F1FCF7;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#25835E;font-family:Inter">ROI</th>
-              <th style="position:sticky;top:41px;z-index:4;background:#F1FCF7;text-align:right;padding:9px 14px 9px 12px;border-bottom:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#25835E;font-family:Inter">CPD</th>
+              <th style="position:sticky;top:41px;z-index:4;background:#F4F8F4;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;border-left:2px solid #A8C0AE;font-size:11px;font-weight:700;color:#25835E;font-family:Inter">REVENUE</th>
+              <th style="position:sticky;top:41px;z-index:4;background:#F4F8F4;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#25835E;font-family:Inter">PROFIT</th>
+              <th style="position:sticky;top:41px;z-index:4;background:#F4F8F4;text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#25835E;font-family:Inter">ROI</th>
+              <th style="position:sticky;top:41px;z-index:4;background:#F4F8F4;text-align:right;padding:9px 14px 9px 12px;border-bottom:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#25835E;font-family:Inter">CPD</th>
             </tr>
           </thead>
 <tbody id="mediaTableBody">
@@ -160,7 +184,6 @@
     </div>
 
     <div style="margin-top:14px">
-      <span style="font-size:12.5px;color:#857D7D;font-weight:600">Записи с ключом Дата · Баер · Оффер обновляются, а не дублируются</span>
     </div>
   </main>
 </div>

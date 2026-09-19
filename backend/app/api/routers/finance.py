@@ -7,14 +7,21 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import business_today
 from app.core.database import get_db
-from app.core.deps import accessible_user_ids, has_permission, require_permission
+from app.core.deps import (
+    accessible_user_ids,
+    has_full_access,
+    has_permission,
+    require_permission,
+)
 from app.models import (
     FinanceBook,
     FinanceBookDay,
     FinanceBookOffer,
     FinanceOfferTag,
     FinanceTagDay,
+    Offer,
     Partner,
     PartnerIntegration,
     PartnerSyncRun,
@@ -23,6 +30,7 @@ from app.models import (
     UserParent,
 )
 from app.schemas import FinanceBookIn
+from app.services import finance_spend
 from app.services.audit import audit
 from app.services.country_tiers import tier_for, tier_map
 from app.services.finance_books import (
@@ -34,6 +42,7 @@ from app.services.finance_books import (
     q6,
     totals,
 )
+from app.services.finance_books import recalculate_carry_chain as _recalculate_carry_chain
 from app.services.finance_pull import push_book_changes_to_offers
 from app.services.formulas import q
 from app.services.geo import countries, normalize_geo
@@ -59,6 +68,30 @@ async def _finance_user_ids(db: AsyncSession, current: User) -> set[uuid.UUID]:
             )
         )
     return await accessible_user_ids(db, current)
+
+
+async def _sees_team_summaries(db: AsyncSession, current: User) -> bool:
+    """Сводки складывают книги нескольких человек — значит, не для всех ролей.
+
+    «Общая», «Tier1», «Tier2/3» и сводка по команде показывают чужие цифры,
+    поэтому роль с областью «Только свои данные» их не получает: ей остаются
+    собственные книги. Полный доступ по правам остаётся полным.
+    """
+    scope = getattr(current.role, "data_scope", None) or "team"
+    if scope != "own":
+        return True
+    return await has_full_access(db, current)
+
+
+async def _sees_workspace_summaries(db: AsyncSession, current: User) -> bool:
+    """Сводки «Общая», «Tier1», «Tier2/3» — по переключателю в роли.
+
+    Сводки по командам остаются на области доступа (`_sees_team_summaries`):
+    это разные вопросы — видеть свою команду и видеть общий срез.
+    """
+    if getattr(current.role, "show_finance_summaries", True):
+        return True
+    return await has_full_access(db, current)
 
 
 async def _visible_buyer(db: AsyncSession, current: User, buyer_id: uuid.UUID) -> User:
@@ -210,51 +243,6 @@ async def _carry_into_month(
     return q(carry)
 
 
-async def _recalculate_carry_chain(
-    db: AsyncSession,
-    workspace_id: uuid.UUID,
-    buyer_id: uuid.UUID,
-    tier: str,
-) -> None:
-    """Пересчитать сохранённый входящий долг всех месяцев этой таблицы.
-
-    Цепочка своя у каждого тира: минус Tier2/3 не гасится прибылью Tier1,
-    потому что и зарплата по ним считается отдельно.
-
-    Строки блокируются до конца транзакции, чтобы параллельные правки двух
-    месяцев не записали разные версии одной цепочки. SQLite в тестах блокировку
-    игнорирует, PostgreSQL на VPS применяет её.
-    """
-    books = list(
-        (
-            await db.execute(
-                select(FinanceBook)
-                .where(
-                    FinanceBook.workspace_id == workspace_id,
-                    FinanceBook.buyer_id == buyer_id,
-                    FinanceBook.tier == tier,
-                )
-                .order_by(FinanceBook.year, FinanceBook.month)
-                .with_for_update()
-            )
-        ).scalars()
-    )
-    if not books:
-        return
-
-    # Первый уже существовавший ручной минус остаётся начальным остатком:
-    # так обновление не потеряет данные, которые финансист ввёл до автоматики.
-    loaded_books = await load_many(db, books)
-    carry = max(q(books[0].prev_minus or ZERO), ZERO)
-    for book in books:
-        book.prev_minus = carry
-        book_payload = loaded_books[book.id]
-        book_payload["prev_minus"] = carry
-        month_totals = totals(
-            book_payload, calendar.monthrange(book.year, book.month)[1]
-        )
-        carry = month_totals["total"]["next_minus"]
-
 
 def _period(year: int, month: int) -> int:
     if not 1 <= month <= 12 or not 2000 <= year <= 2100:
@@ -311,17 +299,21 @@ async def scopes(
             .order_by(Partner.name)
         )
     )
+    summaries_allowed = await _sees_team_summaries(db, current)
+    workspace_summaries = await _sees_workspace_summaries(db, current)
     by_id = {user.id: user for user in users}
     links = await _visible_parent_links(db, set(by_id))
     parent_ids = {parent_id for _, parent_id in links}
-    teams = [
+    # Сводка по команде — только у названной команды. Безымянная показывалась
+    # под именем тимлида и выглядела как ещё один баер в разделе «Команды».
+    teams = [] if not summaries_allowed else [
         {
             "id": str(user.id),
-            "name": user.team_name or user.name or user.login,
+            "name": user.team_name.strip(),
             "lead_name": user.name or user.login,
         }
         for user in users
-        if user.id in parent_ids
+        if user.id in parent_ids and (user.team_name or "").strip()
     ]
     return {
         # Страны для поля «Гео» в книге. Отдаём здесь, а не из справочника
@@ -333,7 +325,7 @@ async def scopes(
             {"scope": "all", "name": "Общая"},
             {"scope": "tier1", "name": "Tier1"},
             {"scope": "tier23", "name": "Tier2/3"},
-        ],
+        ] if workspace_summaries else [],
         "teams": teams,
         "buyers": [
             {"id": str(user.id), "name": user.name or user.login} for user in users
@@ -399,7 +391,9 @@ def _buyer_rows(
     for user in users:
         books = by_buyer.get(user.id) or []
         offers = sum(book["offer_count"] for book in books)
-        if only_with_offers and not offers:
+        if only_with_offers and not offers and not any(
+            book["total"]["spend_buyer"] or book["total"]["costs"] for book in books
+        ):
             continue
         if not books and only_with_offers:
             continue
@@ -443,6 +437,25 @@ def _salary_tier(tiers: set[str | None]) -> str:
     return "unassigned"
 
 
+# Роль сотрудника — свободный текст: рабочие пространства переименовывают её
+# как удобно, и «СМО» кириллицей встречается чаще латинского CMO. Матчинг по
+# одному латинскому написанию отправлял такого человека в «Другие роли», а
+# карточка «ЗП СМО» оставалась с нулём.
+CATEGORY_KEYWORDS = (
+    ("cmo", ("cmo", "смо", "chief marketing")),
+    ("team_leads", ("team lead", "teamlead", "тимлид", "тим лид", "тим-лид")),
+    ("buyers", ("buyer", "баер", "байер")),
+)
+
+
+def _role_category(role_name: str) -> str | None:
+    role = (role_name or "").lower()
+    for category, keywords in CATEGORY_KEYWORDS:
+        if any(keyword in role for keyword in keywords):
+            return category
+    return None
+
+
 CATEGORY_LABELS = {
     "buyers": "Баеры",
     "team_leads": "Тимлиды",
@@ -482,16 +495,16 @@ def _salary_summary(
         if user_id not in allowed_ids or user_id not in users:
             continue
         user = users[user_id]
-        role = user.role.name.lower()
-        if "cmo" in role:
+        known = _role_category(user.role.name)
+        if known == "cmo":
             category, tier = "cmo", "all"
-        elif "team lead" in role or children.get(user_id):
+        elif known == "team_leads" or children.get(user_id):
             category = "team_leads"
             team_tiers = set()
             for member_id in _branch_ids(user_id, children):
                 team_tiers.update(tiers.get(member_id, set()))
             tier = _salary_tier(team_tiers)
-        elif "buyer" in role:
+        elif known == "buyers":
             category, tier = "buyers", _salary_tier(tiers.get(user_id, set()))
         else:
             category, tier = "other", "all"
@@ -545,6 +558,14 @@ async def summary(
     current: User = Depends(require_permission("finance.view")),
 ) -> dict:
     days_in_month = _period(year, month)
+    if scope.startswith("team:"):
+        allowed = await _sees_team_summaries(db, current)
+        detail = "Сводки по командам доступны ролям с доступом к данным команды"
+    else:
+        allowed = await _sees_workspace_summaries(db, current)
+        detail = "Сводки «Общая», «Tier1» и «Tier2/3» закрыты для вашей роли"
+    if not allowed:
+        raise HTTPException(status_code=403, detail=detail)
     visible_users = await _visible_users(db, current)
     users_by_id = {user.id: user for user in visible_users}
     visible_ids = set(users_by_id)
@@ -569,6 +590,9 @@ async def summary(
     elif scope != "all":
         raise HTTPException(status_code=422, detail="Неизвестная сводка")
 
+    unassigned_spend = await finance_spend.refresh_period(
+        db, current.workspace_id, selected_ids, year, month
+    )
     book_query = select(FinanceBook).where(
         FinanceBook.workspace_id == current.workspace_id,
         FinanceBook.buyer_id.in_(selected_ids),
@@ -616,10 +640,12 @@ async def summary(
     elif team_id is not None:
         lead = users_by_id[team_id]
         title = f'Сводка по «{lead.team_name or lead.name or lead.login}»'
+    await db.commit()
     return {
         "year": year,
         "month": month,
         "scope": scope,
+        "unassigned_spend": unassigned_spend,
         "title": title,
         "cards": cards,
         "tiers": tier_rows,
@@ -648,6 +674,9 @@ async def get_book(
     if tier not in BOOK_TIERS:
         raise HTTPException(status_code=422, detail="Неизвестный тир")
     buyer = await _visible_buyer(db, current, buyer_id)
+    unassigned_spend = await finance_spend.refresh_period(
+        db, current.workspace_id, {buyer_id}, year, month
+    )
     book = await db.scalar(
         select(FinanceBook).where(
             FinanceBook.workspace_id == current.workspace_id,
@@ -671,9 +700,13 @@ async def get_book(
             previous_payload = await load(db, previous)
             book_payload["offers"] = _carried_offers(previous_payload)
             book_payload["eur_usd_rate"] = previous_payload["eur_usd_rate"]
-    plan = await plan_for_book(db, current.workspace_id, buyer, year, month)
+    # Тир книги решает, какая база «своя»: у Tier1 и Tier2/3 бывают разные
+    # проценты, и шкала книги должна показывать её собственный.
+    plan = await plan_for_book(db, current.workspace_id, buyer, year, month, tier)
     tiers = await tier_map(db, current.workspace_id)
+    await db.commit()
     return {
+        "unassigned_spend": unassigned_spend,
         **_serialize(book_payload, buyer, year, month, plan, tiers),
         "tier": tier,
     }
@@ -709,7 +742,7 @@ async def sync_partners_for_book(
     date_from = date(year, month, 1)
     last_day = calendar.monthrange(year, month)[1]
     date_to = date(year, month, last_day)
-    today = date.today()
+    today = business_today()
     if date_to > today:
         date_to = today
     if date_from > today:
@@ -813,6 +846,9 @@ async def buyer_overview(
     """
     days_in_month = _period(year, month)
     buyer = await _visible_buyer(db, current, buyer_id)
+    unassigned_spend = await finance_spend.refresh_period(
+        db, current.workspace_id, {buyer_id}, year, month
+    )
     books = list(
         (
             await db.execute(
@@ -830,7 +866,13 @@ async def buyer_overview(
     loaded = await load_many(db, books)
     calculated = []
     for book in books:
-        result = totals(loaded[book.id], days_in_month)
+        # Общая сводка должна повторять расчёт каждой открытой таблицы.
+        # Без плана totals() молча применяет старую лестницу зарплаты, поэтому
+        # «ЗП баера» расходилась с суммой Tier1 и Tier2/3 при новых правилах.
+        plan = await plan_for_book(
+            db, current.workspace_id, buyer, year, month, book.tier
+        )
+        result = totals(loaded[book.id], days_in_month, plan)
         result["tier"] = book.tier
         result["offer_count"] = len(loaded[book.id]["offers"])
         calculated.append(result)
@@ -846,7 +888,9 @@ async def buyer_overview(
         for tier in BOOK_TIERS
     ]
     salary_rows.append({"tier": "total", "name": "ЗП итого", "amount": total_salary})
+    await db.commit()
     return {
+        "unassigned_spend": unassigned_spend,
         "buyer": {"id": str(buyer.id), "name": buyer.name},
         "year": year,
         "month": month,
@@ -871,6 +915,7 @@ async def save_book(
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("finance.manage")),
 ) -> dict:
+    await finance_spend.lock_workspace(db, current.workspace_id)
     buyer = await _visible_buyer(db, current, payload.buyer_id)
     # Одна стабильная строка блокирует финансовую цепочку баера до того, как
     # начнётся создание книги или перезапись её дочерних значений. Поэтому два
@@ -891,19 +936,17 @@ async def save_book(
     )
     created = book is None
     if created:
-        book = FinanceBook(
-            workspace_id=current.workspace_id,
-            buyer_id=payload.buyer_id,
-            year=payload.year,
-            month=payload.month,
-            tier=payload.tier,
-            prev_minus=ZERO,
-            eur_usd_rate=payload.eur_usd_rate,
+        book = await finance_spend.create_book_from_previous(
+            db, current.workspace_id, payload.buyer_id, payload.year, payload.month, payload.tier
         )
-        db.add(book)
-        await db.flush()
-    else:
-        book.eur_usd_rate = payload.eur_usd_rate
+    book.eur_usd_rate = payload.eur_usd_rate
+
+    await finance_spend.pull_spend_to_books(
+        db, current.workspace_id, payload.buyer_id, payload.year, payload.month
+    )
+    existing_days = {row.day: row for row in (await db.scalars(
+        select(FinanceBookDay).where(FinanceBookDay.book_id == book.id)
+    )).all()}
 
     # Книга приходит целиком, поэтому дни и офферы переписываются заново: так
     # удалённый оффер исчезает вместе со своими SOK, без сверки «что изменилось».
@@ -920,22 +963,49 @@ async def save_book(
     )
     await db.flush()
 
-    for day, entry in payload.days.items():
+    for day in sorted(set(payload.days) | set(existing_days)):
         if day > days_in_month:
             continue
-        if not (entry.spend_buyer or entry.spend_agent or entry.costs):
+        entry = payload.days.get(day)
+        old = existing_days.get(day)
+        media_amount = old.media_spend if old and old.media_spend is not None else ZERO
+        if entry is not None and "manual_spend" in entry.model_fields_set:
+            manual = entry.manual_spend
+        elif (entry is not None and "spend_buyer" in entry.model_fields_set
+              and (old is None or old.media_spend is None)):
+            # Compatibility for manual-only books opened in an older browser.
+            manual = entry.spend_buyer if entry.spend_buyer else None
+        else:
+            # An omitted override is not an instruction to clear another user's edit.
+            manual = old.manual_spend if old is not None else None
+        effective = manual if manual is not None else media_amount
+        spend_agent = entry.spend_agent if entry is not None else ZERO
+        costs = entry.costs if entry is not None else ZERO
+        if not (effective or spend_agent or costs or media_amount or manual is not None
+                or (old is not None and old.media_spend is not None)):
             continue
-        db.add(
-            FinanceBookDay(
-                book_id=book.id,
-                day=day,
-                spend_buyer=entry.spend_buyer,
-                spend_agent=entry.spend_agent,
-                costs=entry.costs,
-            )
-        )
+        db.add(FinanceBookDay(
+            book_id=book.id, day=day, spend_buyer=effective, media_spend=old.media_spend if old else None,
+            manual_spend=manual, spend_agent=spend_agent, costs=costs,
+        ))
 
     for position, offer in enumerate(payload.offers):
+        if offer.sync_from_catalog and offer.source_offer_id:
+            source = await db.scalar(
+                select(Offer).where(
+                    Offer.id == offer.source_offer_id,
+                    Offer.workspace_id == current.workspace_id,
+                )
+            )
+            if source is not None:
+                offer.name = source.name
+                offer.geo = source.geo
+                offer.rate = source.cpa
+                offer.rate_currency = source.cpa_currency or "USD"
+                offer.partner = (
+                    await db.scalar(select(Partner.name).where(Partner.id == source.partner_id))
+                    if source.partner_id else None
+                )
         row = FinanceBookOffer(
             book_id=book.id,
             position=position,
@@ -948,6 +1018,7 @@ async def save_book(
             # справочником клиент возвращает обратно — иначе назначение баера
             # завело бы вторую строку того же оффера.
             source_offer_id=offer.source_offer_id,
+            locked_fields=list(dict.fromkeys(offer.locked_fields)),
         )
         db.add(row)
         await db.flush()
@@ -974,12 +1045,19 @@ async def save_book(
                 "geo": normalize_geo(offer.geo),
                 "rate": offer.rate,
                 "rate_currency": offer.rate_currency,
+                "locked_fields": offer.locked_fields,
             }
             for offer in payload.offers
         ],
     )
 
     await db.flush()
+    if changed_offers:
+        await finance_spend.refresh_workspace(db, current.workspace_id)
+    else:
+        await finance_spend.pull_spend_to_books(
+            db, current.workspace_id, payload.buyer_id, payload.year, payload.month
+        )
     # Входящий минус принадлежит серверу: значение из клиента намеренно не
     # используется. Пересчёт присваивает остаток, поэтому повторный PUT не
     # удваивает долг.
@@ -1002,7 +1080,7 @@ async def save_book(
     book_payload["prev_minus"] = book.prev_minus
     book_payload["eur_usd_rate"] = book.eur_usd_rate
     plan = await plan_for_book(
-        db, current.workspace_id, buyer, payload.year, payload.month
+        db, current.workspace_id, buyer, payload.year, payload.month, payload.tier
     )
     tiers = await tier_map(db, current.workspace_id)
     return {

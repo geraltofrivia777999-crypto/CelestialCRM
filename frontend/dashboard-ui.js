@@ -81,8 +81,7 @@
   /* ---------- period computation ---------- */
 
   function periodRange(preset) {
-    var today = new Date();
-    today.setHours(0, 0, 0, 0);
+    var today = window.CelestialTime.today();
     var to = new Date(today);
     var from = new Date(today);
     if (preset === "today") { /* один день: from и to уже сегодняшние */ }
@@ -109,32 +108,113 @@
 
   /* ---------- chart ---------- */
 
-  function buildLinePath(points, mapX, mapY, close) {
+  /* Полоса слева под подписи шкалы: без неё цифры налезали бы на линии. */
+  var PLOT_LEFT = 62;
+  var PLOT_RIGHT = 720;
+  /* Ширина картинки берётся у самого блока, а не из фиксированного viewBox:
+     при 720 на 260 и растянутой на всю ширину рамке браузер вписывал график
+     по высоте и центрировал его, оставляя пустые поля слева и справа. */
+  var CHART_HEIGHT = 260;
+  var lastChartSeries = null;
+
+  function chartWidth(svg) {
+    var box = svg.getBoundingClientRect();
+    return Math.max(420, Math.round(box.width || PLOT_RIGHT));
+  }
+
+  /* Короткая подпись суммы: на шкале важен порядок величины, а не центы.
+     «$86.7K» читается с одного взгляда, «$86,666.00» — нет. */
+  function axisMoney(value) {
+    var sign = value < 0 ? "-" : "";
+    var abs = Math.abs(value);
+    if (abs >= 1000000) return sign + "$" + trimZero(abs / 1000000) + "M";
+    if (abs >= 1000) return sign + "$" + trimZero(abs / 1000) + "K";
+    return sign + "$" + trimZero(abs);
+  }
+
+  function trimZero(value) {
+    var text = value >= 100 || value === Math.round(value)
+      ? String(Math.round(value))
+      : value.toFixed(1);
+    return text.replace(".0", "");
+  }
+
+  /* Круглый шаг шкалы: 1, 2 или 5 на своём порядке. Деления вида «17 333»
+     формально верны, но по ним ничего не прикинуть на глаз. */
+  function niceStep(rough) {
+    var power = Math.pow(10, Math.floor(Math.log(rough) / Math.LN10));
+    var scaled = rough / power;
+    var step = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+    return step * power;
+  }
+
+  /* Границы и деления шкалы. Ноль всегда попадает в диапазон: без него линия
+     расхода у нуля висела бы над краем и казалась бы отрицательной. */
+  function axisScale(minValue, maxValue) {
+    var low = Math.min(minValue, 0);
+    var high = Math.max(maxValue, 0);
+    if (low === high) high = low + 1;
+    var step = niceStep((high - low) / 4);
+    var from = Math.floor(low / step) * step;
+    var to = Math.ceil(high / step) * step;
+    var ticks = [];
+    // Ограничение на случай странных данных: бесконечный цикл дороже кривой шкалы.
+    for (var value = from; value <= to + step / 2 && ticks.length < 12; value += step) {
+      ticks.push(Math.abs(value) < step / 1000 ? 0 : value);
+    }
+    return { min: from, max: to, ticks: ticks };
+  }
+
+  function buildLinePath(points, mapX, mapY, baseline) {
     if (!points.length) return "";
     var path = points.map(function (point, index) {
       return (index === 0 ? "M" : "L") + mapX(index).toFixed(1) + " " + mapY(point).toFixed(1);
     }).join(" ");
-    if (close && points.length) {
-      path += " L" + mapX(points.length - 1).toFixed(1) + " 240 L" + mapX(0).toFixed(1) + " 240 Z";
+    // Заливка замыкается на нижнюю линию сетки, а не на дно картинки: иначе
+    // она выходила бы за шкалу и висела ниже последнего деления.
+    if (baseline != null) {
+      path += " L" + mapX(points.length - 1).toFixed(1) + " " + baseline.toFixed(1) +
+        " L" + mapX(0).toFixed(1) + " " + baseline.toFixed(1) + " Z";
     }
     return path;
+  }
+
+  /* Пустая сетка до появления данных: четыре линии на всю ширину без подписей —
+     подписывать нечего, пока не известен диапазон. */
+  function emptyGrid(right) {
+    return [40, 100, 160, 220].map(function (y) {
+      return '<line x1="' + PLOT_LEFT + '" y1="' + y + '" x2="' + right +
+        '" y2="' + y + '" stroke="#F0EBEB" stroke-width="1"/>';
+    }).join("");
   }
 
   function renderChart(series) {
     var svg = byId("dashboardChartSvg");
     var labels = byId("dashboardChartLabels");
     if (!svg) return;
+    lastChartSeries = series;
+    /* Первый рендер может прийтись на момент, когда блок ещё не разложен и
+       ширина меряется неверно, — тогда перерисовываем на следующем кадре. */
+    if (!svg.getBoundingClientRect().width && window.requestAnimationFrame) {
+      window.requestAnimationFrame(function () { renderChart(series); });
+    }
+    var width = chartWidth(svg);
+    var right = width - 8;
+    svg.setAttribute("viewBox", "0 0 " + width + " " + CHART_HEIGHT);
+    // Подписи дат стоят под своими точками, поэтому их поля равны полям графика.
+    if (labels) {
+      labels.style.paddingLeft = PLOT_LEFT + "px";
+      labels.style.paddingRight = (width - right) + "px";
+    }
     var defs = '<defs><linearGradient id="incFill" x1="0" y1="0" x2="0" y2="1">' +
       '<stop offset="0" stop-color="#B91414" stop-opacity=".16"/>' +
       '<stop offset="1" stop-color="#B91414" stop-opacity="0"/></linearGradient></defs>';
-    var grid = "";
-    [40, 100, 160, 220].forEach(function (y) {
-      grid += '<line x1="0" y1="' + y + '" x2="720" y2="' + y + '" stroke="#F0EBEB" stroke-width="1"/>';
-    });
+    var top = 24, bottom = 236;
     if (!series || !series.length) {
-      svg.innerHTML = defs + grid +
-        '<text x="360" y="135" text-anchor="middle" fill="#AFA6A6" font-family="Inter" ' +
-        'font-size="14" font-weight="600">Нет данных за выбранный период</text>';
+      svg.innerHTML = defs + emptyGrid(right) +
+        '<text x="' + ((PLOT_LEFT + right) / 2) + '" y="135" text-anchor="middle" ' +
+        'fill="#AFA6A6" font-family="Inter" font-size="14" font-weight="600">' +
+        "Нет данных за выбранный период</text>";
       if (labels) labels.innerHTML = "";
       return;
     }
@@ -142,17 +222,30 @@
     var spend = series.map(function (point) { return Number(point.spend || 0); });
     var profit = series.map(function (point) { return Number(point.profit || 0); });
     var all = revenue.concat(spend).concat(profit);
-    var maxValue = Math.max.apply(null, all);
-    var minValue = Math.min.apply(null, all, 0);
-    var top = 24, bottom = 236;
-    var span = maxValue - minValue || 1;
+    var scale = axisScale(Math.min.apply(null, all), Math.max.apply(null, all));
+    var span = scale.max - scale.min || 1;
     var count = series.length;
-    function mapX(index) { return count === 1 ? 360 : index / (count - 1) * 720; }
-    function mapY(value) { return bottom - (value - minValue) / span * (bottom - top); }
-    var revenueArea = buildLinePath(revenue, mapX, mapY, true);
-    var revenueLine = buildLinePath(revenue, mapX, mapY, false);
-    var spendLine = buildLinePath(spend, mapX, mapY, false);
-    var profitLine = buildLinePath(profit, mapX, mapY, false);
+    function mapX(index) {
+      var plot = right - PLOT_LEFT;
+      return count === 1 ? PLOT_LEFT + plot / 2 : PLOT_LEFT + index / (count - 1) * plot;
+    }
+    function mapY(value) { return bottom - (value - scale.min) / span * (bottom - top); }
+    // Сетка рисуется по делениям шкалы, а не по четырём заданным высотам:
+    // иначе подписи стояли бы не на линиях, а между ними.
+    var grid = scale.ticks.map(function (value) {
+      var y = mapY(value);
+      var zero = value === 0 && scale.min < 0;
+      return '<line x1="' + PLOT_LEFT + '" y1="' + y.toFixed(1) + '" x2="' + right +
+        '" y2="' + y.toFixed(1) + '" stroke="' + (zero ? "#E0D8D8" : "#F0EBEB") +
+        '" stroke-width="1"/>' +
+        '<text x="' + (PLOT_LEFT - 10) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="end" ' +
+        'fill="#9B9292" font-family="Inter" font-size="11" font-weight="600">' +
+        escapeHtml(axisMoney(value)) + "</text>";
+    }).join("");
+    var revenueArea = buildLinePath(revenue, mapX, mapY, mapY(scale.min));
+    var revenueLine = buildLinePath(revenue, mapX, mapY, null);
+    var spendLine = buildLinePath(spend, mapX, mapY, null);
+    var profitLine = buildLinePath(profit, mapX, mapY, null);
     var lastX = mapX(count - 1);
     var lastY = mapY(revenue[count - 1]);
     svg.innerHTML = defs + grid +
@@ -188,7 +281,7 @@
     var count = revenue.length;
     function mapX(index) { return count === 1 ? 160 : index / (count - 1) * 320; }
     function mapY(value) { return 78 - (value - minValue) / span * 62; }
-    var line = buildLinePath(revenue, mapX, mapY, false);
+    var line = buildLinePath(revenue, mapX, mapY, null);
     var area = revenue.map(function (value, index) {
       return (index === 0 ? "M" : "L") + mapX(index).toFixed(1) + " " + mapY(value).toFixed(1);
     }).join(" ") + " L" + mapX(count - 1).toFixed(1) + " 90 L" + mapX(0).toFixed(1) + " 90 Z";
@@ -241,9 +334,10 @@
     setText("dashboardOffersTitle", copy.title);
   }
 
-  function renderWorkingOffers(offers) {
+  function renderWorkingOffers(offers, total) {
     var container = byId("dashboardWorkingOffers");
-    setText("dashboardOffersCount", (offers.length || 0) + " " + pluralOffers(offers.length));
+    var count = total == null ? (offers.length || 0) : Number(total) || 0;
+    setText("dashboardOffersCount", count + " " + pluralOffers(count));
     if (!container) return;
     if (!offers.length) {
       container.innerHTML =
@@ -263,10 +357,6 @@
         '<div style="min-width:0"><div style="font-weight:700;font-size:13.5px;overflow:hidden;' +
         'text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(offer.name) + '">' +
         escapeHtml(offer.name) + "</div>" +
-        (offer.cap
-          ? '<div style="font-size:11px;color:#9B9292;margin-top:2px;overflow:hidden;' +
-            'text-overflow:ellipsis;white-space:nowrap">Капа: ' + escapeHtml(offer.cap) + "</div>"
-          : "") +
         "</div></div>" +
         '<span style="font-size:12px;font-weight:700;color:#070505;background:#F7F4F4;padding:4px 9px;border-radius:7px">' +
         escapeHtml(offer.geo || "—") + "</span>" +
@@ -322,7 +412,7 @@
     renderKpi(data);
     renderChart(data.series || []);
     renderHeroSpark(data.series || []);
-    renderWorkingOffers(data.working_offers || []);
+    renderWorkingOffers(data.working_offers || [], data.working_offers_total);
   }
 
   function exportSummary() {
@@ -399,6 +489,17 @@
     } catch (error) { /* фильтр по пользователю не критичен */ }
     await load();
   }
+
+  /* Ширина графика зависит от окна, поэтому после изменения размера его
+     нужно перерисовать — иначе он остаётся в старом viewBox. */
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    if (!lastChartSeries) return;
+    if (resizeTimer) window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(function () {
+      renderChart(lastChartSeries);
+    }, 150);
+  });
 
   window.CelestialDashboard = { init: init };
 })();

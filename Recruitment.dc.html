@@ -7,7 +7,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Alumni+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="icon" type="image/png" href="/assets/logo-mark-white.png">
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
   a{color:#B91414;text-decoration:none}
@@ -21,6 +20,345 @@
     .rec-tab{height:38px;padding:0 16px;border:1px solid #E8E2E2;border-radius:11px;background:#fff;color:#3A3030;font-size:12.5px;font-weight:700;cursor:pointer}
     .rec-tab--active{background:#B91414;border-color:#B91414;color:#fff;box-shadow:0 8px 18px rgba(185,20,20,.28)}
     .rec-card{background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px}
+    /* Критерий с несколькими значениями: варианты — переключаемые чипы,
+       свободные значения — теги с крестиком. */
+    .rec-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:34px}
+    .rec-chip{height:28px;padding:0 11px;border:1px solid #E5DFDF;border-radius:8px;background:#fff;
+      font:700 11.5px Inter,sans-serif;color:#6A6161;cursor:pointer;transition:border-color .15s,
+      background .15s,color .15s}
+    .rec-chip:hover{border-color:#D9CFCF;background:#FBF9F9}
+    .rec-chip.is-on{border-color:#B91414;background:#FCF1F1;color:#B91414}
+    .rec-tag{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 11px;
+      border:1px solid #E5DFDF;border-radius:8px;background:#F7F4F4;font:700 11.5px Inter,sans-serif;
+      color:#3A3030}
+    .rec-tag button{border:0;background:none;padding:0 3px;font-size:14px;line-height:1;
+      color:#9B9292;cursor:pointer}
+    .rec-tag button:hover{color:#B91414}
+    .rec-tag-input{flex:1;min-width:110px;height:28px;border:1px solid #E5DFDF;border-radius:8px;
+      padding:0 10px;font:600 11.5px Inter,sans-serif;color:#3A3030;background:#fff;outline:none}
+    .rec-tag-input:focus{border-color:#B91414}
+    .rec-area{display:grid;gap:8px}.rec-area__search{position:relative}
+    .rec-area__input{width:100%;min-width:0;height:34px;padding:0 10px;border-style:solid}
+    .rec-area__menu{display:none;position:absolute;z-index:20;top:calc(100% + 5px);left:0;right:0;
+      max-height:210px;overflow:auto;padding:5px;background:#fff;border:1px solid #DED5D5;
+      border-radius:10px;box-shadow:0 12px 30px rgba(43,31,31,.14)}
+    .rec-area__menu.is-open{display:grid}.rec-area__option{border:0;background:#fff;text-align:left;
+      padding:9px 10px;border-radius:7px;font:600 12px Inter,sans-serif;color:#3A3030;cursor:pointer}
+    .rec-area__option:hover,.rec-area__option:focus{outline:0;background:#F7F2F2;color:#B91414}
+    .rec-area__state{padding:9px 10px;font:600 11.5px Inter,sans-serif;color:#8A8181}
+    /* Компактная карточка на доске. */
+    .rec-cand__top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+    .rec-cand__tags{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:7px;
+      font:600 11.5px Inter,sans-serif;color:#857D7D}
+    .rec-cand__src{padding:1px 6px;border:1px solid #E8E2E2;border-radius:5px;
+      font:700 9.5px Inter,sans-serif;letter-spacing:.06em;color:#857D7D}
+    .rec-cand__quote{margin-top:8px;padding:7px 10px;border-radius:9px;background:#F7F4F4;
+      font:500 11.5px/1.45 Inter,sans-serif;color:#6A6161;font-style:italic;
+      overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+    /* Модалка кандидата. */
+    .rec-sheet{position:fixed;inset:0;z-index:60;background:rgba(7,5,5,.42);display:flex;
+      align-items:center;justify-content:center;padding:24px}
+    .rec-sheet__card{width:100%;max-width:520px;max-height:90vh;overflow:auto;background:#fff;
+      border-radius:18px;box-shadow:0 26px 60px rgba(30,20,20,.28)}
+    .rec-sheet__head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+      padding:20px 20px 0}
+    .rec-sheet__title{font:700 19px/1.25 Inter,sans-serif;color:#150E0E}
+    .rec-sheet__link{font:700 12px Inter,sans-serif;color:#B91414;text-decoration:none}
+    .rec-sheet__link:hover{text-decoration:underline}
+    .rec-sheet__body{margin-top:16px;padding:16px 20px 4px;border-top:1px solid #F0EBEB}
+    .rec-sheet__legend{font:700 10px Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase;
+      color:#A89999;margin-bottom:9px}
+    .rec-sheet__grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .rec-sheet__grid label,.rec-sheet__field,.rec-sheet__note{display:flex;
+      flex-direction:column;gap:5px;font:700 11.5px Inter,sans-serif;color:#6A6161;min-width:0}
+    .rec-sheet__grid .meta-control,.rec-sheet__record .meta-control{width:100%;min-width:0;
+      height:38px;padding:0 11px;font-size:12.5px}
+    .rec-sheet__grid + .rec-sheet__legend,.rec-sheet__record + .rec-sheet__legend{margin-top:20px}
+    .rec-sheet__record{display:flex;align-items:flex-end;gap:10px;margin:0}
+    .rec-sheet__field{flex:1;min-width:0}
+    .rec-sheet__file{flex-shrink:0;height:38px;display:inline-flex;align-items:center;
+      padding:0 16px;border:1px dashed #D9CFCF;border-radius:10px;background:#fff;
+      font:700 11.5px Inter,sans-serif;color:#6A6161;cursor:pointer;white-space:nowrap;
+      transition:border-color .15s,color .15s,background .15s}
+    .rec-sheet__file:hover{border-color:#B91414;color:#B91414;background:#FCF7F7}
+    .rec-sheet__record-done{display:flex;align-items:center;justify-content:space-between;gap:8px;
+      height:38px;padding:0 8px 0 11px;border:1px solid #E5DFDF;border-radius:10px;background:#fff}
+    .rec-sheet__record-done a{font:700 12px Inter,sans-serif;color:#B91414;text-decoration:none}
+    .rec-sheet__record-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+      font:700 12px Inter,sans-serif;color:#150E0E}
+    .rec-sheet__record-done button{border:0;background:none;font-size:15px;color:#9B9292;
+      cursor:pointer;padding:0 2px}
+    .rec-sheet__note{margin-top:16px}
+    .rec-sheet__note .rec-cand__note{margin-top:0}
+    .rec-sheet__foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+      margin-top:16px;padding:13px 20px;border-top:1px solid #F0EBEB;background:#FAF8F8;
+      border-radius:0 0 18px 18px;font:600 11.5px Inter,sans-serif;color:#9B9292}
+    .rec-sheet__drop{border:0;background:none;font:700 11.5px Inter,sans-serif;color:#B91414;
+      cursor:pointer}
+    .rec-sheet__drop:hover{text-decoration:underline}
+    .rec-cand__field{width:100%;min-width:0;height:32px;padding:0 10px;font-size:12px}
+    .rec-cand__record{display:flex;align-items:center;gap:6px;margin-top:6px}
+    .rec-cand__record .rec-cand__field{flex:1;width:auto;min-width:0}
+    .rec-cand__record-link{flex:1;min-width:0;height:32px;display:flex;align-items:center;
+      padding:0 10px;border:1px solid #E5DFDF;border-radius:9px;background:#fff;
+      font:700 12px Inter,sans-serif;color:#B91414;text-decoration:none;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap}
+    .rec-cand__upload{flex-shrink:0;height:32px;display:flex;align-items:center;padding:0 10px;
+      border:1px dashed #D9CFCF;border-radius:9px;font:700 11.5px Inter,sans-serif;color:#6A6161;
+      cursor:pointer;background:#fff}
+    .rec-cand__upload:hover{border-color:#B91414;color:#B91414}
+    /* Перетаскивание карточек между этапами. */
+    .rec-cand[draggable="true"]{cursor:grab}
+    .rec-cand.is-dragging{opacity:.5;cursor:grabbing}
+    .rec-col.is-over{border-color:#D06060;background:#FCF7F7}
+    /* Подключение HH — компактной плашкой в шапке раздела. */
+    .rec-hh{display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #EBE6E6;
+      border-radius:12px;padding:7px 9px 7px 13px}
+    .rec-hh__dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+    .rec-hh__label{font:700 12px Inter,sans-serif;color:#3A3030;max-width:190px;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap}
+    /* Карточка шаблона поиска. */
+    .rec-tpl{background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:16px 16px 14px;
+      cursor:pointer;transition:border-color .15s,box-shadow .15s}
+    .rec-tpl:hover{border-color:#DCD2D1;box-shadow:0 6px 18px -12px rgba(28,18,18,.4)}
+    .rec-tpl.is-active{border-color:#B91414}
+    .rec-tpl__head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+    .rec-tpl__name{font:700 15px/1.25 Inter,sans-serif;color:#150E0E}
+    .rec-tpl__mode{flex-shrink:0;height:22px;display:inline-flex;align-items:center;padding:0 9px;
+      border-radius:7px;background:#F2EDED;font:700 10.5px Inter,sans-serif;color:#857D7D;
+      text-transform:uppercase;letter-spacing:.04em}
+    .rec-tpl__mode.is-auto{background:#E4F7F0;color:#0E7350}
+    .rec-tpl__row{display:flex;align-items:center;gap:9px;margin-top:9px;
+      font:600 12.5px Inter,sans-serif;color:#6A6161}
+    .rec-tpl__row svg{flex-shrink:0;color:#A89999}
+    .rec-tpl__dot{width:7px;height:7px;border-radius:50%;background:#C6BDBD;flex-shrink:0;
+      margin:0 4px}
+    .rec-tpl__dot.is-completed{background:#0E7350}
+    .rec-tpl__dot.is-failed{background:#B91414}
+    .rec-tpl__dot.is-running,.rec-tpl__dot.is-queued{background:#C9821F}
+    .rec-tpl__foot{display:flex;align-items:center;gap:8px;margin-top:14px}
+    .rec-tpl__run{flex:1;height:40px;display:inline-flex;align-items:center;justify-content:center;
+      gap:8px;border:0;border-radius:10px;background:#B91414;color:#fff;
+      font:600 12px Inter,-apple-system,'Helvetica Neue',sans-serif;text-transform:uppercase;
+      letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)}
+    .rec-tpl__run:hover{background:#A11111}
+    .rec-tpl__icon{width:40px;height:40px;flex-shrink:0;display:inline-flex;align-items:center;
+      justify-content:center;border:1px solid #E8E2E2;border-radius:10px;background:#fff;
+      color:#6A6161;cursor:pointer;transition:border-color .15s,color .15s,background .15s}
+    .rec-tpl__icon:hover{border-color:#D9CFCF;background:#FBF9F9;color:#3A3030}
+    .rec-tpl__icon--danger:hover{border-color:#E7C9C9;background:#FCF1F1;color:#B91414}
+    /* Фильтр откликов по источнику и содержимое карточки отклика. */
+    .rec-src-group{display:inline-flex;gap:4px;background:#F4F1F1;border-radius:10px;padding:3px}
+    .rec-src{height:28px;padding:0 12px;border:0;border-radius:8px;background:transparent;
+      font:700 11.5px Inter,sans-serif;color:#857D7D;cursor:pointer}
+    .rec-src:hover{color:#3A3030}
+    .rec-src.is-on{background:#fff;color:#B91414;box-shadow:0 1px 3px rgba(28,18,18,.12)}
+    .rec-contact{display:flex;align-items:center;gap:7px;margin-top:10px;
+      font:600 12.5px Inter,sans-serif;color:#3A3030}
+    .rec-contact b{font-weight:700}
+    .rec-contact span{color:#C6BDBD}
+    .rec-contact a{color:#B91414;text-decoration:none;font-weight:700}
+    .rec-contact a:hover{text-decoration:underline}
+    .rec-apply{margin-top:10px;background:#FAF8F8;border:1px solid #F0EBEB;border-radius:11px;
+      padding:10px 12px}
+    .rec-apply__text{font:500 12.5px/1.5 Inter,sans-serif;color:#3A3030;white-space:pre-wrap;
+      word-break:break-word}
+    /* Приложенный файл над текстом отклика: имя, тип и кнопка «скачать». */
+    .rec-file{display:flex;align-items:center;gap:11px;margin-bottom:10px;padding:9px 11px;
+      border:1px solid #EBE6E6;border-radius:12px;background:#fff;text-decoration:none}
+    .rec-file:hover{border-color:#D9CFCF}
+    .rec-file__mark{display:flex;align-items:center;justify-content:center;width:34px;height:34px;
+      flex-shrink:0;border-radius:9px;background:#FCF1F1;color:#B91414}
+    .rec-file__body{display:grid;gap:2px;min-width:0}
+    .rec-file__body b{font:700 12.5px Inter,sans-serif;color:#070505;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap}
+    .rec-file__body i{font:600 11px Inter,sans-serif;font-style:normal;color:#9B9292}
+    .rec-file__go{display:flex;align-items:center;justify-content:center;width:32px;height:32px;
+      flex-shrink:0;margin-left:auto;border:1px solid #EBE6E6;border-radius:9px;color:#6A6161}
+    .rec-file:hover .rec-file__go{border-color:#E7C9C9;background:#FCF1F1;color:#B91414}
+    .rec-apply__file{display:inline-flex;align-items:center;height:34px;margin-top:8px;vertical-align:top;
+      padding:0 11px;border:1px solid #E5DFDF;border-radius:8px;background:#fff;
+      font:700 11.5px Inter,sans-serif;color:#B91414;text-decoration:none}
+    /* Карточка находки: позиция и оценка, под чертой человек и ссылка на
+       резюме, ещё ниже — решение. */
+    .rec-scard{background:#fff;border:1px solid #EBE6E6;border-radius:16px}
+    .rec-scard-list{display:grid;gap:12px}
+    .rec-scard__tg{font:700 12.5px Inter,sans-serif;color:#2C4E77;text-decoration:none}
+    .rec-scard__tg:hover{text-decoration:underline}
+    /* Длинное сообщение из телеграма: видно начало, остальное — по кнопке. */
+    .rec-apply__text.is-folded{max-height:76px;overflow:hidden;
+      -webkit-mask-image:linear-gradient(#000 40%,transparent);
+      mask-image:linear-gradient(#000 40%,transparent)}
+    .rec-apply__more{margin-top:8px;vertical-align:top}
+    .rec-scard__head{display:flex;align-items:flex-start;justify-content:space-between;
+      gap:12px;padding:16px 18px 14px}
+    .rec-scard__title{font:700 15px/1.35 Inter,sans-serif;color:#070505}
+    .rec-scard__sub{margin-top:4px;font:600 11.5px Inter,sans-serif;color:#9B9292}
+    .rec-scard__body{padding:14px 18px;border-top:1px solid #F4F0F0}
+    /* Кто это — одной строкой: имя, возраст и город текстом через точку,
+       кнопка резюме прижата к правому краю той же строки. */
+    .rec-scard__who{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:32px}
+    .rec-scard__name{font:700 13.5px Inter,sans-serif;color:#070505}
+    .rec-scard__facts{font:600 12.5px Inter,sans-serif;color:#6A6161}
+    .rec-scard__dot{margin:0 7px;font-style:normal;color:#C9C0C0}
+    .rec-scard__who .rec-open{margin-left:auto}
+    .rec-open{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;
+      border:1px solid #D3E2F4;border-radius:9px;background:#F1F7FE;
+      font:700 12px Inter,sans-serif;color:#2C4E77;text-decoration:none}
+    .rec-open:hover{background:#E6F0FC;border-color:#BFD6EF}
+    .rec-scard__foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+      padding:14px 18px;border-top:1px solid #F4F0F0}
+    .rec-scard__foot--done{font:600 11.5px Inter,sans-serif;color:#857D7D}
+    /* Плитка «Новый шаблон» — в одном ряду с шаблонами. */
+    /* Тумблер такой же, как в остальных разделах: на этой странице его стилей
+       не было, и вместо переключателя рисовался системный чекбокс. */
+    .meta-switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;
+      font:600 12.5px Inter,sans-serif;color:#3A3030;line-height:1.45}
+    .meta-switch input{position:absolute;opacity:0;width:0;height:0}
+    .meta-switch__box{flex-shrink:0;width:38px;height:21px;border-radius:20px;background:#DCD4D4;
+      position:relative;transition:background .18s}
+    .meta-switch__box:after{content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;
+      border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.24);transition:transform .18s}
+    .meta-switch input:checked+.meta-switch__box{background:#B91414}
+    .meta-switch input:checked+.meta-switch__box:after{transform:translateX(17px)}
+    .meta-switch input:focus-visible+.meta-switch__box{box-shadow:0 0 0 3px rgba(185,20,20,.22)}
+    /* Кто это: имя, дата рождения и город у HH; ник у телеграма. */
+    .rec-cand__who{display:block;margin-top:7px;font:600 11.5px/1.5 Inter,sans-serif;color:#6A6161}
+    .rec-sheet__who{padding:8px 20px 0}
+    .rec-sheet__who .rec-cand__who{margin-top:0;font-size:12.5px;color:#3A3030}
+    .rec-cand__resume{display:inline-block;margin-top:6px;font:700 11.5px Inter,sans-serif;color:#B91414;text-decoration:none}
+    .rec-cand__resume:hover{text-decoration:underline}
+    .rec-sheet__resume{padding:10px 20px 0}
+    .rec-sheet__toggle{display:inline-flex;align-items:center;gap:6px;border:0;background:none;
+      padding:0;cursor:pointer;font:700 12px Inter,sans-serif;color:#B91414}
+    .rec-sheet__toggle:hover{text-decoration:underline}
+    .rec-sheet__caret{font-size:10px;transition:transform .15s}
+    .rec-sheet__caret.is-open{transform:rotate(180deg)}
+    .rec-sheet__resume .rec-apply{margin-top:8px}
+    /* ---- форма шаблона: критерий карточкой ---- */
+    .rec-editor{max-width:620px}
+    .rec-editor__legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;
+      font:600 11.5px Inter,sans-serif;color:#857D7D}
+    .rec-editor__legend span{display:inline-flex;align-items:center;gap:6px}
+    .rec-editor__dot{width:7px;height:7px;border-radius:50%}
+    .rec-editor__dot--req{background:#B91414}
+    .rec-editor__dot--pref{background:#2C6BD8}
+    .rec-editor__close{flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;
+      border-radius:10px;color:#857D7D;font-size:16px;font-weight:700;cursor:pointer}
+    /* Шапка шаблона — карточкой, как критерии ниже: поля на голом фоне окна
+       выглядели чужими, а подписи терялись. */
+    /* Карточки внутри окна: рамка должна стоять там же, где у карточек
+       критериев. Общее правило листа даёт каждому прямому потомку боковые
+       отступы 16px, и у блока с рамкой она уезжала к самому краю — поэтому
+       здесь отступ переносится в margin. */
+    .rec-sheet__card > .rec-editor__card,
+    .rec-sheet__card > .rec-editor__kw{margin-left:16px;margin-right:16px;
+      padding-left:14px;padding-right:14px}
+    .rec-editor__note{margin-top:11px;padding-top:11px;border-top:1px solid #F4F0F0;
+      font:600 11px/1.55 Inter,sans-serif;color:#9B9292}
+    .rec-editor__card{margin-top:18px;padding:14px;border:1px solid #EBE6E6;border-radius:14px;
+      background:#fff}
+    .rec-editor__grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .rec-editor__grid label,.rec-editor__grid .meta-field{display:flex;flex-direction:column;
+      gap:6px;min-width:0}
+    .rec-editor__grid .meta-field > span{font:700 10px Inter,sans-serif;letter-spacing:.08em;
+      text-transform:uppercase;color:#A89999}
+    .rec-editor__grid .meta-control{width:100%;min-width:0;height:40px;padding:0 12px}
+    .rec-editor__grid .meta-select{padding:0 34px 0 12px}
+    @media(max-width:560px){.rec-editor__grid{grid-template-columns:1fr}}
+    .rec-editor__legend-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
+      margin:20px 0 8px;font:700 10px Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase;
+      color:#9B9292}
+    .rec-editor__hint{font:600 11px Inter,sans-serif;letter-spacing:0;text-transform:none;
+      color:#9B9292}
+    .rec-crits{display:grid;gap:10px}
+    .rec-crit{border:1px solid #EBE6E6;border-radius:14px;padding:12px 14px;background:#fff}
+    .rec-crit.is-on{border-color:#DCD2D1}
+    .rec-crit__head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .rec-crit__name{font:700 12.5px Inter,sans-serif;color:#3A3030}
+    .rec-crit__value{margin-top:10px}
+    .rec-modes{display:inline-flex;gap:2px;padding:3px;border-radius:9px;background:#F4F1F1;
+      flex-shrink:0}
+    .rec-mode{height:26px;padding:0 10px;border:0;border-radius:7px;background:transparent;
+      font:700 11px Inter,sans-serif;color:#857D7D;cursor:pointer;white-space:nowrap}
+    .rec-mode:hover{color:#3A3030}
+    .rec-mode.is-on{background:#fff;box-shadow:0 1px 3px rgba(28,18,18,.12)}
+    .rec-mode.is-on.is-required{color:#B91414}
+    .rec-mode.is-on.is-preferred{color:#2C6BD8}
+    .rec-mode.is-on.is-ignore{color:#3A3030}
+    .rec-weight{display:flex;align-items:center;gap:10px;margin-top:10px;
+      font:600 11.5px Inter,sans-serif;color:#9B9292}
+    .rec-weight input[type=range]{flex:1;accent-color:#B91414}
+    .rec-weight b{min-width:26px;text-align:right;font:700 12.5px Inter,sans-serif;color:#3A3030}
+    .rec-tag--kw{border-color:#E7C9C9;background:#FCF1F1;color:#B91414}
+    .rec-editor__kw{min-height:38px;padding:6px;border:1px solid #EBE6E6;border-radius:12px;
+      background:#fff}
+    .rec-editor__auto{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:18px;
+      padding-top:14px;border-top:1px solid #F0EBEB}
+    .rec-editor__foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+      flex-wrap:wrap;margin-top:18px;padding-top:14px;border-top:1px solid #F0EBEB;
+      font:600 11.5px Inter,sans-serif;color:#857D7D}
+    .rec-editor__actions{display:flex;gap:10px}
+    /* Ошибка формы — в подвале самого окна, на месте подсказки. */
+    .rec-editor__error{font:700 11.5px Inter,sans-serif;color:#B91414}
+    .rec-editor__save{height:38px;padding:0 18px;border:0;border-radius:11px;background:#150E0E;
+      color:#fff;font:700 12.5px Inter,sans-serif;cursor:pointer}
+    .rec-editor__save:hover{background:#2A1C1C}
+    .rec-tpl-add{display:flex;flex-direction:column;align-items:center;justify-content:center;
+      gap:8px;min-height:100%;padding:24px;border:1.5px dashed #DCD2D1;border-radius:16px;
+      background:transparent;font:700 12.5px Inter,sans-serif;color:#857D7D;cursor:pointer;
+      transition:border-color .15s,color .15s,background .15s}
+    .rec-tpl-add:hover{border-color:#B91414;color:#B91414;background:#FCF7F7}
+    .rec-tpl-add__plus{width:36px;height:36px;display:flex;align-items:center;
+      justify-content:center;border-radius:11px;background:#F4F1F1;font-size:22px;
+      font-weight:400;line-height:1}
+    .rec-tpl-add:hover .rec-tpl-add__plus{background:#FCF1F1}
+    .rec-resume{margin-left:auto;font:700 11.5px Inter,sans-serif;color:#B91414;
+      text-decoration:none}
+    .rec-resume:hover{text-decoration:underline}
+    /* Разбор оценки. */
+    /* Разбор оценки: полоса соответствия и критерии под ней. */
+    /* Метка фонового обновления: данные на экране остаются, а строка говорит,
+       что за ними уже сходили. */
+    .rec-refresh{display:inline-flex;align-items:center;height:22px;padding:0 9px;
+      border-radius:7px;background:#F4F0F0;font:600 10.5px Inter,sans-serif;color:#9B9292}
+    .rec-noscore{margin-top:12px;padding:10px 14px;border:1px dashed #EFEAEA;border-radius:12px;
+      background:#FCFAFA;font:600 11.5px Inter,sans-serif;color:#9B9292}
+    .rec-match{margin-top:12px;padding:12px 14px;border:1px solid #EFEAEA;border-radius:12px;
+      background:#FCFAFA}
+    .rec-match__head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+      font:700 11.5px Inter,sans-serif;color:#857D7D}
+    .rec-match__head b{font-size:13px;color:#3A3030}
+    .rec-match__bar{margin-top:8px;height:6px;border-radius:99px;background:#EDE7E7;
+      overflow:hidden}
+    .rec-match__bar i{display:block;height:100%;border-radius:99px;background:#9B9292;
+      transition:width .2s}
+    .rec-match.is-high .rec-match__bar i{background:#C9821F}
+    .rec-match.is-hot .rec-match__bar i{background:#B91414}
+    .rec-match.is-medium .rec-match__bar i{background:#2C4E77}
+    .rec-match.is-low .rec-match__bar i{background:#C3536E}
+    /* Строка критерия в разборе оценки. Имя другое, не .rec-crit: так
+       называется карточка критерия в редакторе шаблона, и общее имя ломало
+       её вёрстку. */
+    .rec-mrow{display:flex;align-items:center;gap:8px;padding:5px 0;
+      font:600 11.5px Inter,sans-serif;color:#3A3030}
+    .rec-mrow__dot{display:inline-flex;align-items:center;justify-content:center;
+      width:17px;height:17px;flex-shrink:0;border-radius:6px;background:#EDE7E7;
+      color:#6A6161;font-size:10px;line-height:1}
+    .rec-mrow.is-ok .rec-mrow__dot{background:#E4F7F0;color:#0E7350}
+    .rec-mrow.is-no .rec-mrow__dot{background:#FCF1F1;color:#B91414}
+    .rec-mrow.is-part .rec-mrow__dot{background:#FFF6E9;color:#C9821F}
+    .rec-mrow__name{font-weight:700}
+    .rec-mrow__mode{height:20px;padding:0 8px;display:inline-flex;align-items:center;
+      border-radius:6px;background:#F4F0F0;color:#6A6161;font-size:10.5px}
+    .rec-mrow__tail{margin-left:auto;color:#857D7D;text-align:right}
+    .rec-bd{margin-top:10px}
+    .rec-bd summary{cursor:pointer;font:700 11.5px Inter,sans-serif;color:#857D7D}
+    .rec-bd__rows{margin-top:8px;display:grid;gap:4px;font:600 11.5px/1.6 Inter,sans-serif;
+      color:#6A6161}
+    .rec-bd__rows b{color:#3A3030}
+    .rec-bd--ok{color:#0E7350}
+    .rec-bd--no{color:#B91414}
     .rec-note{background:#fff;border:1px solid #EBE6E6;border-radius:12px;padding:10px 13px;font-size:12px;color:#6A6161;font-weight:600;line-height:1.5}
     .rec-chip{display:inline-flex;align-items:center;gap:5px;background:#F4F0F0;border-radius:8px;padding:4px 9px;font-size:11px;font-weight:700;color:#3A3030}
     .rec-empty{padding:44px 24px;text-align:center;color:#9B9292;font-size:13px;font-weight:600}
@@ -45,6 +383,10 @@
     .rec-col__head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px;border-bottom:1px solid #F0EBEB;font-size:12px;font-weight:700;color:#3A3030}
     .rec-col__count{font-size:11px;font-weight:700;color:#9B9292}
     .rec-col__body{display:grid;gap:10px;padding:11px}
+    .rec-col__add{display:block;width:100%;margin-top:2px;padding:9px 0;border:1px dashed #DCD2D1;
+      border-radius:11px;background:#fff;font:700 11.5px Inter,sans-serif;color:#B91414;
+      cursor:pointer}
+    .rec-col__add:hover{border-color:#D06060;background:#FCF7F7}
     .rec-col__empty{font-size:11.5px;color:#C6BDBD;font-weight:600;text-align:center;padding:14px 0}
     .rec-cand{background:#fff;border:1px solid #EBE6E6;border-radius:12px;padding:11px 12px;min-width:0}
     .rec-cand__title{font-size:12.5px;font-weight:700;line-height:1.35;overflow-wrap:anywhere}
@@ -52,6 +394,9 @@
     .rec-cand__note{width:100%;height:auto;min-height:52px;margin-top:8px;padding:8px 10px;font-size:12px;font-weight:500;line-height:1.45;resize:vertical}
     .rec-cand__foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;padding-top:8px;border-top:1px solid #F4F0F0;font-size:10.5px;color:#9B9292;font-weight:600}
     .rec-cand__foot a{font-weight:700}
+    /* Источник в подвале карточки: иконка и подпись в цвет кромки слева. */
+    .rec-cand__from{display:inline-flex;align-items:center;gap:5px;font-weight:700}
+    .rec-cand__from svg{flex-shrink:0}
     .rec-cand__drop{width:24px;height:24px;flex-shrink:0;border:1px solid #F1D9D9;border-radius:7px;background:#fff;color:#B91414;font-size:14px;line-height:1;cursor:pointer}
     .rec-cand__drop:hover{background:#FCF1F1}
   </style>
@@ -98,14 +443,13 @@
         <div>
           <h1 class="rec-heading" style="font-size:27px;font-weight:700">Рекрутинг</h1>
         </div>
-        <div id="recHeaderNote" class="rec-note" style="max-width:420px"></div>
+        <div id="recHeaderHh"></div>
       </div>
 
       <div class="rec-tabs" id="recTabs">
-        <button class="rec-tab rec-tab--active" type="button" data-rec-tab="search">Поиск кандидатов</button>
-        <button class="rec-tab" type="button" data-rec-tab="responses">Отклики</button>
+        <button class="rec-tab rec-tab--active" type="button" data-rec-tab="search">Поиск резюме</button>
+        <button class="rec-tab" type="button" data-rec-tab="responses">Отклики на вакансии</button>
         <button class="rec-tab" type="button" data-rec-tab="candidates">Кандидаты</button>
-        <button class="rec-tab" type="button" data-rec-tab="settings">Настройки</button>
       </div>
 
       <div id="recError" role="alert" style="display:none;margin-top:14px;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600"></div>

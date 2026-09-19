@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.models import (
+    AuditEvent,
     CountryTier,
     Permission,
     ProviderType,
@@ -46,6 +47,10 @@ PERMISSIONS = {
     # отдельное от `offers.manage`: СМО смотрит за всеми командами, но офферы
     # не раздаёт, а тимлид раздаёт — но только свои.
     "offers.view_all",
+    # Раздать оффер своим баерам. Отдельное от `offers.manage`: заводит и
+    # правит справочник администратор, а тимлид только распределяет
+    # выданное ему — создавать офферы он не должен.
+    "offers.assign",
     "offers.manage",
     "team.view",
     "team.manage",
@@ -59,6 +64,9 @@ PERMISSIONS = {
     "meta.comments",
     "workspace.view",
     "workspace.manage",
+    # Приоритет, даты и исполнители задачи. Баерам поля не нужны — в их роли
+    # права нет, дизайнеры и руководители видят и меняют их.
+    "workspace.details",
     "knowledge.view",
     "knowledge.manage",
     "settings.view",
@@ -67,10 +75,38 @@ PERMISSIONS = {
     "salary.manage",
     "utilities.view",
     "utilities.manage",
+    # Вкладки Утилит «Каналы» и «Журнал» — по отдельным правам: чаты и журнал
+    # отправок видеть нужно не всем, кто настраивает свои уведомления.
+    "utilities.channels",
+    "utilities.events",
     # Раздел «Рекрутинг» — пока только у администратора: в role_defaults ниже
     # код не входит, а существующим ролям его выдаёт админ вручную.
     "recruitment.view",
 }
+
+
+def _deleted_catalog_names(
+    events: list[tuple[dict | None, str | None]],
+    *,
+    data_key: str,
+    description_prefix: str,
+) -> set[str]:
+    """Имена справочника, которые команда явно удалила.
+
+    Новые события хранят имя структурированно в ``data``. Старые записи до
+    этого исправления содержат его только в английском описании, поэтому они
+    тоже учитываются — иначе уже удалённый BRO снова появится при деплое.
+    Сравнение без учёта регистра защищает от ручной смены регистра имени.
+    """
+    result: set[str] = set()
+    for data, description in events:
+        name = str((data or {}).get(data_key) or "").strip()
+        text = str(description or "").strip()
+        if not name and text.startswith(description_prefix):
+            name = text[len(description_prefix):].strip()
+        if name:
+            result.add(name.casefold())
+    return result
 
 
 async def seed() -> None:
@@ -94,15 +130,39 @@ async def seed() -> None:
                 await db.flush()
             permission_rows[code] = permission
 
+        # Стандартные роли, которые команда удалила сама: заводить их заново при
+        # каждом запуске значило бы, что удалить роль нельзя вовсе.
+        deleted_roles = {
+            str((data or {}).get("role_name") or "")
+            for data in (
+                await db.scalars(
+                    select(AuditEvent.data).where(
+                        AuditEvent.workspace_id == workspace.id,
+                        AuditEvent.event_type == "role.deleted",
+                    )
+                )
+            )
+        }
+        admin_exists = await db.scalar(
+            select(User.id).where(
+                User.workspace_id == workspace.id,
+                User.login == settings.admin_login.lower(),
+            )
+        )
         admin_role = await db.scalar(
             select(Role).where(Role.workspace_id == workspace.id, Role.name == "Administrator")
         )
-        if not admin_role:
+        if not admin_role and "Administrator" in deleted_roles and admin_exists:
+            # Роль администратора удалили, а сам администратор уже переехал на
+            # другую роль — ему нечего дозаводить.
+            pass
+        elif not admin_role:
             admin_role = Role(
                 workspace_id=workspace.id,
                 name="Administrator",
                 description="Full access",
                 is_system=True,
+                data_scope="all",
                 permissions=list(permission_rows.values()),
             )
             db.add(admin_role)
@@ -126,17 +186,20 @@ async def seed() -> None:
                 "media.manage",
                 "finance.view",
                 "offers.view",
-                "offers.manage",
+                "offers.assign",
                 "team.view",
                 "meta.view",
                 "meta.launch",
                 "workspace.view",
                 "workspace.manage",
+                "workspace.details",
                 "knowledge.view",
                 "knowledge.manage",
                 "settings.view",
                 "salary.view",
                 "utilities.view",
+                "utilities.channels",
+                "utilities.events",
                 "utilities.manage",
             },
             "Buyer": {
@@ -148,6 +211,8 @@ async def seed() -> None:
                 "workspace.view",
                 "knowledge.view",
                 "utilities.view",
+                "utilities.channels",
+                "utilities.events",
             },
             "CMO": {
                 "dashboard.view",
@@ -160,6 +225,8 @@ async def seed() -> None:
                 "settings.view",
                 "salary.view",
                 "utilities.view",
+                "utilities.channels",
+                "utilities.events",
             },
             "Finance": {
                 "dashboard.view",
@@ -174,9 +241,13 @@ async def seed() -> None:
                 "salary.view",
                 "salary.manage",
                 "utilities.view",
+                "utilities.channels",
+                "utilities.events",
             },
         }
         for name, codes in role_defaults.items():
+            if name in deleted_roles:
+                continue
             role = await db.scalar(
                 select(Role).where(Role.workspace_id == workspace.id, Role.name == name)
             )
@@ -253,6 +324,20 @@ async def seed() -> None:
                     CountryTier(workspace_id=workspace.id, code=code, tier=TIER_1)
                 )
 
+        deleted_services = _deleted_catalog_names(
+            list(
+                (
+                    await db.execute(
+                        select(AuditEvent.data, AuditEvent.description).where(
+                            AuditEvent.workspace_id == workspace.id,
+                            AuditEvent.event_type == "service.deleted",
+                        )
+                    )
+                ).all()
+            ),
+            data_key="service_name",
+            description_prefix="Deleted service ",
+        )
         for name, cost, commission in [
             ("PWA", "0.0300", "0"),
             ("SKAK", "0.0250", "2"),
@@ -262,7 +347,7 @@ async def seed() -> None:
             existing = await db.scalar(
                 select(Service).where(Service.workspace_id == workspace.id, Service.name == name)
             )
-            if not existing:
+            if not existing and name.casefold() not in deleted_services:
                 db.add(
                     Service(
                         workspace_id=workspace.id,
@@ -271,6 +356,20 @@ async def seed() -> None:
                         commission_pct=Decimal(commission),
                     )
                 )
+        deleted_providers = _deleted_catalog_names(
+            list(
+                (
+                    await db.execute(
+                        select(AuditEvent.data, AuditEvent.description).where(
+                            AuditEvent.workspace_id == workspace.id,
+                            AuditEvent.event_type == "spend_provider.deleted",
+                        )
+                    )
+                ).all()
+            ),
+            data_key="provider_name",
+            description_prefix="Deleted provider ",
+        )
         for name, provider_type, commission in [
             ("BRO", ProviderType.agent, "8.5"),
             ("MT", ProviderType.agent, "7"),
@@ -282,7 +381,7 @@ async def seed() -> None:
                     SpendProvider.name == name,
                 )
             )
-            if not existing:
+            if not existing and name.casefold() not in deleted_providers:
                 db.add(
                     SpendProvider(
                         workspace_id=workspace.id,

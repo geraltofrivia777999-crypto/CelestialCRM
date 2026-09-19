@@ -85,8 +85,7 @@
   }
 
   function gridHtml(input, month, selected) {
-    var today = new Date();
-    today.setHours(0, 0, 0, 0);
+    var today = window.CelestialTime.today();
     var first = startOfMonth(month);
     // getDay(): воскресенье это 0, а у нас неделя с понедельника.
     var lead = (first.getDay() + 6) % 7;
@@ -182,7 +181,7 @@
       input: input,
       panel: panel,
       selected: selected,
-      month: startOfMonth(selected || new Date())
+      month: startOfMonth(selected || window.CelestialTime.today())
     };
     input.setAttribute("aria-expanded", "true");
     redraw();
@@ -201,8 +200,7 @@
       }
       if (event.target.closest("[data-cdate-clear]")) return apply("");
       if (event.target.closest("[data-cdate-today]")) {
-        var today = new Date();
-        today.setHours(0, 0, 0, 0);
+        var today = window.CelestialTime.today();
         if (outOfRange(input, today)) return;
         return apply(iso(today));
       }
@@ -213,7 +211,7 @@
 
   function move(days) {
     if (!open) return;
-    var base = open.selected || new Date();
+    var base = open.selected || window.CelestialTime.today();
     var next = new Date(base.getFullYear(), base.getMonth(), base.getDate() + days);
     if (outOfRange(open.input, next)) return;
     open.selected = next;
