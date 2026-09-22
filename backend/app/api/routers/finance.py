@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import business_today
@@ -22,6 +22,7 @@ from app.models import (
     FinanceOfferTag,
     FinanceTagDay,
     Offer,
+    OfferBuyer,
     Partner,
     PartnerIntegration,
     PartnerSyncRun,
@@ -29,7 +30,7 @@ from app.models import (
     User,
     UserParent,
 )
-from app.schemas import FinanceBookIn
+from app.schemas import FinanceBookIn, FinancePartnersIn
 from app.services import finance_spend
 from app.services.audit import audit
 from app.services.country_tiers import tier_for, tier_map
@@ -653,6 +654,354 @@ async def summary(
         "buyers": buyer_rows,
         "salary": salary,
     }
+
+
+# --- сводка «Партнёрки» -------------------------------------------------------
+#
+# Общий лист для заполнения: строки тех же книг баеров, но сразу по всем людям
+# и с фильтром по партнёрке. Числа те же самые — сводка пишет прямо в книги,
+# а не хранит свою копию.
+
+
+async def _partners_rows(
+    db: AsyncSession, current: User, year: int, month: int
+) -> dict:
+    buyers = await _visible_users(db, current)
+    buyer_ids = [buyer.id for buyer in buyers]
+    if not buyer_ids:
+        return {"buyers": [], "partners": [], "days_in_month": calendar.monthrange(year, month)[1]}
+    books = list(
+        (
+            await db.execute(
+                select(FinanceBook).where(
+                    FinanceBook.workspace_id == current.workspace_id,
+                    FinanceBook.buyer_id.in_(buyer_ids),
+                    FinanceBook.year == year,
+                    FinanceBook.month == month,
+                )
+            )
+        ).scalars()
+    )
+    book_by_id = {book.id: book for book in books}
+    offers = list(
+        (
+            await db.execute(
+                select(FinanceBookOffer)
+                .where(FinanceBookOffer.book_id.in_([book.id for book in books]))
+                .order_by(FinanceBookOffer.position, FinanceBookOffer.name)
+            )
+        ).scalars()
+    ) if books else []
+    tags = list(
+        (
+            await db.execute(
+                select(FinanceOfferTag)
+                .where(FinanceOfferTag.offer_id.in_([offer.id for offer in offers]))
+                .order_by(FinanceOfferTag.position, FinanceOfferTag.name)
+            )
+        ).scalars()
+    ) if offers else []
+    values = list(
+        (
+            await db.execute(
+                select(FinanceTagDay).where(
+                    FinanceTagDay.tag_id.in_([tag.id for tag in tags])
+                )
+            )
+        ).scalars()
+    ) if tags else []
+    by_tag: dict[uuid.UUID, dict[int, Decimal]] = {}
+    for row in values:
+        by_tag.setdefault(row.tag_id, {})[row.day] = row.deposits
+    by_offer: dict[uuid.UUID, list[dict]] = {}
+    for tag in tags:
+        by_offer.setdefault(tag.offer_id, []).append({
+            "id": str(tag.id),
+            "name": tag.name,
+            "values": {str(day): q(value) for day, value in sorted(
+                by_tag.get(tag.id, {}).items()
+            )},
+        })
+
+    # Назначенные офферы справочника: строки, которых в книге ещё нет, тоже
+    # показываем — ради них сводку и завели, чтобы заполнять не открывая книги.
+    assigned = list(
+        (
+            await db.execute(
+                select(OfferBuyer.user_id, Offer)
+                .join(Offer, Offer.id == OfferBuyer.offer_id)
+                .where(
+                    OfferBuyer.user_id.in_(buyer_ids),
+                    Offer.workspace_id == current.workspace_id,
+                    Offer.connection_id.is_(None),
+                )
+                .order_by(Offer.name)
+            )
+        ).all()
+    )
+    partner_names = {
+        row.id: row.name
+        for row in (
+            await db.execute(
+                select(Partner).where(Partner.workspace_id == current.workspace_id)
+            )
+        ).scalars()
+    }
+    tiers = await tier_map(db, current.workspace_id)
+
+    rows: dict[uuid.UUID, list[dict]] = {}
+    seen: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for offer in offers:
+        book = book_by_id.get(offer.book_id)
+        if not book:
+            continue
+        rows.setdefault(book.buyer_id, []).append({
+            "book_offer_id": str(offer.id),
+            "source_offer_id": str(offer.source_offer_id) if offer.source_offer_id else None,
+            "name": offer.name,
+            "partner": offer.partner,
+            "geo": offer.geo,
+            "rate": q(offer.rate or ZERO),
+            "rate_currency": offer.rate_currency or "USD",
+            "tier": book.tier,
+            "tags": by_offer.get(offer.id, []),
+        })
+        if offer.source_offer_id:
+            seen.setdefault(book.buyer_id, set()).add(offer.source_offer_id)
+    for buyer_id, offer in assigned:
+        if offer.id in seen.get(buyer_id, set()):
+            continue
+        rows.setdefault(buyer_id, []).append({
+            "book_offer_id": None,
+            "source_offer_id": str(offer.id),
+            "name": offer.name,
+            "partner": partner_names.get(offer.partner_id),
+            "geo": offer.geo,
+            "rate": q(offer.cpa or ZERO),
+            "rate_currency": offer.cpa_currency or "USD",
+            "tier": tier_for(offer.geo, tiers),
+            "tags": [],
+        })
+
+    eur_by_buyer: dict[uuid.UUID, Decimal] = {}
+    for book in books:
+        eur_by_buyer.setdefault(book.buyer_id, book.eur_usd_rate or Decimal("1"))
+    partners = sorted({
+        row["partner"] for offers_of in rows.values() for row in offers_of if row["partner"]
+    })
+    return {
+        "year": year,
+        "month": month,
+        "days_in_month": calendar.monthrange(year, month)[1],
+        "partners": partners,
+        "buyers": [
+            {
+                "id": str(buyer.id),
+                "name": buyer.name or buyer.login,
+                "eur_usd_rate": q6(eur_by_buyer.get(buyer.id, Decimal("1"))),
+                "offers": rows.get(buyer.id, []),
+            }
+            for buyer in buyers
+            if rows.get(buyer.id)
+        ],
+    }
+
+
+@router.get("/finance/partners")
+async def partners_sheet(
+    year: int,
+    month: int,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("finance.view")),
+) -> dict:
+    """Строки книг всех доступных баеров за месяц — одним листом."""
+    if not 1 <= month <= 12 or not 2000 <= year <= 2100:
+        raise HTTPException(status_code=422, detail="Некорректный месяц")
+    await finance_spend.refresh_period(
+        db, current.workspace_id, await _finance_user_ids(db, current), year, month
+    )
+    await db.commit()
+    return await _partners_rows(db, current, year, month)
+
+
+async def _partners_book(
+    db: AsyncSession, current: User, buyer_id: uuid.UUID, year: int, month: int, tier: str
+) -> FinanceBook:
+    book = await db.scalar(
+        select(FinanceBook).where(
+            FinanceBook.workspace_id == current.workspace_id,
+            FinanceBook.buyer_id == buyer_id,
+            FinanceBook.year == year,
+            FinanceBook.month == month,
+            FinanceBook.tier == tier,
+        )
+    )
+    if book:
+        return book
+    return await finance_spend.create_book_from_previous(
+        db, current.workspace_id, buyer_id, year, month, tier
+    )
+
+
+@router.put("/finance/partners")
+async def save_partners_sheet(
+    payload: FinancePartnersIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("finance.manage")),
+) -> dict:
+    """Записать введённое в сводке прямо в книги баеров.
+
+    Лист не хранит своих чисел: тег и его депозиты ложатся в книгу того баера,
+    у которого этот оффер, — в ту же строку, что он увидит у себя. Оффера,
+    которого в книге ещё не было, заводим из справочника: тир берётся по гео.
+    """
+    await finance_spend.lock_workspace(db, current.workspace_id)
+    days_in_month = calendar.monthrange(payload.year, payload.month)[1]
+    tiers = await tier_map(db, current.workspace_id)
+    touched: set[tuple[uuid.UUID, str]] = set()
+    saved: list[dict] = []
+    for entry in payload.tags:
+        buyer = await _visible_buyer(db, current, entry.buyer_id)
+        offer_row = None
+        book = None
+        if entry.book_offer_id:
+            offer_row = await db.get(FinanceBookOffer, entry.book_offer_id)
+            book = await db.get(FinanceBook, offer_row.book_id) if offer_row else None
+            if not book or book.buyer_id != buyer.id or book.workspace_id != current.workspace_id:
+                # Сохранение книги пересоздаёт её строки с новыми id, поэтому
+                # присланный id мог устареть. Это не повод терять введённое:
+                # ту же строку находим по офферу справочника.
+                offer_row = None
+                book = None
+        if offer_row is None:
+            source = await db.get(Offer, entry.source_offer_id) if entry.source_offer_id else None
+            if not source or source.workspace_id != current.workspace_id:
+                raise HTTPException(status_code=404, detail="Оффер не найден")
+            book = await _partners_book(
+                db, current, buyer.id, payload.year, payload.month,
+                tier_for(source.geo, tiers),
+            )
+            await db.flush()
+            offer_row = await db.scalar(
+                select(FinanceBookOffer).where(
+                    FinanceBookOffer.book_id == book.id,
+                    FinanceBookOffer.source_offer_id == source.id,
+                )
+            )
+            if offer_row is None:
+                partner = await db.get(Partner, source.partner_id) if source.partner_id else None
+                position = await db.scalar(
+                    select(func.count()).select_from(FinanceBookOffer).where(
+                        FinanceBookOffer.book_id == book.id
+                    )
+                )
+                offer_row = FinanceBookOffer(
+                    book_id=book.id,
+                    source_offer_id=source.id,
+                    position=position or 0,
+                    name=source.name,
+                    partner=partner.name if partner else None,
+                    geo=normalize_geo(source.geo),
+                    rate=source.cpa or ZERO,
+                    rate_currency=source.cpa_currency or "USD",
+                )
+                db.add(offer_row)
+                await db.flush()
+        touched.add((buyer.id, book.tier))
+
+        name = entry.name.strip()
+        tag_row = None
+        if entry.tag_id:
+            tag_row = await db.get(FinanceOfferTag, entry.tag_id)
+            if tag_row and tag_row.offer_id != offer_row.id:
+                tag_row = None
+        if tag_row is None:
+            # Тег ищем по названию: у баера он мог быть заведён раньше или
+            # пересоздан сохранением книги. Нет такого — заведём новый.
+            tag_row = await db.scalar(
+                select(FinanceOfferTag).where(
+                    FinanceOfferTag.offer_id == offer_row.id,
+                    FinanceOfferTag.name == name,
+                )
+            )
+        if tag_row is None and name:
+            # Баер часто заводит строку, не называя её. Эта безымянная строка
+            # получает название из сводки вместо создания второй рядом.
+            tag_row = await db.scalar(
+                select(FinanceOfferTag)
+                .where(
+                    FinanceOfferTag.offer_id == offer_row.id,
+                    FinanceOfferTag.name == "",
+                )
+                .order_by(FinanceOfferTag.position)
+            )
+        if entry.drop:
+            if tag_row:
+                await db.execute(
+                    delete(FinanceTagDay).where(FinanceTagDay.tag_id == tag_row.id)
+                )
+                await db.delete(tag_row)
+            saved.append({
+                "buyer_id": str(buyer.id),
+                "book_offer_id": str(offer_row.id),
+                "tag_id": None,
+                "tier": book.tier,
+            })
+            continue
+        if tag_row is None:
+            position = await db.scalar(
+                select(func.count()).select_from(FinanceOfferTag).where(
+                    FinanceOfferTag.offer_id == offer_row.id
+                )
+            )
+            tag_row = FinanceOfferTag(
+                offer_id=offer_row.id, position=position or 0, name=name
+            )
+            db.add(tag_row)
+            await db.flush()
+        else:
+            tag_row.name = name
+
+        existing = {
+            row.day: row
+            for row in (
+                await db.execute(
+                    select(FinanceTagDay).where(FinanceTagDay.tag_id == tag_row.id)
+                )
+            ).scalars()
+        }
+        for day, deposits in entry.values.items():
+            if not 1 <= day <= days_in_month:
+                continue
+            row = existing.get(day)
+            if not deposits:
+                if row:
+                    await db.delete(row)
+                continue
+            if row:
+                row.deposits = deposits
+            else:
+                db.add(FinanceTagDay(tag_id=tag_row.id, day=day, deposits=deposits))
+        saved.append({
+            "buyer_id": str(buyer.id),
+            "book_offer_id": str(offer_row.id),
+            "tag_id": str(tag_row.id),
+            "tier": book.tier,
+        })
+
+    await db.flush()
+    for buyer_id, tier in touched:
+        await _recalculate_carry_chain(db, current.workspace_id, buyer_id, tier)
+    if touched:
+        await audit(
+            db, current, "finance.partners_saved",
+            f"Сводка «Партнёрки» за {payload.month:02d}.{payload.year}: "
+            f"строк {len(payload.tags)}, книг {len(touched)}",
+            request=request,
+        )
+    await db.commit()
+    return {"saved": saved}
 
 
 @router.get("/finance/book")

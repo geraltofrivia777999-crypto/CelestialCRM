@@ -118,6 +118,9 @@
     countries: [],
     partners: [],
     sheet: "all",
+    // Сводка «Партнёрки»: общий лист для заполнения чужих книг. Пока рисуется
+    // только разметка — числа и сохранение появятся следующим шагом.
+    partnersView: { buyers: [], loaded: false, users: null, partners: null, saving: false },
     // Какая из таблиц баера открыта: обзор только читается, T1 и T23 заполняют.
     bookTab: "overview",
     buyerId: null,
@@ -287,8 +290,13 @@
   }
 
   function renderHead() {
-    var head = byId("finGridHead");
-    head.innerHTML = "";
+    byId("finGridHead").innerHTML = "";
+    byId("finGridHead").appendChild(dayHeadRow());
+  }
+
+  /* Шапка таблицы по дням: «Показатель», «За месяц» и день за днём. Одна и та
+     же у книги баера и у сводки «Партнёрки». */
+  function dayHeadRow() {
     var tr = el("tr");
     var name = el("th", "fin-c-name");
     name.appendChild(el("span", "fin-h-lab", "Показатель"));
@@ -305,7 +313,7 @@
       th.appendChild(el("span", "fin-day-w", flags.weekday));
       tr.appendChild(th);
     }
-    head.appendChild(tr);
+    return tr;
   }
 
   /* ---------- строки ---------- */
@@ -527,6 +535,17 @@
       input.disabled = !state.canManage;
       noAutofill(input);
       input.setAttribute("aria-label", "Спенд, день " + d);
+      if (state.canSpend) {
+        // Правка расхода идёт не в книгу, а в Медиаборд: там у суммы есть
+        // агенты и своя комиссия, и книга берёт готовое число оттуда.
+        input.readOnly = true;
+        input.addEventListener("focus", function (event) {
+          openSpendDay(Number(event.target.dataset.d));
+        });
+        input.addEventListener("click", function (event) {
+          openSpendDay(Number(event.target.dataset.d));
+        });
+      }
       input.addEventListener("input", function (event) {
         var day = Number(event.target.dataset.d);
         var raw = event.target.value;
@@ -1599,11 +1618,17 @@
   }
 
   function setView(summaryMode) {
-    byId("finSummaryView").hidden = !summaryMode;
+    var partnersMode = state.sheet === "partners";
+    byId("finSummaryView").hidden = !summaryMode || partnersMode;
     byId("finBookSheet").hidden = summaryMode;
     byId("finBookSalary").hidden = summaryMode;
     byId("finCardSalary").closest(".fin-card").hidden = summaryMode;
-    var buyerSheet = state.sheet.indexOf("buyer:") === 0;
+    // Сводка «Партнёрки» — три отдельных блока: карточки, фильтры и таблица.
+    Array.prototype.forEach.call(document.querySelectorAll(".fin-partners-part"),
+      function (part) { part.hidden = !partnersMode; });
+    // Карточки месяца считаются по книге или сводке — в общем листе их нет.
+    var cards = byId("finCards");
+    if (cards) cards.hidden = partnersMode;
   }
 
   /* Фонд по ролям — той же таблицей, что команда вела в своей: колонка на
@@ -1787,6 +1812,13 @@
       item.setAttribute("aria-selected", String(summary.scope === state.sheet));
       menu.appendChild(item);
     });
+    if ((state.scopes.summaries || []).length) {
+      var partners = el("li", null, "Партнёрки");
+      partners.setAttribute("role", "option");
+      partners.dataset.sheet = "partners";
+      partners.setAttribute("aria-selected", String(state.sheet === "partners"));
+      menu.appendChild(partners);
+    }
     if ((state.scopes.teams || []).length) {
       menu.appendChild(menuTitle("Команды"));
       state.scopes.teams.forEach(function (team) {
@@ -1817,6 +1849,9 @@
   }
 
   function sheetName(sheet) {
+    if (sheet === "partners") {
+      return (state.scopes.summaries || []).length ? "Партнёрки" : null;
+    }
     var summary = (state.scopes.summaries || []).find(function (item) {
       return item.scope === sheet;
     });
@@ -1905,6 +1940,14 @@
 
   async function loadSelection() {
     var isBuyer = state.sheet.indexOf("buyer:") === 0;
+    if (state.sheet === "partners") {
+      byId("finBookTabs").hidden = true;
+      state.buyerId = null;
+      setView(true);
+      renderPeriod();
+      await loadPartnersView();
+      return;
+    }
     byId("finBookTabs").hidden = !isBuyer;
     renderBookTabs();
     if (isBuyer) {
@@ -2023,7 +2066,779 @@
     window.alert(text + (details.length ? "\n\n" + details.join("\n") : ""));
   }
 
+  /* ---------- сводка «Партнёрки» ----------
+   *
+   * Общий лист, из которого удобно заполнять сразу несколько книг: строки
+   * сгруппированы баерами, внутри баера — его офферы, внутри оффера — теги.
+   * Пока это только разметка: ячейки не редактируются и ничего не сохраняют.
+   */
+
+  // Разметка строк листа: где чьи суммы и какие баеры сейчас на экране.
+  var partnersCells = {};
+  var partnersVisible = [];
+  // Что ещё не доехало на сервер, таймер отправки и счётчик новых тегов.
+  var partnersFilters = { users: null, partners: null };
+  var partnersPending = {};
+  var partnersTimer = null;
+  var partnersUid = 0;
+
+  async function loadPartnersView() {
+    var view = state.partnersView;
+    byId("finPartnersCount").textContent = "Загружаю…";
+    try {
+      var payload = await api.get(
+        "/finance/partners?year=" + state.year + "&month=" + state.month
+      );
+      // Числа приходят строками с четырьмя знаками (Numeric в базе) —
+      // в ячейке должно стоять «4», а не «4,0000».
+      view.buyers = ((payload && payload.buyers) || []).map(function (buyer) {
+        return {
+          id: buyer.id,
+          name: buyer.name,
+          eur_usd_rate: num(buyer.eur_usd_rate) || 1,
+          offers: (buyer.offers || []).map(function (offer) {
+            return Object.assign({}, offer, {
+              rate: num(offer.rate),
+              tags: (offer.tags || []).map(function (tag) {
+                var values = {};
+                Object.keys(tag.values || {}).forEach(function (day) {
+                  values[Number(day)] = num(tag.values[day]);
+                });
+                return { id: tag.id, name: tag.name || "", values: values };
+              })
+            });
+          })
+        };
+      });
+      view.names = (payload && payload.partners) || [];
+      view.loaded = true;
+      if (payload && payload.days_in_month) state.days = payload.days_in_month;
+    } catch (error) {
+      view.buyers = [];
+      byId("finPartnersCount").textContent = error && error.message
+        ? error.message : "Не удалось загрузить сводку";
+      return;
+    }
+    renderPartnersFilters();
+    renderPartners();
+  }
+
+  /* Кто попадёт в лист: баеры с раздаными офферами. Отмеченные в фильтре —
+     они и остаются, пустой фильтр означает «все». */
+  function partnersRows() {
+    var view = state.partnersView;
+    var people = pickedKeys(view.users);
+    var partners = pickedKeys(view.partners);
+    return view.buyers.filter(function (buyer) {
+      return !people.length || people.indexOf(buyer.id) >= 0;
+    }).map(function (buyer) {
+      return {
+        id: buyer.id,
+        name: buyer.name,
+        eurRate: num(buyer.eur_usd_rate) || 1,
+        offers: (buyer.offers || []).filter(function (offer) {
+          return !partners.length || partners.indexOf(offer.partner || "") >= 0;
+        })
+      };
+    }).filter(function (buyer) { return buyer.offers.length; });
+  }
+
+  function partnersPeople() {
+    return state.partnersView.buyers.map(function (buyer) {
+      return { id: buyer.id, name: buyer.name };
+    });
+  }
+
+  function partnersNames() {
+    return (state.partnersView.names || []).slice();
+  }
+
+  /* Фильтры — тот же компонент, что над Медиабордом: поиск, выбранное чипами
+     в самом поле, в списке только невыбранное. */
+  function renderPartnersFilters() {
+    if (partnersFilters.users) {
+      partnersFilters.users.setItems(partnersPeople().map(function (person) {
+        return { value: person.id, label: person.name };
+      }));
+    }
+    if (partnersFilters.partners) {
+      partnersFilters.partners.setItems(partnersNames().map(function (name) {
+        return { value: name, label: name };
+      }));
+    }
+  }
+
+  function pickedKeys(filter) {
+    return filter && filter.values ? filter.values() : [];
+  }
+
+  /* Строка оффера — того же вида, что в книге баера: партнёрка, гео и ставка
+     стоят справа от названия, под тегами считается доход. */
+
+  function partnersRate(offer, eurRate) {
+    return offer.rate_currency === "EUR"
+      ? num(offer.rate) * (num(eurRate) || 1)
+      : num(offer.rate);
+  }
+
+  /* Теги строки — те же, что в книге баера: один оффер льют с нескольких
+     связок, и депозиты по ним считают отдельно. Пустая строка нужна всегда:
+     иначе в оффер без тегов нечего вводить. */
+  function partnersTags(offer) {
+    if (!offer.tags) offer.tags = [];
+    if (!offer.tags.length) offer.tags.push({ name: "", values: {} });
+    return offer.tags;
+  }
+
+  function partnersDeposits(offer, day) {
+    return partnersTags(offer).reduce(function (sum, tag) {
+      return sum + num((tag.values || {})[day]);
+    }, 0);
+  }
+
+  /* Сохранение идёт теми же строками, что и правились: сервер кладёт их в
+     книгу нужного баера и возвращает id заведённых строк. */
+  function partnersMarkDirty(buyer, offer, tag) {
+    if (!state.canManage) return;
+    tag.dirty = true;
+    tag.buyerId = buyer.id;
+    tag.offer = offer;
+    partnersPending[buyer.id + "|" + (offer.book_offer_id || offer.source_offer_id) +
+      "|" + (tag.id || tag.uid || (tag.uid = "new" + (partnersUid += 1)))] = {
+      buyer: buyer, offer: offer, tag: tag
+    };
+    status("busy", "Сохраняю…");
+    clearTimeout(partnersTimer);
+    partnersTimer = setTimeout(function () {
+      savePartners().catch(function () {});
+    }, SAVE_DELAY);
+  }
+
+  function partnersEntry(item, drop) {
+    var tag = item.tag;
+    var values = {};
+    for (var d = 1; d <= state.days; d += 1) {
+      // Пустую ячейку отправляем нулём: так сервер стирает прежнее число.
+      values[d] = tag.values && tag.values[d] != null ? tag.values[d] : 0;
+    }
+    return {
+      buyer_id: item.buyer.id,
+      book_offer_id: item.offer.book_offer_id || null,
+      source_offer_id: item.offer.source_offer_id || null,
+      tag_id: tag.id || null,
+      name: tag.name || "",
+      values: drop ? {} : values,
+      drop: !!drop
+    };
+  }
+
+  async function savePartners() {
+    var keys = Object.keys(partnersPending);
+    if (!keys.length || state.partnersView.saving) return;
+    var batch = keys.map(function (key) { return partnersPending[key]; });
+    partnersPending = {};
+    state.partnersView.saving = true;
+    try {
+      var answer = await api.put("/finance/partners", {
+        year: state.year,
+        month: state.month,
+        tags: batch.map(function (item) { return partnersEntry(item, item.drop); })
+      });
+      (answer.saved || []).forEach(function (row, index) {
+        var item = batch[index];
+        if (!item) return;
+        item.offer.book_offer_id = row.book_offer_id;
+        item.offer.tier = row.tier;
+        item.tag.id = row.tag_id;
+        item.tag.dirty = false;
+      });
+      status("ok", "");
+    } catch (error) {
+      // Не сохранилось — возвращаем строки в очередь, чтобы следующий ввод
+      // или повтор отправил их снова, а не потерял.
+      batch.forEach(function (item) {
+        partnersPending[item.buyer.id + "|" + (item.offer.book_offer_id ||
+          item.offer.source_offer_id) + "|" + (item.tag.id || item.tag.uid)] = item;
+      });
+      status("error", error && error.message ? error.message : "Не удалось сохранить");
+    } finally {
+      state.partnersView.saving = false;
+    }
+    if (Object.keys(partnersPending).length) {
+      clearTimeout(partnersTimer);
+      partnersTimer = setTimeout(function () { savePartners().catch(function () {}); }, SAVE_DELAY);
+    }
+  }
+
+  function partnersOfferRow(buyer, offer) {
+    var tr = el("tr", "fin-offer-head");
+    var td = el("td", "fin-c-name");
+    var wrap = el("div", "fin-o-wrap");
+    wrap.appendChild(el("i", "fin-o-dot"));
+    var name = document.createElement("input");
+    name.className = "fin-o-name";
+    name.value = offer.name || "";
+    name.disabled = true;
+    name.setAttribute("aria-label", "Название оффера");
+    wrap.appendChild(name);
+    td.appendChild(wrap);
+    tr.appendChild(td);
+
+    var meta = el("td", "fin-c-sum fin-o-meta-cell");
+    var box = el("div", "fin-o-meta");
+    var partner = document.createElement("select");
+    partner.className = "fin-o-partner";
+    partner.disabled = true;
+    partner.setAttribute("aria-label", "Партнёрка");
+    var partnerOption = document.createElement("option");
+    partnerOption.textContent = offer.partner || "Партнёрка —";
+    partner.appendChild(partnerOption);
+    box.appendChild(partner);
+
+    var geo = document.createElement("select");
+    geo.className = "fin-o-geo";
+    geo.disabled = true;
+    geo.setAttribute("aria-label", "Гео оффера");
+    var geoOption = document.createElement("option");
+    geoOption.textContent = offer.geo || "Гео —";
+    geo.appendChild(geoOption);
+    box.appendChild(geo);
+
+    var rate = el("div", "fin-o-rate");
+    rate.appendChild(el("span", null, "Ставка"));
+    var currency = el("button", "fin-o-cur", CURRENCIES[offer.rate_currency] || "$");
+    currency.type = "button";
+    currency.disabled = true;
+    currency.classList.toggle("is-eur", offer.rate_currency === "EUR");
+    rate.appendChild(currency);
+    var rateInput = document.createElement("input");
+    rateInput.type = "number";
+    rateInput.value = num(offer.rate);
+    rateInput.disabled = true;
+    rateInput.setAttribute("aria-label", "Ставка за конверсию");
+    rate.appendChild(rateInput);
+    box.appendChild(rate);
+
+    var addTag = el("button", "fin-tag-add", "+ тег");
+    addTag.type = "button";
+    addTag.title = "Добавить тег";
+    addTag.disabled = !state.canManage;
+    addTag.addEventListener("click", function () {
+      partnersTags(offer).push({ name: "", values: {} });
+      renderPartners();
+      focusPartnersTag(buyer.id, offer);
+    });
+    box.appendChild(addTag);
+
+    meta.appendChild(box);
+    tr.appendChild(meta);
+
+    var days = el("td", "fin-o-days");
+    days.colSpan = state.days;
+    tr.appendChild(days);
+    return tr;
+  }
+
+  /* Курсор сразу в новом теге: его первым делом называют. */
+  function focusPartnersTag(buyerId, offer) {
+    var key = buyerId + "|" + (offer.book_offer_id || offer.source_offer_id);
+    var last = document.querySelectorAll(
+      '#finPartnersBody .fin-tag-name[data-row="' + key + '"]'
+    );
+    var input = last[last.length - 1];
+    if (input) { input.focus(); input.select(); }
+  }
+
+  function partnersTagRow(buyer, offer, tag, tagIndex) {
+    if (!tag.values) tag.values = {};
+    var store = tag.values;
+    var tr = el("tr");
+    var td = el("td", "fin-c-name");
+    var box = el("div", "fin-tag-wrap");
+    var name = document.createElement("input");
+    name.className = "fin-tag-name" + (tag.name ? "" : " is-empty");
+    name.placeholder = "Назовите тег";
+    name.value = tag.name || "";
+    name.dataset.row = buyer.id + "|" + (offer.book_offer_id || offer.source_offer_id);
+    name.disabled = !state.canManage;
+    name.setAttribute("aria-label", "Название тега");
+    noAutofill(name);
+    name.addEventListener("input", function () {
+      tag.name = name.value;
+      name.classList.toggle("is-empty", !name.value.trim());
+      partnersMarkDirty(buyer, offer, tag);
+    });
+    box.appendChild(name);
+
+    var tags = partnersTags(offer);
+    if (tags.length > 1 && state.canManage) {
+      var del = el("button", "fin-tag-del");
+      del.type = "button";
+      del.title = "Удалить тег";
+      del.setAttribute("aria-label", "Удалить тег");
+      del.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13">' +
+        '<path d="M6 12h12" fill="none" stroke="currentColor" stroke-width="2.4" ' +
+        'stroke-linecap="round"/></svg>';
+      del.addEventListener("click", async function () {
+        if (!(await askConfirm({
+          title: "Удалить тег?",
+          message: "«" + (tag.name || "без названия") +
+            "» будет удалён вместе с депозитами за месяц.",
+          confirmLabel: "Удалить",
+          danger: true
+        }))) return;
+        tags.splice(tagIndex, 1);
+        if (tag.id) {
+          partnersPending["drop|" + tag.id] = { buyer: buyer, offer: offer, tag: tag, drop: true };
+          savePartners().catch(function () {});
+        }
+        renderPartners();
+      })
+      box.appendChild(del);
+    }
+    td.appendChild(box);
+    tr.appendChild(td);
+    var sum = el("td", "fin-c-sum");
+    tr.appendChild(sum);
+    for (var d = 1; d <= state.days; d += 1) {
+      var cell = el("td", "fin-num fin-in" + (dayFlags(d).off ? " is-off" : ""));
+      var input = document.createElement("input");
+      input.type = "number";
+      input.inputMode = "decimal";
+      input.dataset.d = d;
+      input.value = store[d] != null ? store[d] : "";
+      input.disabled = !state.canManage;
+      noAutofill(input);
+      input.addEventListener("input", function (event) {
+        var day = Number(event.target.dataset.d);
+        if (event.target.value === "") delete store[day];
+        else store[day] = num(event.target.value);
+        recalcPartners();
+        partnersMarkDirty(buyer, offer, tag);
+      });
+      input.addEventListener("wheel", function (event) {
+        if (document.activeElement === event.target) event.target.blur();
+      }, { passive: true });
+      cell.appendChild(input);
+      tr.appendChild(cell);
+    }
+    tag.sumCell = sum;
+    return tr;
+  }
+
+  function partnersIncomeRow(buyer, offer) {
+    var tr = el("tr", "fin-calc fin-offer-income");
+    tr.appendChild(labelCell("Доход"));
+    var sum = el("td", "fin-c-sum");
+    tr.appendChild(sum);
+    var days = {};
+    for (var d = 1; d <= state.days; d += 1) {
+      var cell = el("td", "fin-num" + (dayFlags(d).off ? " is-off" : ""));
+      var value = el("span", "fin-v", "–");
+      cell.appendChild(value);
+      tr.appendChild(cell);
+      days[d] = value;
+    }
+    partnersCells["inc|" + buyer.id + "|" + (offer.book_offer_id || offer.source_offer_id)] =
+      { sum: sum, days: days };
+    return tr;
+  }
+
+  /* Доход считается на лету по ставке оффера — как в книге баера. */
+  function recalcPartners() {
+    var totals = { deposits: 0, income: 0 };
+    partnersVisible.forEach(function (row) {
+      var bandDeposits = 0;
+      row.offers.forEach(function (offer) {
+        var rate = partnersRate(offer, row.eurRate);
+        var deposits = 0;
+        var incomeSum = 0;
+        var slot = partnersCells["inc|" + row.id + "|" +
+          (offer.book_offer_id || offer.source_offer_id)];
+        for (var d = 1; d <= state.days; d += 1) {
+          var count = partnersDeposits(offer, d);
+          deposits += count;
+          incomeSum += count * rate;
+          if (slot) {
+            slot.days[d].textContent = count ? whole(count * rate) : "–";
+            slot.days[d].classList.toggle("is-zero", !count);
+          }
+        }
+        if (slot) slot.sum.textContent = incomeSum ? whole(incomeSum) : "–";
+        partnersTags(offer).forEach(function (tag) {
+          if (!tag.sumCell) return;
+          var tagSum = 0;
+          for (var day = 1; day <= state.days; day += 1) tagSum += num((tag.values || {})[day]);
+          tag.sumCell.textContent = tagSum ? whole(tagSum) : "–";
+        });
+        bandDeposits += deposits;
+        totals.deposits += deposits;
+        totals.income += incomeSum;
+      });
+      if (row.bandValue) {
+        row.bandValue.textContent = bandDeposits ? whole(bandDeposits) + " деп." : "— деп.";
+      }
+    });
+    var cards = document.querySelectorAll("#finPartnersCards .fin-pcard b");
+    if (cards[0]) cards[0].textContent = totals.deposits ? whole(totals.deposits) : "—";
+    if (cards[1]) {
+      cards[1].textContent = totals.income ? "$ " + money(totals.income) : "—";
+      cards[1].className = totals.income ? "is-gain" : "";
+    }
+  }
+
+  /* Полоса баера: аватар, имя, сколько у него строк и сколько депозитов —
+     чтобы в длинном листе было видно, где кончается один человек и начинается
+     другой. */
+  function partnersBandRow(row) {
+    var tr = el("tr", "fin-band fin-band--offer fin-pband");
+    var fixed = el("td", "fin-band-label");
+    fixed.colSpan = 2;
+    var inner = el("div", "fin-pband-inner");
+    inner.appendChild(el("span", "fin-pavatar", initials(row.name)));
+    inner.appendChild(el("span", "fin-pname", row.name));
+    inner.appendChild(el("span", "fin-pcount",
+      row.offers.length + " " + plural(row.offers.length, "оффер", "оффера", "офферов")));
+    var deposits = el("span", "fin-pdep", "— деп.");
+    row.bandValue = deposits;
+    inner.appendChild(deposits);
+    fixed.appendChild(inner);
+    tr.appendChild(fixed);
+    var days = el("td", "fin-band-fill");
+    days.colSpan = state.days;
+    tr.appendChild(days);
+    return tr;
+  }
+
+  function initials(name) {
+    var parts = String(name || "").trim().split(/\s+/);
+    var first = (parts[0] || "").slice(0, 2);
+    return (parts.length > 1 ? parts[0][0] + parts[1][0] : first).toUpperCase();
+  }
+
+  function renderPartnersCards(rows) {
+    var host = byId("finPartnersCards");
+    if (!host) return;
+    var offers = rows.reduce(function (total, row) { return total + row.offers.length; }, 0);
+    var partners = {};
+    rows.forEach(function (row) {
+      row.offers.forEach(function (offer) {
+        if (offer.partner) partners[offer.partner] = true;
+      });
+    });
+    var partnerCount = Object.keys(partners).length;
+    var cards = [
+      { label: "Депозиты", value: "—" },
+      { label: "Доход", value: "—" },
+      { label: "Строк офферов", value: String(offers) },
+      { label: "Партнёрок", value: String(partnerCount) },
+      { label: "Баеров", value: String(rows.length) }
+    ];
+    host.innerHTML = "";
+    cards.forEach(function (card) {
+      var box = el("div", "fin-pcard");
+      box.appendChild(el("span", null, card.label));
+      box.appendChild(el("b", null, card.value));
+      host.appendChild(box);
+    });
+  }
+
+  function renderPartners() {
+    var head = byId("finPartnersHead");
+    head.innerHTML = "";
+    head.appendChild(dayHeadRow());
+    var body = byId("finPartnersBody");
+    body.innerHTML = "";
+    var rows = partnersRows();
+    renderPartnersCards(rows);
+    partnersCells = {};
+    partnersVisible = rows;
+    rows.forEach(function (row) {
+      body.appendChild(partnersBandRow(row));
+      row.offers.forEach(function (offer) {
+        body.appendChild(section(partnersOfferRow(row, offer), "offer"));
+        partnersTags(offer).forEach(function (tag, tagIndex) {
+          body.appendChild(section(partnersTagRow(row, offer, tag, tagIndex), "offer"));
+        });
+        body.appendChild(section(partnersIncomeRow(row, offer), "offer"));
+      });
+    });
+    recalcPartners();
+    var offers = rows.reduce(function (total, row) { return total + row.offers.length; }, 0);
+    byId("finPartnersCount").textContent = rows.length
+      ? rows.length + " " + plural(rows.length, "баер", "баера", "баеров") + " · " +
+        offers + " " + plural(offers, "оффер", "оффера", "офферов")
+      : "Под фильтр ничего не подошло";
+  }
+
+  /* ---------- окно расхода дня ----------
+   *
+   * Книга показывает расход Медиаборда, поэтому и правится он там же: окно
+   * раскладывает сумму по агентам и делит её между офферами этого тира за
+   * день — ровно как окно «Изменить данные» в Медиаборде.
+   */
+
+  var spendDay = null;
+
+  function spendTier() {
+    return state.bookTab === "T23" ? "T23" : "T1";
+  }
+
+  function spendScopeLabel() {
+    return "Все офферы · " + (spendTier() === "T23" ? "Tier2/3" : "Tier1");
+  }
+
+  async function spendProviders() {
+    if (state.spendProviders) return state.spendProviders;
+    try {
+      var page = await api.get("/spend-providers?status=active&limit=200");
+      state.spendProviders = (page && page.items) || [];
+    } catch (error) {
+      state.spendProviders = [];
+    }
+    return state.spendProviders;
+  }
+
+  function agentName(provider) {
+    var percent = Number(provider.commission_pct || 0);
+    if (!isFinite(percent) || percent <= 0) return provider.name;
+    return provider.name + " (" + String(Number(percent.toFixed(2))) + "%)";
+  }
+
+  /* Что уже разложено за этот день: суммы агентов по записям нужного тира. */
+  async function spendDayAgents(day) {
+    var date = state.year + "-" + pad2(state.month) + "-" + pad2(day);
+    var totals = {};
+    var records = 0;
+    try {
+      var page = await api.get("/media-records?limit=1000&date_from=" + date +
+        "&date_to=" + date + "&buyer_id=" + encodeURIComponent(state.buyerId));
+      (page.items || []).forEach(function (item) {
+        if (item.tier !== spendTier()) return;
+        records += 1;
+        Object.keys(item.providers || {}).forEach(function (id) {
+          var base = Number((item.providers[id] || {}).base_amount || 0);
+          if (!isFinite(base) || base <= 0) return;
+          totals[id] = (totals[id] || 0) + base;
+        });
+      });
+    } catch (error) {
+      return { totals: {}, records: null };
+    }
+    return { totals: totals, records: records };
+  }
+
+  function pad2(value) {
+    return (value < 10 ? "0" : "") + value;
+  }
+
+  function spendModalError(text) {
+    var box = byId("finSpendError");
+    box.textContent = text || "";
+    box.hidden = !text;
+  }
+
+  function spendAgentRow(providerId, amount) {
+    var row = el("div", "fin-agent");
+    var pick = document.createElement("select");
+    pick.setAttribute("aria-label", "Агент");
+    (state.spendProviders || []).forEach(function (provider) {
+      var option = document.createElement("option");
+      option.value = provider.id;
+      option.textContent = agentName(provider);
+      option.selected = provider.id === providerId;
+      pick.appendChild(option);
+    });
+    var sum = document.createElement("input");
+    sum.type = "number";
+    sum.step = "0.01";
+    sum.min = "0";
+    sum.inputMode = "decimal";
+    sum.value = amount != null ? amount : "";
+    sum.setAttribute("aria-label", "Сумма до комиссии, USD");
+    noAutofill(sum);
+    var drop = el("button", "fin-agent__drop", "×");
+    drop.type = "button";
+    drop.title = "Убрать агента";
+    var hint = el("div", "fin-agent__hint");
+    function paint() {
+      var provider = (state.spendProviders || []).filter(function (item) {
+        return item.id === pick.value;
+      })[0];
+      var percent = Number((provider || {}).commission_pct || 0);
+      var value = Number(sum.value);
+      hint.textContent = isFinite(value) && value > 0
+        ? "в SPEND: $" + (value * (percent / 100 + 1)).toFixed(2)
+        : "";
+    }
+    pick.addEventListener("change", paint);
+    sum.addEventListener("input", paint);
+    drop.addEventListener("click", function () {
+      row.remove();
+      hint.remove();
+    });
+    row.appendChild(pick);
+    row.appendChild(sum);
+    row.appendChild(drop);
+    paint();
+    return { row: row, hint: hint, pick: pick, sum: sum };
+  }
+
+  function spendAddAgent(providerId, amount) {
+    var host = byId("finSpendAgents");
+    var parts = spendAgentRow(providerId, amount);
+    host.appendChild(parts.row);
+    host.appendChild(parts.hint);
+    return parts;
+  }
+
+  async function openSpendDay(day) {
+    if (!state.canSpend || !state.buyerId) return;
+    await spendProviders();
+    if (!state.spendProviders.length) return;
+    spendDay = { day: day, tier: spendTier() };
+    byId("finSpendDate").textContent = pad2(day) + "." + pad2(state.month) + "." + state.year;
+    byId("finSpendBuyer").textContent = state.buyerName || "";
+    byId("finSpendScope").textContent = spendScopeLabel();
+    byId("finSpendAgents").innerHTML = "";
+    byId("finSpendAddAgent").hidden = false;
+    spendModalError("");
+    byId("finSpendModal").hidden = false;
+    var loaded = await spendDayAgents(day);
+    if (spendDay && spendDay.day !== day) return;
+    var ids = Object.keys(loaded.totals);
+    if (ids.length) {
+      ids.forEach(function (id) { spendAddAgent(id, roundMoney(loaded.totals[id])); });
+    } else {
+      spendAddAgent(state.spendProviders[0].id, "");
+    }
+    if (loaded.records === 0) {
+      // Делить не по чему: в этот день у баера нет ни одной записи нужного
+      // тира. Тогда окно пишет сумму прямо в книгу — как прежняя ручная ячейка.
+      spendDay.manual = true;
+      byId("finSpendAgents").innerHTML = "";
+      byId("finSpendAddAgent").hidden = true;
+      var manual = el("div", "fin-agent");
+      var field = document.createElement("input");
+      field.type = "number";
+      field.step = "1";
+      field.min = "0";
+      field.inputMode = "numeric";
+      field.id = "finSpendManual";
+      field.value = state.manual.spendBuyer[day] != null ? state.manual.spendBuyer[day] : "";
+      field.setAttribute("aria-label", "Расход за день, USD");
+      noAutofill(field);
+      manual.appendChild(el("div", null, "Расход за день, $"));
+      manual.appendChild(field);
+      byId("finSpendAgents").appendChild(manual);
+      spendModalError(
+        "За этот день у баера нет офферов " + spendScopeLabel().toLowerCase() +
+        " — сумма ляжет прямо в книгу."
+      );
+    }
+  }
+
+  function roundMoney(value) {
+    var amount = Number(value);
+    if (!isFinite(amount)) return "";
+    return Math.round((amount + Number.EPSILON) * 100) / 100;
+  }
+
+  function closeSpendDay() {
+    spendDay = null;
+    byId("finSpendModal").hidden = true;
+  }
+
+  async function saveSpendDay() {
+    if (!spendDay) return;
+    if (spendDay.manual) {
+      var field = byId("finSpendManual");
+      var day = spendDay.day;
+      if (!field.value.trim()) delete state.manual.spendBuyer[day];
+      else state.manual.spendBuyer[day] = Math.round(num(field.value));
+      state.manualDirty[day] = ++state.manualRevision;
+      paintSpendCell(spendCells[day - 1]);
+      recalc();
+      scheduleSave();
+      closeSpendDay();
+      return;
+    }
+    var providers = [];
+    var seen = {};
+    var rows = byId("finSpendAgents").querySelectorAll(".fin-agent");
+    for (var index = 0; index < rows.length; index += 1) {
+      var pick = rows[index].querySelector("select");
+      var sum = rows[index].querySelector("input");
+      var value = num(sum.value);
+      if (!sum.value.trim()) continue;
+      if (seen[pick.value]) {
+        spendModalError("Один агент дважды в одном дне — уберите лишнюю строку");
+        return;
+      }
+      seen[pick.value] = true;
+      providers.push({ provider_id: pick.value, base_amount: value });
+    }
+    var button = byId("finSpendSave");
+    button.disabled = true;
+    spendModalError("");
+    try {
+      await api.post("/media-records/day-spend", {
+        record_date: state.year + "-" + pad2(state.month) + "-" + pad2(spendDay.day),
+        buyer_id: state.buyerId,
+        tier: spendDay.tier,
+        providers: providers
+      });
+      closeSpendDay();
+      await loadBook();
+    } catch (error) {
+      spendModalError(error && error.message ? error.message : "Не удалось сохранить");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function bindSpendDay() {
+    if (!byId("finSpendModal")) return;
+    byId("finSpendClose").addEventListener("click", closeSpendDay);
+    byId("finSpendCancel").addEventListener("click", closeSpendDay);
+    byId("finSpendSave").addEventListener("click", function () {
+      saveSpendDay().catch(function () {});
+    });
+    byId("finSpendAddAgent").addEventListener("click", function () {
+      var used = Array.prototype.map.call(
+        byId("finSpendAgents").querySelectorAll("select"),
+        function (node) { return node.value; }
+      );
+      var free = (state.spendProviders || []).filter(function (provider) {
+        return used.indexOf(provider.id) < 0;
+      })[0];
+      spendAddAgent(free ? free.id : (state.spendProviders[0] || {}).id, "");
+    });
+    byId("finSpendModal").addEventListener("click", function (event) {
+      if (event.target === event.currentTarget) closeSpendDay();
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !byId("finSpendModal").hidden) closeSpendDay();
+    });
+  }
+
+  function bindPartners() {
+    var factory = window.CelestialBoard && window.CelestialBoard.multiFilter;
+    if (!byId("finPartnersUsers") || !factory) return;
+    partnersFilters.users = factory(byId("finPartnersUsers"), renderPartners);
+    partnersFilters.partners = factory(byId("finPartnersPartners"), renderPartners);
+    state.partnersView.users = partnersFilters.users;
+    state.partnersView.partners = partnersFilters.partners;
+    byId("finPartnersReset").addEventListener("click", function () {
+      var changed = partnersFilters.users.clear();
+      changed = partnersFilters.partners.clear() || changed;
+      if (changed) renderPartners();
+    });
+  }
+
   function bind() {
+    bindPartners();
+    bindSpendDay();
     var grid = byId("finGrid");
     grid.addEventListener("keydown", onKeydown);
     grid.addEventListener("paste", onPaste);
@@ -2107,6 +2922,8 @@
     if (!byId("finGrid")) return;
     state.user = user;
     state.canManage = hasPermission(user, "finance.manage");
+    // Расход книги живёт в Медиаборде: окно дня правит именно его записи.
+    state.canSpend = hasPermission(user, "media.manage");
     var now = window.CelestialTime.today();
     state.year = now.getFullYear();
     state.month = now.getMonth() + 1;

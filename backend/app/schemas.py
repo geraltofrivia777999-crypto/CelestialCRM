@@ -1692,6 +1692,30 @@ class FinanceBookIn(BaseModel):
         return {day: entry for day, entry in value.items() if 1 <= day <= 31}
 
 
+class FinancePartnersTagIn(BaseModel):
+    """Одна строка сводки «Партнёрки»: чей оффер, какой тег и его депозиты.
+
+    Оффер приходит либо строкой книги (`book_offer_id`), либо справочным
+    (`source_offer_id`) — во втором случае строка в книге баера ещё не заведена
+    и создаётся при первом же введённом числе.
+    """
+
+    buyer_id: uuid.UUID
+    book_offer_id: uuid.UUID | None = None
+    source_offer_id: uuid.UUID | None = None
+    tag_id: uuid.UUID | None = None
+    name: str = Field(default="", max_length=120)
+    values: dict[int, Decimal] = Field(default_factory=dict)
+    # Удалить тег вместе с его депозитами за месяц.
+    drop: bool = False
+
+
+class FinancePartnersIn(BaseModel):
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    tags: list[FinancePartnersTagIn] = Field(default_factory=list, max_length=500)
+
+
 class PreferenceIn(BaseModel):
     value: dict = Field(default_factory=dict)
 

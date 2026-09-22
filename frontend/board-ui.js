@@ -3363,6 +3363,9 @@
   // Финансы переехали в собственный модуль (finance-ui.js) — там книга баера по
   // дням, а не построчные записи, и общей с Медиабордом механики уже нет.
   window.CelestialBoard = {
-    initMedia: function (user) { return mediaBoard.init(user); }
+    initMedia: function (user) { return mediaBoard.init(user); },
+    // Тот же фильтр с поиском, что над Медиабордом: его просят и другие
+    // разделы, а второй такой же в соседнем файле разошёлся бы с этим.
+    multiFilter: createMultiFilter
   };
 })();
