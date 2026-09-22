@@ -39,6 +39,8 @@ dist/
 logs/
 backups/
 uploads/
+releases/
+infra/tls/letsencrypt/
 
 # Local design and assistant artifacts
 .claude/
@@ -58,6 +60,7 @@ CRM Dashboard дизайн v2/
 *.swo
 *~
 .DS_Store
+._*
 Thumbs.db
 Desktop.ini
 

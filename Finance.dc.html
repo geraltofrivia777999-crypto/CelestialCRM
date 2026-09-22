@@ -181,6 +181,11 @@
   .fin-lock:hover{color:var(--f-accent);opacity:1}
   .fin-lock:focus-visible{opacity:1;outline:2px solid var(--f-accent);outline-offset:1px}
   .fin-lock:disabled{cursor:default}
+  /* Общий замок месяца у подписи «Спенд» — та же кнопка, что замок оффера, и в
+     том же месте: справа невидимая заглушка шириной с корзину оффера, чтобы
+     замки стояли на одной вертикали. */
+  .fin-spend-head > .fin-r-lab{flex:1 1 auto;min-width:0}
+  .fin-spend-gap{visibility:hidden}
   .fin-grid td.fin-in--lock.is-locked .fin-lock{opacity:1;color:var(--f-accent)}
   .fin-grid td.fin-in--lock.is-locked input{font-weight:800}
 
@@ -387,26 +392,24 @@
   @media (max-width:900px){
     .fin-card-value,.fin-pcard b{font-size:28px}
   }
-  /* Окно расхода дня: та же разбивка по агентам, что в Медиаборде. */
-  /* Окно висит в конце body, вне .fin — переменные раздела задаём ему сами. */
-  .fin-modal{--f-ink:#150E0E;--f-ink-4:#A89999;--f-paper:#FFFFFF;--f-sand:#FAF7F6;--f-line:#EBE4E3;--f-line-2:#DCD2D1;--f-accent:#B91414;--f-loss:#C41616;position:fixed;inset:0;z-index:2147482500;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(18,12,12,.45)}
-  .fin-modal[hidden]{display:none}
-  .fin-modal__card{background:var(--f-paper);border-radius:18px;width:min(640px,100%);max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3)}
-  .fin-modal__head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 22px 16px;border-bottom:1px solid var(--f-line)}
-  .fin-modal__head h2{font:800 19px/1 'Alumni Sans',Inter,sans-serif}
-  .fin-modal__body{padding:18px 22px;overflow:auto;display:grid;gap:14px}
-  .fin-modal__foot{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:16px 22px 20px;border-top:1px solid var(--f-line)}
-  .fin-modal__grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-  .fin-modal__field{display:grid;gap:6px;font:700 10.5px/1 Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--f-ink-4)}
-  .fin-modal__value{height:42px;display:flex;align-items:center;padding:0 12px;border:1px solid var(--f-line-2);border-radius:11px;background:var(--f-sand);font:700 13px/1 Inter,sans-serif;text-transform:none;letter-spacing:0;color:var(--f-ink)}
-  .fin-agents{display:grid;gap:10px;padding:14px;border:1px solid var(--f-line);border-radius:14px}
-  .fin-agent{display:grid;grid-template-columns:1fr 170px 34px;gap:10px;align-items:start}
-  .fin-agent select,.fin-agent input{height:42px;border:1px solid var(--f-line-2);border-radius:11px;background:var(--f-paper);padding:0 12px;font:700 13px/1 Inter,sans-serif;color:var(--f-ink);width:100%}
-  .fin-agent__hint{grid-column:2;font:600 11px/1 Inter,sans-serif;color:var(--f-ink-4);margin-top:-4px}
-  .fin-agent__drop{height:42px;border:1px solid var(--f-line-2);border-radius:11px;background:var(--f-paper);color:var(--f-ink-4);cursor:pointer}
-  .fin-agent__drop:hover{border-color:var(--f-accent);color:var(--f-accent)}
-  .fin-modal__error{background:#FCF1F1;border-radius:11px;padding:11px 14px;font:700 12px/1.4 Inter,sans-serif;color:var(--f-loss)}
-  .fin-modal__error[hidden]{display:none}
+  /* Окно расхода дня — то же окно, что «Изменить данные» в Медиаборде. Основная
+     раскладка приходит из общих стилей board-ui.js (.board-edit-overlay--finance);
+     здесь только то, что Медиаборд задаёт своим окнам прямо в разметке. */
+  /* Ниже панелей выпадающих списков и календарей (.csel-panel и др., 2147482000):
+     они рисуются в body, и окно выше них закрывало бы список агентов. */
+  .board-edit-overlay--spend{position:fixed;inset:0;z-index:2147481000;display:flex;align-items:center;justify-content:center;background:rgba(18,12,12,.45)}
+  .board-edit-overlay--spend[hidden]{display:none}
+  .board-edit-overlay--spend .board-edit-card{background:#fff;border-radius:18px}
+  .board-edit-overlay--spend .board-edit-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+  .board-edit-overlay--spend .board-edit-title{font-weight:700;margin:0}
+  .board-edit-overlay--spend .board-edit-close{border:none;background:#F7F4F4;border-radius:9px;width:32px;height:32px;cursor:pointer}
+  .board-edit-overlay--spend .board-edit-body{min-width:0}
+  .board-edit-overlay--spend .board-edit-field{display:flex;flex-direction:column;font-weight:700}
+  .board-edit-overlay--spend .board-edit-cancel{border:1px solid #EBE6E6;background:#fff;font-weight:700;color:#6A6161;cursor:pointer}
+  .board-edit-overlay--spend .board-edit-save{border:0;background:#B91414;color:#fff;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)}
+  .board-edit-overlay--spend .board-edit-agent-add[hidden]{display:none}
+  .board-edit-overlay--spend .board-edit-error{margin-top:14px;background:#FCF1F1;border-radius:10px;padding:11px 14px;font:700 12px/1.4 Inter,sans-serif;color:#C41616}
+  .board-edit-overlay--spend .board-edit-error[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -642,27 +645,30 @@
   </main>
 </div>
 
-<div class="fin-modal" id="finSpendModal" role="dialog" aria-modal="true" aria-labelledby="finSpendTitle" hidden>
-  <div class="fin-modal__card">
-    <div class="fin-modal__head">
-      <h2 id="finSpendTitle">Изменить данные</h2>
-      <button class="fin-btn" type="button" id="finSpendClose" aria-label="Закрыть">×</button>
+<div class="board-edit-overlay board-edit-overlay--finance board-edit-overlay--spend" id="finSpendModal" hidden>
+  <div class="board-edit-card" role="dialog" aria-modal="true" tabindex="-1" aria-labelledby="finSpendTitle">
+    <div class="board-edit-header">
+      <div><h2 class="board-edit-title" id="finSpendTitle">Изменить данные</h2></div>
+      <button class="board-edit-close" type="button" id="finSpendClose" aria-label="Закрыть"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
     </div>
-    <div class="fin-modal__body">
-      <div class="fin-modal__grid">
-        <label class="fin-modal__field"><span>Дата</span><span class="fin-modal__value" id="finSpendDate">—</span></label>
-        <label class="fin-modal__field"><span>Баер</span><span class="fin-modal__value" id="finSpendBuyer">—</span></label>
-        <label class="fin-modal__field"><span>Оффер</span><span class="fin-modal__value" id="finSpendScope">—</span></label>
+    <div class="board-edit-body">
+      <div class="board-edit-context">
+        <div class="board-edit-locked">
+          <div class="board-edit-field board-edit-locked__item"><span>Дата</span><b id="finSpendDate">—</b></div>
+          <div class="board-edit-field board-edit-locked__item"><span>Баер</span><b id="finSpendBuyer">—</b></div>
+          <div class="board-edit-field board-edit-locked__item"><span>Оффер</span><b id="finSpendScope">—</b></div>
+        </div>
       </div>
-      <div class="fin-agents" id="finSpendAgents"></div>
-      <div>
-        <button class="fin-btn" type="button" id="finSpendAddAgent">+ Добавить агента</button>
-      </div>
-      <div class="fin-modal__error" id="finSpendError" role="alert" hidden></div>
+      <section class="board-edit-section board-edit-section--providers">
+        <div class="board-edit-agents" id="finSpendAgents"></div>
+        <div class="board-edit-agents-empty" id="finSpendEmpty">Ни одного агента ещё не добавлено</div>
+        <button class="board-edit-agent-add" type="button" id="finSpendAddAgent"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>Добавить агента</button>
+      </section>
+      <div class="board-edit-error" id="finSpendError" role="alert" hidden></div>
     </div>
-    <div class="fin-modal__foot">
-      <button class="fin-btn" type="button" id="finSpendCancel">Отмена</button>
-      <button class="fin-btn fin-pp" type="button" id="finSpendSave">Сохранить</button>
+    <div class="board-edit-footer">
+      <button class="board-edit-button board-edit-cancel" type="button" id="finSpendCancel">Отмена</button>
+      <button class="board-edit-button board-edit-save" type="button" id="finSpendSave">Сохранить</button>
     </div>
   </div>
 </div>

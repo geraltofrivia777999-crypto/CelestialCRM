@@ -172,6 +172,11 @@ class User(UUIDMixin, TimestampMixin, Base):
     status: Mapped[Status] = mapped_column(Enum(Status), default=Status.active, index=True)
     keitaro_company_group: Mapped[str | None] = mapped_column(String(160))
     keitaro_offer_group: Mapped[str | None] = mapped_column(String(160))
+    # Теги для Финансов: каждый становится строкой под оффером, когда оффер
+    # назначают этому человеку. Первый — группа офферов Keitaro.
+    finance_tags: Mapped[list] = mapped_column(
+        JSON, default=list, server_default="[]", nullable=False
+    )
     team_name: Mapped[str | None] = mapped_column(String(120))
     role: Mapped[Role] = relationship(lazy="selectin")
 

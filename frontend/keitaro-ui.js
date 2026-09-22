@@ -583,6 +583,100 @@
     Object.keys(PICKERS).forEach(function (kind) { setPickerOpen(kind, false); });
   }
 
+  /* ---------- теги пользователя ----------
+
+     Первый тег — группа офферов Keitaro: он ставится сам и крестика не имеет.
+     У нового пользователя группа стоит первой; у существующего новая группа
+     встаёт под прежней, а не заменяет её — по старому тегу в Финансах уже
+     могли ввести депозиты. Сервер держит то же правило. */
+  var userTags = { tags: [], isNew: true };
+
+  function sameTag(left, right) {
+    return String(left).toLowerCase() === String(right).toLowerCase();
+  }
+
+  function currentOfferGroup() {
+    var form = byId("createUserForm");
+    return form ? String(form.elements.offerGroup.value || "").trim() : "";
+  }
+
+  function userTagList() {
+    var group = currentOfferGroup();
+    var list = userTags.tags.slice();
+    var present = list.some(function (tag) { return sameTag(tag, group); });
+    if (group && !present) {
+      if (userTags.isNew) list.unshift(group);
+      else list.push(group);
+    }
+    return list;
+  }
+
+  function renderUserTags() {
+    var box = byId("userTags");
+    var input = byId("userTagInput");
+    if (!box || !input) return;
+    var group = currentOfferGroup();
+    box.querySelectorAll(".team-tag").forEach(function (node) { node.remove(); });
+    userTagList().forEach(function (tag) {
+      var chip = document.createElement("span");
+      var auto = group && sameTag(tag, group);
+      chip.className = "team-tag" + (auto ? " is-auto" : "");
+      chip.textContent = tag;
+      if (auto) {
+        chip.title = "Группа офферов Keitaro — ставится автоматически";
+      } else {
+        var drop = document.createElement("button");
+        drop.type = "button";
+        drop.textContent = "×";
+        drop.dataset.tag = tag;
+        drop.setAttribute("aria-label", "Убрать тег " + tag);
+        chip.appendChild(drop);
+      }
+      box.insertBefore(chip, input);
+    });
+  }
+
+  // Набранное, но не подтверждённое Enter, тоже считается тегом — как в
+  // ключевых словах Рекрутинга.
+  function addUserTag(value) {
+    var tag = String(value || "").trim().slice(0, 120);
+    if (!tag) return false;
+    if (userTagList().some(function (item) { return sameTag(item, tag); })) return true;
+    userTags.tags.push(tag);
+    renderUserTags();
+    return true;
+  }
+
+  function bindUserTags() {
+    var box = byId("userTags");
+    var input = byId("userTagInput");
+    if (!box || !input) return;
+    input.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") return;
+      // Иначе Enter отправит всю форму пользователя.
+      event.preventDefault();
+      if (addUserTag(input.value)) input.value = "";
+    });
+    box.addEventListener("click", function (event) {
+      var drop = event.target.closest("button[data-tag]");
+      if (drop) {
+        userTags.tags = userTags.tags.filter(function (tag) {
+          return !sameTag(tag, drop.dataset.tag);
+        });
+        renderUserTags();
+        return;
+      }
+      if (event.target === box) input.focus();
+    });
+    var add = byId("addUserTag");
+    if (add) add.addEventListener("click", function () {
+      if (input.value.trim() && addUserTag(input.value)) input.value = "";
+      input.focus();
+    });
+    var form = byId("createUserForm");
+    if (form) form.elements.offerGroup.addEventListener("change", renderUserTags);
+  }
+
   function openUserEditor(user) {
     var form = byId("createUserForm");
     if (!form) return;
@@ -626,6 +720,9 @@
     }
     setPickerSelection("parent", Array.from(pickerState.parent.selectedIds));
     setPickerSelection("child", Array.from(pickerState.child.selectedIds));
+    userTags = { tags: user ? (user.finance_tags || []).slice() : [], isNew: !user };
+    if (byId("userTagInput")) byId("userTagInput").value = "";
+    renderUserTags();
     closeAllPickers();
     keitaroGroupsStatus("");
     byId("userModal").classList.add("open");
@@ -1278,6 +1375,7 @@
     if (userForm) {
       userForm.addEventListener("submit", saveUser, true);
     }
+    bindUserTags();
     var groupsButton = byId("refreshKeitaroGroups");
     if (groupsButton) {
       groupsButton.addEventListener("click", function () {
@@ -1368,8 +1466,14 @@
       parent_ids: Array.from(pickerState.parent.selectedIds),
       child_ids: Array.from(pickerState.child.selectedIds),
       keitaro_company_group: form.elements.companyGroup.value || null,
-      keitaro_offer_group: form.elements.offerGroup.value || null
+      keitaro_offer_group: form.elements.offerGroup.value || null,
+      finance_tags: userTagList()
     };
+    var pendingTag = byId("userTagInput");
+    if (pendingTag && addUserTag(pendingTag.value)) {
+      pendingTag.value = "";
+      payload.finance_tags = userTagList();
+    }
     if (!userId) payload.password = form.elements.password.value;
     submit.disabled = true;
     submit.textContent = "Сохраняю…";

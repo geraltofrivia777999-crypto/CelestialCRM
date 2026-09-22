@@ -51,6 +51,7 @@ class UserOut(ORMModel):
     parents: list[UserParentOut] = Field(default_factory=list)
     keitaro_company_group: str | None = None
     keitaro_offer_group: str | None = None
+    finance_tags: list[str] = Field(default_factory=list)
     team_name: str | None = None
 
 
@@ -66,6 +67,7 @@ class UserCreate(BaseModel):
     child_ids: list[uuid.UUID] = Field(default_factory=list)
     keitaro_company_group: str | None = None
     keitaro_offer_group: str | None = None
+    finance_tags: list[str] = Field(default_factory=list, max_length=50)
     team_name: str | None = Field(default=None, max_length=120)
 
 
@@ -78,6 +80,7 @@ class UserUpdate(BaseModel):
     child_ids: list[uuid.UUID] | None = None
     keitaro_company_group: str | None = Field(default=None, max_length=160)
     keitaro_offer_group: str | None = Field(default=None, max_length=160)
+    finance_tags: list[str] | None = Field(default=None, max_length=50)
     team_name: str | None = Field(default=None, max_length=120)
 
 

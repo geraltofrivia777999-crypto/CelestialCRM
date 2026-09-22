@@ -12,12 +12,13 @@
 import uuid
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import business_today
-from app.models import FinanceBook, FinanceBookOffer, FinanceOfferTag, Offer, Partner
+from app.models import FinanceBook, FinanceBookOffer, FinanceOfferTag, Offer, Partner, User
 from app.services.country_tiers import UNASSIGNED, tier_for, tier_map
+from app.services.user_tags import normalize_tags
 
 
 async def pull_offer_to_books(
@@ -48,6 +49,12 @@ async def pull_offer_to_books(
 
     moment = today or business_today()
     partner = await _partner_name(db, offer)
+    tags_by_buyer = {
+        buyer_id: normalize_tags(tags or [])
+        for buyer_id, tags in (
+            await db.execute(select(User.id, User.finance_tags).where(User.id.in_(buyer_ids)))
+        ).all()
+    }
     touched: list[uuid.UUID] = []
     for buyer_id in buyer_ids:
         book = await db.scalar(
@@ -104,11 +111,97 @@ async def pull_offer_to_books(
         )
         db.add(row)
         await db.flush()
-        # Пустая строка под оффером: имя ей даёт сам баер — «SOK», «долёты»,
-        # что угодно. Без неё вводить депозиты некуда.
-        db.add(FinanceOfferTag(offer_id=row.id, position=0, name=""))
+        # Под оффером — по строке на каждый тег баера (первый — его группа
+        # офферов Keitaro). Тегов нет — одна пустая строка: имя ей даёт сам
+        # баер, а без строки вводить депозиты некуда.
+        for tag_position, tag in enumerate(tags_by_buyer.get(buyer_id) or [""]):
+            db.add(FinanceOfferTag(offer_id=row.id, position=tag_position, name=tag))
         touched.append(buyer_id)
     return touched
+
+
+async def add_tags_to_book_offers(
+    db: AsyncSession, book_id: uuid.UUID, tags: list[str]
+) -> list[tuple[str, str, str]]:
+    """Дописать теги под каждым оффером книги, если их там ещё нет.
+
+    Тег сначала занимает первую безымянную строку оффера (депозиты в ней
+    остаются), а когда таких нет — встаёт новой строкой в конец. Названные
+    строки не трогаются, так что повторный вызов ничего не дублирует.
+
+    Возвращает (оффер, "rename" | "add", тег) — для отчёта разового скрипта.
+    """
+    changes: list[tuple[str, str, str]] = []
+    offers = list(
+        (
+            await db.execute(
+                select(FinanceBookOffer)
+                .where(FinanceBookOffer.book_id == book_id)
+                .order_by(FinanceBookOffer.position)
+            )
+        ).scalars()
+    )
+    for offer in offers:
+        rows = list(
+            (
+                await db.execute(
+                    select(FinanceOfferTag)
+                    .where(FinanceOfferTag.offer_id == offer.id)
+                    .order_by(FinanceOfferTag.position)
+                )
+            ).scalars()
+        )
+        have = {row.name.strip().lower() for row in rows if row.name.strip()}
+        empty = [row for row in rows if not row.name.strip()]
+        position = max((row.position for row in rows), default=-1)
+        for tag in tags:
+            if tag.lower() in have:
+                continue
+            have.add(tag.lower())
+            if empty:
+                empty.pop(0).name = tag
+                changes.append((offer.name, "rename", tag))
+            else:
+                position += 1
+                db.add(FinanceOfferTag(offer_id=offer.id, position=position, name=tag))
+                changes.append((offer.name, "add", tag))
+    return changes
+
+
+async def add_tags_to_open_books(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    buyer_id: uuid.UUID,
+    tags: list[str],
+    *,
+    today: date | None = None,
+) -> None:
+    """Новый тег пользователя — строкой под его офферами с текущего месяца.
+
+    Закрытые месяцы не меняются, как и при назначении оффера. Убранный тег
+    строк не удаляет: в них уже могли ввести депозиты.
+    """
+    from app.services.finance_spend import lock_workspace
+
+    tags = normalize_tags(tags)
+    if not tags:
+        return
+    await lock_workspace(db, workspace_id)
+    moment = today or business_today()
+    book_ids = (
+        await db.execute(
+            select(FinanceBook.id).where(
+                FinanceBook.workspace_id == workspace_id,
+                FinanceBook.buyer_id == buyer_id,
+                or_(
+                    FinanceBook.year > moment.year,
+                    and_(FinanceBook.year == moment.year, FinanceBook.month >= moment.month),
+                ),
+            )
+        )
+    ).scalars()
+    for book_id in list(book_ids):
+        await add_tags_to_book_offers(db, book_id, tags)
 
 
 async def push_book_changes_to_offers(

@@ -46,6 +46,8 @@ from app.schemas import (
     UserUpdate,
 )
 from app.services.audit import audit
+from app.services.finance_pull import add_tags_to_open_books
+from app.services.user_tags import tags_with_group
 
 MAX_PAGE_SIZE = 500
 
@@ -154,6 +156,10 @@ async def create_user(
         status=payload.status,
         keitaro_company_group=_optional_text(payload.keitaro_company_group),
         keitaro_offer_group=_optional_text(payload.keitaro_offer_group),
+        # Группа офферов — первый тег нового человека.
+        finance_tags=tags_with_group(
+            payload.finance_tags, payload.keitaro_offer_group, first=True
+        ),
         team_name=_optional_text(payload.team_name),
     )
     db.add(user)
@@ -214,6 +220,20 @@ async def update_user(
         user.keitaro_company_group = _optional_text(changes["keitaro_company_group"])
     if "keitaro_offer_group" in changes:
         user.keitaro_offer_group = _optional_text(changes["keitaro_offer_group"])
+    if "finance_tags" in changes or "keitaro_offer_group" in changes:
+        # Новая группа офферов встаёт отдельным тегом под прежней, а не
+        # заменяет её: по старому тегу в книгах уже могли ввести депозиты.
+        tags = changes.get("finance_tags")
+        before = {tag.lower() for tag in user.finance_tags or []}
+        user.finance_tags = tags_with_group(
+            (user.finance_tags or []) if tags is None else tags,
+            user.keitaro_offer_group,
+        )
+        # Новый тег сразу встаёт строкой под офферами, которые уже в книгах
+        # этого месяца, — а не только под назначенными после него.
+        added = [tag for tag in user.finance_tags if tag.lower() not in before]
+        if added:
+            await add_tags_to_open_books(db, current.workspace_id, user.id, added)
     if "team_name" in changes:
         user.team_name = _optional_text(changes["team_name"])
     if "parent_ids" in changes:
@@ -970,6 +990,7 @@ def _user_payload(user: User, parents: list[dict]) -> dict:
         "parents": parents,
         "keitaro_company_group": user.keitaro_company_group,
         "keitaro_offer_group": user.keitaro_offer_group,
+        "finance_tags": list(user.finance_tags or []),
         "team_name": user.team_name,
     }
 

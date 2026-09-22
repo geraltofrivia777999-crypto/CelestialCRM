@@ -194,6 +194,17 @@
   @keyframes team-kt-spin{to{transform:rotate(360deg)}}
   .team-kt__status{margin-top:-4px;color:#16B57F;font-size:11.5px;font-weight:600;line-height:1.5}
   .team-kt__status.is-muted{color:#9B9292}
+  /* Теги пользователя: поле — как «Группа офферов Keitaro» (.form-input),
+     внутри теги-«таблетки» и строка ввода без своей рамки. */
+  .team-tags__box{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:44px;padding:7px 13px 7px 8px;border:1px solid #E5DFDF;border-radius:11px;background:#fff;cursor:text}
+  .team-tags__box:focus-within{border-color:#D06060;box-shadow:0 0 0 3px rgba(185,20,20,.09)}
+  .team-tag{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 11px;border:1px solid #E7C9C9;border-radius:8px;background:#FCF1F1;font:700 11.5px Inter,sans-serif;color:#B91414}
+  .team-tag button{border:0;background:none;padding:0 3px;font-size:14px;line-height:1;color:#9B9292;cursor:pointer}
+  .team-tag button:hover{color:#B91414}
+  /* Тег группы офферов ставится сам и крестика не имеет. */
+  .team-tag.is-auto{padding-right:9px}
+  .team-tag.is-auto::after{content:"авто";font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#D06060}
+  .team-tags__input{flex:1;min-width:110px;height:28px;border:0;padding:0 5px;outline:none;background:transparent;color:#2A2020;font-size:13px}
   .team-kt__status.is-error{color:#C41616}
   .team-kt__status[hidden]{display:none}
 </style>
@@ -410,6 +421,10 @@
           <div id="keitaroGroupsStatus" class="team-kt__status" role="status" hidden></div>
           <label><span class="field-label">Группа кампаний Keitaro</span><select class="form-input" name="companyGroup"><option value="">Без привязки</option></select></label>
           <label><span class="field-label">Группа офферов Keitaro</span><select class="form-input" name="offerGroup"><option value="">Без привязки</option></select></label>
+        </div>
+        <div class="team-kt">
+          <div class="team-kt__head"><span class="team-kt__title">Теги</span><button id="addUserTag" type="button" class="team-kt__refresh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg><span>Добавить тег</span></button></div>
+          <div><span class="field-label">Теги пользователя</span><div id="userTags" class="team-tags__box"><input id="userTagInput" class="team-tags__input" type="text" autocomplete="off" placeholder="Название тега" aria-label="Название тега"></div></div>
         </div>
       </div>
       <div style="padding:16px 24px 22px;border-top:1px solid #EBE6E6;display:flex;justify-content:flex-end;gap:10px"><button id="cancelUserModal" type="button" style="height:42px;border:1px solid #E5DFDF;background:#fff;border-radius:10px;padding:0 16px;color:#6A6161;font-size:12.5px;font-weight:700">Отмена</button><button id="saveUserButton" type="submit" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Создать пользователя</button></div>

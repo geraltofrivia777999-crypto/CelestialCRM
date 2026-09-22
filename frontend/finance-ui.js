@@ -132,6 +132,8 @@
     eurRate: 1,
     mediaSpend: {},
     manualDirty: {},
+    // Теги баера из «Команды»: строки под оффером, добавленным в книге.
+    buyerTags: [],
     manualRevision: 0,
     manual: { spendBuyer: {}, spendAgent: {}, costs: {} },
     offers: [],
@@ -382,6 +384,14 @@
     offer.sourceOfferId = item.id;
     offer.externalId = item.external_id || "";
     offer.lockedFields = [];
+    // Как при назначении оффера в «Офферах»: по строке на каждый тег баера.
+    // Только пока строки пустые — набранное руками не переписываем.
+    var blank = offer.tags.every(function (tag) {
+      return !String(tag.name || "").trim() && !Object.keys(tag.values || {}).length;
+    });
+    if (blank && state.buyerTags.length) {
+      offer.tags = state.buyerTags.map(function (name) { return { name: name, values: {} }; });
+    }
     renderBody();
     recalc();
     scheduleSave();
@@ -501,6 +511,7 @@
       : "Значение из медиаборда. Впишите своё, чтобы закрепить";
     cell.lock.setAttribute("aria-label", cell.lock.title);
     cell.lock.setAttribute("aria-pressed", locked ? "true" : "false");
+    paintSpendMaster();
     if (cell.input !== document.activeElement) {
       // Спенд ведём в целых долларах: «1259.9876» в ячейку не помещается и
       // обрезается, а копейки кабинетов на решения финансиста не влияют.
@@ -514,10 +525,64 @@
   }
 
   var spendCells = [];
+  var spendMaster = null;
+
+  /* Общий замок у подписи «Спенд» — весь месяц разом. Своего состояния у него
+     нет: закрыт, только когда закрыт каждый день, поэтому после перезагрузки
+     показывает то, что лежит на сервере. */
+  function spendAllLocked() {
+    for (var d = 1; d <= state.days; d += 1) {
+      if (!spendLocked(d)) return false;
+    }
+    return state.days > 0;
+  }
+
+  function paintSpendMaster() {
+    if (!spendMaster) return;
+    var locked = spendAllLocked();
+    spendMaster.innerHTML = locked ? LOCK_CLOSED : LOCK_OPEN;
+    spendMaster.title = locked
+      ? "Весь месяц закреплён. Нажмите, чтобы вернуть автоподсчёт из медиаборда во все дни"
+      : "Нажмите, чтобы закрепить весь месяц: медиаборд перестанет менять эти дни";
+    spendMaster.setAttribute("aria-label", spendMaster.title);
+    spendMaster.setAttribute("aria-pressed", locked ? "true" : "false");
+  }
+
+  // Закрыть: каждый открытый день фиксируется тем, что в нём сейчас (пустой —
+  // нулём). Открыть: все дни возвращаются к медиаборду, закрытые поодиночке тоже.
+  function toggleSpendMonth() {
+    var unlock = spendAllLocked();
+    for (var d = 1; d <= state.days; d += 1) {
+      if (unlock) delete state.manual.spendBuyer[d];
+      else if (spendLocked(d)) continue;
+      else state.manual.spendBuyer[d] = Math.round(num(state.mediaSpend[d]));
+      state.manualDirty[d] = ++state.manualRevision;
+    }
+    repaintSpend();
+    recalc();
+    scheduleSave();
+  }
 
   function spendRow() {
     var tr = el("tr");
-    tr.appendChild(labelCell("Спенд", "медиаборд, пока не закрыт замок"));
+    spendMaster = null;
+    var label = labelCell("Спенд", "медиаборд, пока не закрыт замок");
+    var head = el("div", "fin-o-wrap fin-spend-head");
+    head.appendChild(label.firstChild);
+    // Как у оффера: замок только у тех, кто правит книгу.
+    if (state.canManage) {
+      spendMaster = el("button", "fin-spend-lock");
+      spendMaster.type = "button";
+      spendMaster.addEventListener("click", toggleSpendMonth);
+      head.appendChild(spendMaster);
+      // Место корзины оффера — замки строк совпадают по вертикали.
+      var gap = el("span", "fin-o-del fin-spend-gap");
+      gap.setAttribute("aria-hidden", "true");
+      gap.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15"></svg>';
+      head.appendChild(gap);
+    }
+    label.appendChild(head);
+    tr.appendChild(label);
     var sum = el("td", "fin-c-sum");
     tr.appendChild(sum);
     var line = [];
@@ -1386,6 +1451,7 @@
     state.mediaSpend = {};
     state.manualDirty = {};
     state.manual = { spendBuyer: {}, spendAgent: {}, costs: {} };
+    state.buyerTags = (book.buyer && book.buyer.tags) || [];
     Object.keys(book.days || {}).forEach(function (day) {
       var entry = book.days[day];
       state.mediaSpend[Number(day)] = num(entry.media_spend);
@@ -2579,6 +2645,10 @@
    */
 
   var spendDay = null;
+  // Номер последнего открытия окна: ячейка открывает его и на focus, и на
+  // click, и строки агентов должен добавить только последний вызов — иначе
+  // каждый агент дня появлялся в окне дважды.
+  var spendOpenSeq = 0;
 
   function spendTier() {
     return state.bookTab === "T23" ? "T23" : "T1";
@@ -2638,10 +2708,23 @@
     box.hidden = !text;
   }
 
+  var SPEND_DROP_SVG =
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+    '<path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round"/></svg>';
+
+  // Поле с подписью над ним — как в окне правки Медиаборда.
+  function spendField(label, control) {
+    var field = el("label", "board-edit-field", label);
+    field.appendChild(control);
+    return field;
+  }
+
   function spendAgentRow(providerId, amount) {
-    var row = el("div", "fin-agent");
+    var row = el("div", "board-edit-agent");
+    row.setAttribute("data-agent-row", "1");
     var pick = document.createElement("select");
-    pick.setAttribute("aria-label", "Агент");
+    pick.className = "board-edit-select";
     (state.spendProviders || []).forEach(function (provider) {
       var option = document.createElement("option");
       option.value = provider.id;
@@ -2650,17 +2733,19 @@
       pick.appendChild(option);
     });
     var sum = document.createElement("input");
+    sum.className = "board-edit-input";
     sum.type = "number";
     sum.step = "0.01";
     sum.min = "0";
     sum.inputMode = "decimal";
     sum.value = amount != null ? amount : "";
-    sum.setAttribute("aria-label", "Сумма до комиссии, USD");
     noAutofill(sum);
-    var drop = el("button", "fin-agent__drop", "×");
+    var drop = el("button", "board-edit-agent-drop");
     drop.type = "button";
     drop.title = "Убрать агента";
-    var hint = el("div", "fin-agent__hint");
+    drop.setAttribute("aria-label", "Убрать агента");
+    drop.innerHTML = SPEND_DROP_SVG;
+    var hint = el("span", "board-edit-agent-hint");
     function paint() {
       var provider = (state.spendProviders || []).filter(function (item) {
         return item.id === pick.value;
@@ -2671,31 +2756,55 @@
         ? "в SPEND: $" + (value * (percent / 100 + 1)).toFixed(2)
         : "";
     }
-    pick.addEventListener("change", paint);
+    pick.addEventListener("change", function () {
+      paint();
+      spendRefreshAgents();
+    });
     sum.addEventListener("input", paint);
     drop.addEventListener("click", function () {
       row.remove();
-      hint.remove();
+      spendRefreshAgents();
     });
-    row.appendChild(pick);
-    row.appendChild(sum);
+    row.appendChild(spendField("Агент", pick));
+    row.appendChild(spendField("Сумма до комиссии, USD", sum));
     row.appendChild(drop);
+    row.appendChild(hint);
     paint();
     return { row: row, hint: hint, pick: pick, sum: sum };
   }
 
-  function spendAddAgent(providerId, amount) {
+  /* Как в Медиаборде: агент в дне один раз — занятых гасим в списках, а
+     «Добавить агента» выключаем, когда свободных не осталось. */
+  function spendRefreshAgents() {
     var host = byId("finSpendAgents");
+    var rows = host.querySelectorAll("[data-agent-row]");
+    var picks = host.querySelectorAll("[data-agent-row] select");
+    Array.prototype.forEach.call(picks, function (pick) {
+      var taken = Array.prototype.filter.call(picks, function (other) {
+        return other !== pick;
+      }).map(function (other) { return other.value; });
+      Array.prototype.forEach.call(pick.options, function (option) {
+        option.disabled = taken.indexOf(option.value) >= 0;
+      });
+    });
+    byId("finSpendAddAgent").disabled = rows.length >= (state.spendProviders || []).length;
+    byId("finSpendEmpty").hidden = rows.length > 0 || !!(spendDay && spendDay.manual);
+  }
+
+  function spendAddAgent(providerId, amount) {
     var parts = spendAgentRow(providerId, amount);
-    host.appendChild(parts.row);
-    host.appendChild(parts.hint);
+    byId("finSpendAgents").appendChild(parts.row);
+    spendRefreshAgents();
     return parts;
   }
 
   async function openSpendDay(day) {
     if (!state.canSpend || !state.buyerId) return;
+    // Окно этого дня уже открыто (второй вызов того же клика) — не трогаем.
+    if (spendDay && spendDay.day === day && !byId("finSpendModal").hidden) return;
+    var seq = ++spendOpenSeq;
     await spendProviders();
-    if (!state.spendProviders.length) return;
+    if (seq !== spendOpenSeq || !state.spendProviders.length) return;
     spendDay = { day: day, tier: spendTier() };
     byId("finSpendDate").textContent = pad2(day) + "." + pad2(state.month) + "." + state.year;
     byId("finSpendBuyer").textContent = state.buyerName || "";
@@ -2703,23 +2812,27 @@
     byId("finSpendAgents").innerHTML = "";
     byId("finSpendAddAgent").hidden = false;
     spendModalError("");
-    byId("finSpendModal").hidden = false;
-    var loaded = await spendDayAgents(day);
-    if (spendDay && spendDay.day !== day) return;
-    var ids = Object.keys(loaded.totals);
-    if (ids.length) {
-      ids.forEach(function (id) { spendAddAgent(id, roundMoney(loaded.totals[id])); });
-    } else {
-      spendAddAgent(state.spendProviders[0].id, "");
+    spendRefreshAgents();
+    if (window.CelestialBoard && window.CelestialBoard.modalStyles) {
+      window.CelestialBoard.modalStyles();
     }
+    byId("finSpendModal").hidden = false;
+    document.body.style.overflow = "hidden";
+    byId("finSpendModal").querySelector(".board-edit-card").focus();
+    var loaded = await spendDayAgents(day);
+    if (seq !== spendOpenSeq || !spendDay || spendDay.day !== day) return;
+    // Пустой день открывается без агентов: строку добавляют кнопкой.
+    Object.keys(loaded.totals).forEach(function (id) {
+      spendAddAgent(id, roundMoney(loaded.totals[id]));
+    });
     if (loaded.records === 0) {
       // Делить не по чему: в этот день у баера нет ни одной записи нужного
       // тира. Тогда окно пишет сумму прямо в книгу — как прежняя ручная ячейка.
       spendDay.manual = true;
       byId("finSpendAgents").innerHTML = "";
       byId("finSpendAddAgent").hidden = true;
-      var manual = el("div", "fin-agent");
       var field = document.createElement("input");
+      field.className = "board-edit-input";
       field.type = "number";
       field.step = "1";
       field.min = "0";
@@ -2728,9 +2841,8 @@
       field.value = state.manual.spendBuyer[day] != null ? state.manual.spendBuyer[day] : "";
       field.setAttribute("aria-label", "Расход за день, USD");
       noAutofill(field);
-      manual.appendChild(el("div", null, "Расход за день, $"));
-      manual.appendChild(field);
-      byId("finSpendAgents").appendChild(manual);
+      byId("finSpendAgents").appendChild(spendField("Расход за день, $", field));
+      spendRefreshAgents();
       spendModalError(
         "За этот день у баера нет офферов " + spendScopeLabel().toLowerCase() +
         " — сумма ляжет прямо в книгу."
@@ -2747,6 +2859,7 @@
   function closeSpendDay() {
     spendDay = null;
     byId("finSpendModal").hidden = true;
+    document.body.style.overflow = "";
   }
 
   async function saveSpendDay() {
@@ -2765,7 +2878,7 @@
     }
     var providers = [];
     var seen = {};
-    var rows = byId("finSpendAgents").querySelectorAll(".fin-agent");
+    var rows = byId("finSpendAgents").querySelectorAll("[data-agent-row]");
     for (var index = 0; index < rows.length; index += 1) {
       var pick = rows[index].querySelector("select");
       var sum = rows[index].querySelector("input");
@@ -2781,20 +2894,40 @@
     var button = byId("finSpendSave");
     button.disabled = true;
     spendModalError("");
+    var savedDay = spendDay.day;
     try {
+      // loadBook ниже сбрасывает отложенное сохранение книги — сначала
+      // доводим его, чтобы не потерять только что набранные цифры.
+      await flushSave();
       await api.post("/media-records/day-spend", {
-        record_date: state.year + "-" + pad2(state.month) + "-" + pad2(spendDay.day),
+        record_date: state.year + "-" + pad2(state.month) + "-" + pad2(savedDay),
         buyer_id: state.buyerId,
         tier: spendDay.tier,
         providers: providers
       });
       closeSpendDay();
       await loadBook();
+      lockSpendFromMedia(savedDay, providers.length > 0);
     } catch (error) {
       spendModalError(error && error.message ? error.message : "Не удалось сохранить");
     } finally {
       button.disabled = false;
     }
+  }
+
+  /* Сумма, внесённая в Финансах, запирает день замком — как ручной ввод в
+     ячейку: дальнейшие правки в Медиаборде книгу этого дня уже не меняют.
+     Внесённое в самом Медиаборде замок не трогает. Фиксируем итог дня с
+     комиссией, который Медиаборд только что пересчитал; окно без агентов
+     замок снимает. */
+  function lockSpendFromMedia(day, lock) {
+    if (!state.loaded || !spendCells[day - 1]) return;
+    if (lock) state.manual.spendBuyer[day] = Math.round(num(state.mediaSpend[day]));
+    else delete state.manual.spendBuyer[day];
+    state.manualDirty[day] = ++state.manualRevision;
+    paintSpendCell(spendCells[day - 1]);
+    recalc();
+    scheduleSave();
   }
 
   function bindSpendDay() {
@@ -2806,7 +2939,7 @@
     });
     byId("finSpendAddAgent").addEventListener("click", function () {
       var used = Array.prototype.map.call(
-        byId("finSpendAgents").querySelectorAll("select"),
+        byId("finSpendAgents").querySelectorAll("[data-agent-row] select"),
         function (node) { return node.value; }
       );
       var free = (state.spendProviders || []).filter(function (provider) {

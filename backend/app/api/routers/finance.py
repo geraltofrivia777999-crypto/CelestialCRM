@@ -163,7 +163,12 @@ def _serialize(
     рядом с гео — на расчёт он больше не влияет: тир задаёт сама таблица."""
     days_in_month = calendar.monthrange(year, month)[1]
     return {
-        "buyer": {"id": str(buyer.id), "name": buyer.name},
+        # Теги баера: оффер, добавленный прямо в книге, получает их строками.
+        "buyer": {
+            "id": str(buyer.id),
+            "name": buyer.name,
+            "tags": list(buyer.finance_tags or []),
+        },
         "year": year,
         "month": month,
         "days_in_month": days_in_month,

@@ -3366,6 +3366,9 @@
     initMedia: function (user) { return mediaBoard.init(user); },
     // Тот же фильтр с поиском, что над Медиабордом: его просят и другие
     // разделы, а второй такой же в соседнем файле разошёлся бы с этим.
-    multiFilter: createMultiFilter
+    multiFilter: createMultiFilter,
+    // Окно расхода дня в Финансах выглядит как окно правки Медиаборда —
+    // стили берёт отсюда же, чтобы окна не расходились.
+    modalStyles: ensureFinanceModalStyles
   };
 })();

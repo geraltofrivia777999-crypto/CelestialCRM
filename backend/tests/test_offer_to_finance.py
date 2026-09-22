@@ -351,3 +351,109 @@ async def test_the_book_offers_the_same_partners_as_the_catalog(database) -> Non
         async with SessionLocal() as db:
             await db.execute(delete(Partner).where(Partner.id == partner_id))
             await db.commit()
+
+
+async def test_each_buyer_tag_becomes_its_own_row_under_the_offer(pulled_offer) -> None:
+    """Теги баера — по строке под оффером, первой идёт группа офферов Keitaro."""
+    with _admin_client() as client:
+        updated = client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"keitaro_offer_group": "MBR", "finance_tags": ["FB", "fb", " LATAM "]},
+        )
+        client.put(
+            f"/api/v1/offers/{pulled_offer['offer']}/buyers",
+            json={"buyer_ids": [pulled_offer["buyer"]]},
+        )
+        book = _book(client, pulled_offer["buyer"], "T1")
+        # Смена группы не переписывает старый тег, а встаёт новым под ним.
+        regrouped = client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"keitaro_offer_group": "MBR2"},
+        )
+        client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"keitaro_offer_group": None, "finance_tags": []},
+        )
+
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["finance_tags"] == ["FB", "LATAM", "MBR"]
+    assert [tag["name"] for tag in book["offers"][0]["tags"]] == ["FB", "LATAM", "MBR"]
+    assert book["buyer"]["tags"] == ["FB", "LATAM", "MBR"]
+    assert regrouped.json()["finance_tags"] == ["FB", "LATAM", "MBR", "MBR2"]
+
+
+async def test_a_new_user_starts_with_the_offer_group_as_the_first_tag(database) -> None:
+    with _admin_client() as client:
+        role_id = client.get("/api/v1/roles").json()[0]["id"]
+        created = client.post(
+            "/api/v1/users",
+            json={
+                "name": "tagged_user",
+                "login": "tagged_user",
+                "password": "secret-password",
+                "role_id": role_id,
+                "keitaro_offer_group": "MBR",
+                "finance_tags": ["FB", "MBR"],
+            },
+        )
+        client.delete(f"/api/v1/users/{created.json()['id']}")
+
+    assert created.status_code == 201, created.text
+    assert created.json()["finance_tags"] == ["MBR", "FB"]
+
+
+async def test_backfill_names_the_blank_row_and_adds_the_rest_once(pulled_offer) -> None:
+    """Разовый скрипт: пустая строка получает первый тег, остальные — новыми."""
+    from app.backfill_finance_tags import backfill
+
+    today = date.today()
+    with _admin_client() as client:
+        client.put(
+            f"/api/v1/offers/{pulled_offer['offer']}/buyers",
+            json={"buyer_ids": [pulled_offer["buyer"]]},
+        )
+        client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"keitaro_offer_group": "MBR", "finance_tags": ["MBR", "FB"]},
+        )
+    await backfill(today.year, today.month, dry_run=False)
+    await backfill(today.year, today.month, dry_run=False)
+    with _admin_client() as client:
+        book = _book(client, pulled_offer["buyer"], "T1")
+        client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"keitaro_offer_group": None, "finance_tags": []},
+        )
+
+    assert [tag["name"] for tag in book["offers"][0]["tags"]] == ["MBR", "FB"]
+
+
+async def test_a_tag_added_later_appears_under_offers_already_in_the_book(
+    pulled_offer,
+) -> None:
+    """Тег, добавленный после назначения, встаёт строкой под оффером сразу."""
+    with _admin_client() as client:
+        client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"keitaro_offer_group": "EVS", "finance_tags": ["EVS"]},
+        )
+        client.put(
+            f"/api/v1/offers/{pulled_offer['offer']}/buyers",
+            json={"buyer_ids": [pulled_offer["buyer"]]},
+        )
+        client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"finance_tags": ["EVS", "QN/EVS"]},
+        )
+        # Убранный тег строку не удаляет: в ней могли быть депозиты.
+        client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"finance_tags": ["EVS"]},
+        )
+        book = _book(client, pulled_offer["buyer"], "T1")
+        client.patch(
+            f"/api/v1/users/{pulled_offer['buyer']}",
+            json={"keitaro_offer_group": None, "finance_tags": []},
+        )
+
+    assert [tag["name"] for tag in book["offers"][0]["tags"]] == ["EVS", "QN/EVS"]
