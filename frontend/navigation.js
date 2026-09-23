@@ -15,6 +15,7 @@
     "Dashboard": "/",
     "Медиаборд": "/Mediaboard.dc.html",
     "Meta Ads": "/MetaAds.dc.html",
+    "Структура": "/Structure.dc.html",
     "Задачи": "/Tasks.dc.html",
     "База знаний": "/Knowledge.dc.html",
     "Финансы": "/Finance.dc.html",
@@ -45,6 +46,16 @@
       title: "Meta Ads",
       containers: ["metaLevelHead", "metaTableBody", "metaAttribution"],
       values: ["metaSpend", "metaClicks", "metaLeads", "metaProfit", "metaResultCount"]
+    },
+    {
+      // Прототип древовидной структуры: пока открыт только полному доступу («*»),
+      // отдельного права в каталоге ролей сознательно нет.
+      id: "structure",
+      match: "structure",
+      permission: "*",
+      title: "Структура",
+      containers: [],
+      values: []
     },
     {
       id: "tasks",
