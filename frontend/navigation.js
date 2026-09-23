@@ -48,11 +48,12 @@
       values: ["metaSpend", "metaClicks", "metaLeads", "metaProfit", "metaResultCount"]
     },
     {
-      // Прототип древовидной структуры: пока открыт только полному доступу («*»),
-      // отдельного права в каталоге ролей сознательно нет.
+      // Прототип древовидной структуры доступен только системной роли администратора.
+      // В базе у неё отдельные права, а разрешения «*» может не быть.
       id: "structure",
       match: "structure",
-      permission: "*",
+      permission: "meta.view",
+      adminOnly: true,
       title: "MetaAds v2",
       containers: [],
       values: []
@@ -225,7 +226,7 @@
       if (element.dataset.shellDisplay === undefined) {
         element.dataset.shellDisplay = element.style.display || "";
       }
-      element.style.display = hasPermission(user, rule.permission)
+      element.style.display = canAccessRule(user, rule)
         ? element.dataset.shellDisplay
         : "none";
     });
@@ -284,7 +285,7 @@
     }
     applyNavPermissions(user);
     var rule = currentRule();
-    if (!hasPermission(user, rule.permission)) {
+    if (!canAccessRule(user, rule)) {
       shellState.allowed = false;
       renderAccessDenied(rule);
     }
@@ -309,6 +310,11 @@
     return (user.role.permissions || []).some(function (permission) {
       return permission.code === "*" || permission.code === code;
     });
+  }
+
+  function canAccessRule(user, rule) {
+    if (!hasPermission(user, rule.permission)) return false;
+    return !rule.adminOnly || (user.role.is_system && user.role.name === "Administrator");
   }
 
   function injectShellStyles() {
@@ -916,7 +922,7 @@
     applyNavPermissions(user);
 
     var rule = currentRule();
-    shellState.allowed = hasPermission(user, rule.permission);
+    shellState.allowed = canAccessRule(user, rule);
     if (!shellState.allowed) {
       // Never fall through to the page loader: it would 403 and leave the mock-up
       // rows from the markup visible as if they were real data.
