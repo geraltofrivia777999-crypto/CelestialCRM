@@ -906,7 +906,10 @@
       '<select id="offerFormGeo" class="offer-field">' +
       selectOptions(offerGeoOptions(editing ? offer.geo : ""), editing ? offer.geo : "",
         "Не выбрано") + "</select></div>" +
-      '<div><label class="offer-label" for="offerFormPartner">Партнёрка</label>' +
+      '<div><div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+      '<label class="offer-label" for="offerFormPartner">Партнёрка</label>' +
+      '<button id="offerFormPartnerCreate" type="button" style="border:0;background:none;' +
+      'color:#B91414;font:700 11px Inter,sans-serif;cursor:pointer">+ Новая</button></div>' +
       '<select id="offerFormPartner" class="offer-field">' +
       selectOptions(offersState.partners.map(function (p) {
         return { value: p.id, label: p.name };
@@ -958,6 +961,38 @@
           item.setAttribute("aria-pressed", String(item === button));
         }
       );
+    });
+    byId("offerFormPartnerCreate").addEventListener("click", async function (event) {
+      var button = event.currentTarget;
+      var name = await window.CelestialShell.prompt({
+        title: "Новая партнёрка",
+        message: "Партнёрка сохранится в справочнике CRM и появится в списке офферов.",
+        placeholder: "Название партнёрки",
+        confirmLabel: "Добавить"
+      });
+      if (name === null) return;
+      button.disabled = true;
+      try {
+        var partner = await api.post("/partners", { name: name.trim() });
+        if (!offersState.partners.some(function (item) { return item.id === partner.id; })) {
+          offersState.partners.push(partner);
+        }
+        var select = byId("offerFormPartner");
+        if (!Array.prototype.some.call(select.options, function (option) {
+          return option.value === partner.id;
+        })) {
+          var option = document.createElement("option");
+          option.value = partner.id;
+          option.textContent = partner.name;
+          select.appendChild(option);
+        }
+        select.value = partner.id;
+        toast("Партнёрка добавлена");
+      } catch (error) {
+        fail(error);
+      } finally {
+        button.disabled = false;
+      }
     });
     onSave(overlay, function () {
       var name = byId("offerFormName").value.trim();

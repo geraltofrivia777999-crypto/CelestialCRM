@@ -1102,8 +1102,8 @@ class Partner(UUIDMixin, TimestampMixin, Base):
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
     )
-    connection_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("integration_connections.id", ondelete="CASCADE")
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("integration_connections.id", ondelete="CASCADE"), nullable=True
     )
     external_id: Mapped[str] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(200), nullable=False)

@@ -1496,6 +1496,10 @@ class OfferIn(BaseModel):
     buyer_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
+class PartnerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
 class AssignBuyers(BaseModel):
     buyer_ids: list[uuid.UUID]
 

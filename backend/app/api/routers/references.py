@@ -39,6 +39,7 @@ from app.schemas import (
     OfferStarUpdate,
     OfferStatusUpdate,
     Page,
+    PartnerCreate,
 )
 from app.services import finance_spend
 from app.services.audit import audit
@@ -104,6 +105,48 @@ async def list_partners(
         limit=min(limit, MAX_PAGE_SIZE),
         offset=offset,
     )
+
+
+@router.post("/partners")
+async def create_partner(
+    payload: PartnerCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("offers.manage")),
+) -> dict:
+    """Add a network that Keitaro has not listed yet, without a tracker connection."""
+    name = " ".join(payload.name.split())
+    if not name:
+        raise HTTPException(status_code=422, detail="Укажите название партнёрки")
+    existing = await db.scalar(
+        select(Partner).where(
+            Partner.workspace_id == current.workspace_id,
+            func.lower(Partner.name) == name.lower(),
+        ).order_by(Partner.created_at, Partner.id)
+    )
+    if existing:
+        return {"id": str(existing.id), "name": existing.name}
+    partner = Partner(
+        workspace_id=current.workspace_id,
+        connection_id=None,
+        external_id=f"manual:{uuid.uuid4().hex}",
+        name=name,
+        status=Status.active,
+        status_overridden=True,
+    )
+    db.add(partner)
+    await db.flush()
+    await audit(
+        db,
+        current,
+        "partner.created",
+        f"Created partner {name}",
+        request=request,
+        entity_type="partner",
+        entity_id=str(partner.id),
+    )
+    await db.commit()
+    return {"id": str(partner.id), "name": partner.name}
 
 
 @router.patch("/partners/{partner_id}/status")
@@ -567,6 +610,22 @@ async def offers_reference(
     }
 
 
+async def _valid_partner(
+    db: AsyncSession, current: User, partner_id: uuid.UUID | None
+) -> uuid.UUID | None:
+    if not partner_id:
+        return None
+    found = await db.scalar(
+        select(Partner.id).where(
+            Partner.id == partner_id,
+            Partner.workspace_id == current.workspace_id,
+        )
+    )
+    if not found:
+        raise HTTPException(status_code=422, detail="Партнёрка не найдена")
+    return found
+
+
 async def _valid_partner_integration(
     db: AsyncSession, current: User, integration_id: uuid.UUID | None
 ) -> uuid.UUID | None:
@@ -633,7 +692,7 @@ async def create_offer(
         cpa_currency=payload.cpa_currency,
         kpi=(payload.kpi or "").strip() or None,
         comment=(payload.comment or "").strip() or None,
-        partner_id=payload.partner_id,
+        partner_id=await _valid_partner(db, current, payload.partner_id),
         partner_integration_id=await _valid_partner_integration(
             db, current, payload.partner_integration_id
         ),
@@ -682,7 +741,7 @@ async def update_offer(
     offer.cpa_currency = payload.cpa_currency
     offer.kpi = (payload.kpi or "").strip() or None
     offer.comment = (payload.comment or "").strip() or None
-    offer.partner_id = payload.partner_id
+    offer.partner_id = await _valid_partner(db, current, payload.partner_id)
     offer.partner_integration_id = await _valid_partner_integration(
         db, current, payload.partner_integration_id
     )

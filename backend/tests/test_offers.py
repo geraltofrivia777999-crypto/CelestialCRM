@@ -375,6 +375,48 @@ async def test_the_offer_reference_lists_keitaro_geos_and_partners(offer_rows) -
     assert isinstance(payload["partners"], list)
 
 
+async def test_manual_partner_can_be_created_and_used_without_keitaro(database) -> None:
+    """A new network need not exist in Keitaro before the first CRM offer."""
+    partner_id = None
+    offer_id = None
+    try:
+        with _admin_client() as client:
+            first = client.post("/api/v1/partners", json={"name": "  Huffson   Test  "})
+            assert first.status_code == 200
+            partner_id = first.json()["id"]
+            assert first.json()["name"] == "Huffson Test"
+
+            repeated = client.post("/api/v1/partners", json={"name": "huffson test"})
+            assert repeated.status_code == 200
+            assert repeated.json()["id"] == partner_id
+
+            reference = client.get("/api/v1/offers/reference")
+            assert reference.status_code == 200
+            assert any(row["id"] == partner_id for row in reference.json()["partners"])
+
+            created = client.post(
+                "/api/v1/offers",
+                json={"name": "Manual partner offer", "partner_id": partner_id},
+            )
+            assert created.status_code == 201
+            offer_id = created.json()["id"]
+
+        async with SessionLocal() as db:
+            partner = await db.get(Partner, uuid.UUID(partner_id))
+            offer = await db.get(Offer, uuid.UUID(offer_id))
+            assert partner.connection_id is None
+            assert partner.status == Status.active
+            assert offer.partner_id == partner.id
+    finally:
+        if offer_id:
+            with _admin_client() as client:
+                client.delete(f"/api/v1/offers/{offer_id}")
+        if partner_id:
+            async with SessionLocal() as db:
+                await db.execute(delete(Partner).where(Partner.id == uuid.UUID(partner_id)))
+                await db.commit()
+
+
 async def test_offer_partner_falls_back_to_the_name_on_the_keitaro_row(
     offer_rows,
 ) -> None:
