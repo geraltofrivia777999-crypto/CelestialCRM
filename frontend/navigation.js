@@ -15,7 +15,7 @@
     "Dashboard": "/",
     "Медиаборд": "/Mediaboard.dc.html",
     "Meta Ads": "/MetaAds.dc.html",
-    "Структура": "/Structure.dc.html",
+    "MetaAds v2": "/Structure.dc.html",
     "Задачи": "/Tasks.dc.html",
     "База знаний": "/Knowledge.dc.html",
     "Финансы": "/Finance.dc.html",
@@ -53,7 +53,7 @@
       id: "structure",
       match: "structure",
       permission: "*",
-      title: "Структура",
+      title: "MetaAds v2",
       containers: [],
       values: []
     },
