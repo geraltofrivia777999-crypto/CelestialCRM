@@ -1,5 +1,5 @@
 /*
- * Meta Ads · «Структура» деревом: аккаунт → кампании → адсеты → объявления.
+ * MetaAds v2 · «Обзор» деревом: аккаунт → кампании → адсеты → объявления.
  *
  * Пока это прототип интерфейса: строки берутся из демонстрационного набора,
  * а кнопки только открывают свои окна. Все места, где появятся настоящие
@@ -224,8 +224,49 @@
     "AvgDep", "Спенд", "Бюджет", "Действия"
   ];
 
+  var ICON_CHEVRON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>';
+  var ICON_EYE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
+  var ICON_EYE_OFF = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-2.9 3.8M6.3 6.3C3.6 8 2 12 2 12s3.6 7 10 7c1.9 0 3.5-.6 4.9-1.4"/>' +
+    '<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>';
+
+  function anyOpen() {
+    return Object.keys(state.open).some(function (id) { return state.open[id]; });
+  }
+
+  /* Кнопки в шапке заменили отдельные кнопки панели: стрелка у «Структуры»
+     сворачивает и разворачивает всё дерево, глазики прячут неактивные строки
+     и строки без бюджета. */
+  function headButton(kind, on, title, icon, extra) {
+    return '<button class="mt-th-btn' + (on ? " is-on" : "") + (extra || "") + '" type="button" ' +
+      'data-tree-head="' + kind + '" title="' + escapeHtml(title) + '" aria-label="' +
+      escapeHtml(title) + '" aria-pressed="' + (on ? "true" : "false") + '">' + icon + "</button>";
+  }
+
   function renderHead() {
+    var open = anyOpen();
     byId("metaTreeHead").innerHTML = "<tr>" + COLUMNS.map(function (title) {
+      if (title === "Структура") {
+        return '<th><span class="mt-th">' +
+          headButton("collapse", false, open ? "Свернуть всё" : "Развернуть всё", ICON_CHEVRON,
+            open ? " is-open" : "") + escapeHtml(title) + "</span></th>";
+      }
+      if (title === "Статус") {
+        return '<th><span class="mt-th">' + escapeHtml(title) +
+          headButton("hideOff", state.hideOff,
+            state.hideOff ? "Показать неактивные" : "Скрыть неактивные",
+            state.hideOff ? ICON_EYE_OFF : ICON_EYE) + "</span></th>";
+      }
+      if (title === "Бюджет") {
+        return '<th><span class="mt-th">' + escapeHtml(title) +
+          headButton("hideZero", state.hideZero,
+            state.hideZero ? "Показать с бюджетом 0" : "Скрыть с бюджетом 0",
+            state.hideZero ? ICON_EYE_OFF : ICON_EYE) + "</span></th>";
+      }
       return "<th>" + escapeHtml(title) + "</th>";
     }).join("") + "</tr>";
   }
@@ -239,8 +280,7 @@
   function toggleButton(row, open) {
     return '<button class="mt-toggle' + (open ? " is-open" : "") + '" type="button" ' +
       'data-tree-toggle="' + escapeHtml(row.id) + '" aria-label="Развернуть">' +
-      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-      'stroke-width="2.5" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>';
+      ICON_CHEVRON + "</button>";
   }
 
   function metricCells(row, values, geo) {
@@ -395,39 +435,82 @@
     { key: "avg_dep", label: "AvgDep" }
   ];
 
-  function heatDraft() {
-    return JSON.parse(JSON.stringify(state.heat));
-  }
-
+  /* Черновик — массив, чтобы новые блоки вставали в конец, а смена GEO в
+     только что добавленном блоке не перетасовывала остальные. */
   var draft = null;
 
+  function emptyLimits() {
+    return {
+      avg_inst: { green: "", red: "" },
+      avg_reg: { green: "", red: "" },
+      avg_dep: { green: "", red: "" }
+    };
+  }
+
+  function heatDraft() {
+    return Object.keys(state.heat).map(function (geo) {
+      return { geo: geo, fresh: false, limits: JSON.parse(JSON.stringify(state.heat[geo])) };
+    });
+  }
+
+  function geoOptions() {
+    var known = {};
+    GEO_CHOICES.concat(collectValues("geo")).forEach(function (geo) { known[geo] = true; });
+    return Object.keys(known).sort();
+  }
+
+  function freeGeos(except) {
+    var used = {};
+    draft.forEach(function (block) { used[block.geo] = true; });
+    return geoOptions().filter(function (geo) { return geo === except || !used[geo]; });
+  }
+
+  function shown(value) {
+    return value === "" || value == null ? "—" : String(value).replace(".", ",");
+  }
+
+  function middleText(limits) {
+    return "<span>" + shown(limits.green) + "</span><i>–</i><span>" +
+      shown(limits.red) + "</span>";
+  }
+
+  function heatInput(index, key, edge, value) {
+    return '<input type="text" inputmode="decimal" data-heat-index="' + index +
+      '" data-heat-key="' + key + '" data-heat-edge="' + edge + '" value="' +
+      escapeHtml(value == null ? "" : String(value).replace(".", ",")) + '" aria-label="' +
+      (edge === "green" ? "Зелёный до" : "Красный от") + '">';
+  }
+
+  function heatTitle(block, index) {
+    if (!block.fresh) return "<span>" + escapeHtml(block.geo) + "</span>";
+    return '<select data-heat-geo="' + index + '" aria-label="GEO">' +
+      freeGeos(block.geo).map(function (geo) {
+        return '<option value="' + escapeHtml(geo) + '"' + (geo === block.geo ? " selected" : "") +
+          ">" + escapeHtml(geo) + "</option>";
+      }).join("") + "</select>";
+  }
+
   function renderHeat() {
-    var host = byId("metaTreeHeatBody");
-    var geos = Object.keys(draft);
-    host.innerHTML = geos.length ? geos.map(function (geo) {
-      return '<div class="mt-heat-block"><header><span>' + escapeHtml(geo) + "</span>" +
-        '<button class="mt-btn" type="button" data-heat-drop="' + escapeHtml(geo) +
+    byId("metaTreeHeatBody").innerHTML = draft.map(function (block, index) {
+      return '<div class="mt-heat-block"><header>' + heatTitle(block, index) +
+        '<button class="mt-heat-drop" type="button" data-heat-drop="' + index +
         '">Убрать</button></header>' +
-        '<div class="mt-heat-grid"><span></span><span>Зелёный до</span>' +
-        "<span>Жёлтый между</span><span>Красный от</span>" +
+        '<div class="mt-heat-grid"><span></span>' +
+        '<span class="mt-heat-bar mt-heat-bar--good" title="Зелёный"></span>' +
+        '<span class="mt-heat-bar mt-heat-bar--warn" title="Жёлтый"></span>' +
+        '<span class="mt-heat-bar mt-heat-bar--bad" title="Красный"></span>' +
         HEAT_ROWS.map(function (row) {
-          var limits = draft[geo][row.key] || {};
+          var limits = block.limits[row.key] || { green: "", red: "" };
           return "<b>" + row.label + "</b>" +
-            '<input type="number" step="0.01" data-heat-geo="' + escapeHtml(geo) +
-            '" data-heat-key="' + row.key + '" data-heat-edge="green" value="' +
-            escapeHtml(limits.green == null ? "" : limits.green) + '">' +
-            '<span style="text-align:center;color:#9B9292">жёлтый</span>' +
-            '<input type="number" step="0.01" data-heat-geo="' + escapeHtml(geo) +
-            '" data-heat-key="' + row.key + '" data-heat-edge="red" value="' +
-            escapeHtml(limits.red == null ? "" : limits.red) + '">';
+            '<label class="mt-heat-cell mt-heat-cell--good">' +
+            heatInput(index, row.key, "green", limits.green) + "</label>" +
+            '<div class="mt-heat-cell mt-heat-cell--warn" data-heat-mid="' + index + "-" +
+            row.key + '">' + middleText(limits) + "</div>" +
+            '<label class="mt-heat-cell mt-heat-cell--bad">' +
+            heatInput(index, row.key, "red", limits.red) + "</label>";
         }).join("") + "</div></div>";
-    }).join("") : '<div class="mt-note">GEO пока не добавлены</div>';
-    var picker = byId("metaTreeHeatGeo");
-    picker.innerHTML = GEO_CHOICES.filter(function (geo) {
-      return !draft[geo];
-    }).map(function (geo) {
-      return '<option value="' + geo + '">' + geo + "</option>";
     }).join("");
+    byId("metaTreeHeatAdd").disabled = !freeGeos(null).length;
   }
 
   function openHeat() {
@@ -439,6 +522,27 @@
   function closeHeat() {
     byId("metaTreeHeatModal").classList.remove("is-open");
     draft = null;
+  }
+
+  function limitValue(value) {
+    var text = String(value == null ? "" : value).replace(",", ".").trim();
+    return text === "" || isNaN(Number(text)) ? "" : Number(text);
+  }
+
+  function saveHeat() {
+    // TODO(api): сохранять пороги в /me/preferences/meta.tree.heat.
+    var next = {};
+    draft.forEach(function (block) {
+      var limits = {};
+      HEAT_ROWS.forEach(function (row) {
+        var edge = block.limits[row.key] || {};
+        limits[row.key] = { green: limitValue(edge.green), red: limitValue(edge.red) };
+      });
+      next[block.geo] = limits;
+    });
+    state.heat = next;
+    closeHeat();
+    render();
   }
 
   /* ---------- события ---------- */
@@ -483,12 +587,12 @@
     }));
   }
 
-  function bindToggleButton(id, flag) {
-    var button = byId(id);
-    button.addEventListener("click", function () {
-      state[flag] = !state[flag];
-      button.classList.toggle("is-on", state[flag]);
-      render();
+  function expandAll(rows) {
+    rows.forEach(function (row) {
+      if (row.children && row.children.length) {
+        state.open[row.id] = true;
+        expandAll(row.children);
+      }
     });
   }
 
@@ -501,21 +605,21 @@
       var row = findRow(state.rows, action.getAttribute("data-tree-id"));
       if (row) runAction(action.getAttribute("data-tree-action"), row);
     });
-    bindToggleButton("metaTreeHideOff", "hideOff");
-    bindToggleButton("metaTreeHideZero", "hideZero");
-    byId("metaTreeCollapse").addEventListener("click", function () {
-      state.open = {};
+    byId("metaTreeHead").addEventListener("click", function (event) {
+      var button = event.target.closest("[data-tree-head]");
+      if (!button) return;
+      var kind = button.getAttribute("data-tree-head");
+      if (kind === "collapse") {
+        if (anyOpen()) state.open = {};
+        else expandAll(state.rows);
+      } else {
+        state[kind] = !state[kind];
+      }
       render();
     });
     byId("metaTreeSort").addEventListener("change", function (event) {
       state.sort = event.target.value;
       render();
-    });
-    byId("metaTreeSync").addEventListener("click", function () {
-      notify({
-        title: "Синхронизация",
-        message: "Кнопка появится в работе вместе с загрузкой дерева из Meta и Keitaro."
-      });
     });
     byId("metaTreeHeatOpen").addEventListener("click", openHeat);
     byId("metaTreeHeatClose").addEventListener("click", closeHeat);
@@ -523,35 +627,41 @@
     byId("metaTreeHeatModal").addEventListener("click", function (event) {
       if (event.target === event.currentTarget) closeHeat();
     });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && draft) closeHeat();
+    });
     byId("metaTreeHeatAdd").addEventListener("click", function () {
-      var geo = byId("metaTreeHeatGeo").value;
-      if (!geo || draft[geo]) return;
-      draft[geo] = {
-        avg_inst: { green: "", red: "" },
-        avg_reg: { green: "", red: "" },
-        avg_dep: { green: "", red: "" }
-      };
+      var free = freeGeos(null);
+      if (!free.length) return;
+      draft.push({ geo: free[0], fresh: true, limits: emptyLimits() });
       renderHeat();
+      var blocks = byId("metaTreeHeatBody").children;
+      if (blocks.length) blocks[blocks.length - 1].scrollIntoView({ block: "nearest" });
     });
     byId("metaTreeHeatBody").addEventListener("click", function (event) {
       var drop = event.target.closest("[data-heat-drop]");
       if (!drop) return;
-      delete draft[drop.getAttribute("data-heat-drop")];
+      draft.splice(Number(drop.getAttribute("data-heat-drop")), 1);
+      renderHeat();
+    });
+    byId("metaTreeHeatBody").addEventListener("change", function (event) {
+      var picker = event.target.closest("[data-heat-geo]");
+      if (!picker) return;
+      draft[Number(picker.getAttribute("data-heat-geo"))].geo = picker.value;
       renderHeat();
     });
     byId("metaTreeHeatBody").addEventListener("input", function (event) {
       var field = event.target;
-      if (!field.hasAttribute("data-heat-geo")) return;
-      var geo = field.getAttribute("data-heat-geo");
+      if (!field.hasAttribute("data-heat-index")) return;
+      var index = Number(field.getAttribute("data-heat-index"));
       var key = field.getAttribute("data-heat-key");
-      draft[geo][key][field.getAttribute("data-heat-edge")] = field.value;
+      var limits = draft[index].limits[key];
+      limits[field.getAttribute("data-heat-edge")] = field.value;
+      var middle = byId("metaTreeHeatBody").querySelector(
+        '[data-heat-mid="' + index + "-" + key + '"]');
+      if (middle) middle.innerHTML = middleText(limits);
     });
-    byId("metaTreeHeatSave").addEventListener("click", function () {
-      // TODO(api): сохранять пороги в /me/preferences/meta.tree.heat.
-      state.heat = draft || state.heat;
-      closeHeat();
-      render();
-    });
+    byId("metaTreeHeatSave").addEventListener("click", saveHeat);
     // Период: календарь тот же, что в остальных разделах.
     var to = byId("metaTreeTo");
     if (to) {
