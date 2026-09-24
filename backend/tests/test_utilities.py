@@ -1636,3 +1636,47 @@ def test_a_name_with_a_tag_stays_text() -> None:
 
     assert "<blockquote>Кап &lt;b&gt;жирный&lt;/b&gt;</blockquote>" in text
     assert "Оффер &lt;i&gt;А&lt;/i&gt;" in text
+
+
+async def test_a_cap_writes_to_every_channel_it_was_given(utilities, monkeypatch) -> None:
+    """Один лимит ждут в нескольких чатах — сообщение уходит в каждый."""
+    sent = []
+
+    async def fake_send(token, chat_id, text, thread_id=None):
+        sent.append(chat_id)
+
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        second = AlertChannel(
+            workspace_id=admin.workspace_id,
+            name="Тимлид",
+            chat_id="-1009876543210",
+        )
+        db.add(second)
+        await db.commit()
+        second_id = str(second.id)
+
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/utilities/caps",
+            json=_cap(utilities, channel_ids=[str(utilities["channel"]), second_id]),
+        )
+        listed = client.get("/api/v1/utilities/caps").json()["items"]
+    result = await AlertEngine(SessionLocal).run()
+
+    assert created.status_code == 201, created.text
+    assert created.json()["channel_ids"] == [str(utilities["channel"]), second_id]
+    assert sorted(created.json()["channel_names"]) == ["Команда", "Тимлид"]
+    assert result["caps"] == 1
+    assert sorted(sent) == ["-1001234567890", "-1009876543210"]
+    assert [row["id"] for row in listed] == [created.json()["id"]]
+
+
+async def test_a_cap_without_a_channel_is_refused(utilities) -> None:
+    with _admin_client() as client:
+        refused = client.post(
+            "/api/v1/utilities/caps", json=_cap(utilities, channel_ids=[], channel_id=None)
+        )
+    assert refused.status_code == 422

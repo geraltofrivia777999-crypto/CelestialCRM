@@ -134,7 +134,7 @@
     return {
       name: offer ? "CAP · " + offer.name : "",
       status: "active",
-      channel_id: null,
+      channel_ids: [],
       thread_id: "",
       offer_ids: offer ? [String(offer.id)] : [],
       user_id: null,
@@ -187,7 +187,7 @@
     });
     overlay.addEventListener("change", function (event) {
       var chip = event.target.closest
-        ? event.target.closest("[data-capf-threshold]")
+        ? event.target.closest("[data-capf-threshold],[data-capf-channel]")
         : null;
       if (chip) chip.parentElement.classList.toggle("capf-chip--on", chip.checked);
     });
@@ -433,9 +433,15 @@
         rule.status
       ) + "</select></label>" +
 
-      '<label class="' + half + '"><span class="capf-label">Канал</span>' +
-      '<select class="capf-input capf-select" data-capf-field="channel_id">' +
-      optionsHtml(data.channels, rule.channel_id) + "</select></label>" +
+      // Каналов может быть несколько: один лимит ждут и в чате команды, и у
+      // тимлида. Отмеченные горят красным, как пороги уведомлений ниже.
+      '<div class="capf-field"><span class="capf-label">Каналы</span>' +
+      '<div class="capf-chips">' + data.channels.map(function (channel) {
+        var on = (rule.channel_ids || []).indexOf(String(channel.id)) >= 0;
+        return '<label class="capf-chip' + (on ? " capf-chip--on" : "") + '">' +
+          '<input type="checkbox" data-capf-channel="' + escapeHtml(channel.id) + '"' +
+          (on ? " checked" : "") + ">" + escapeHtml(channel.name) + "</label>";
+      }).join("") + "</div></div>" +
 
       '<label class="' + half + '"><span class="capf-label">Thread ID</span>' +
       '<input class="capf-input" data-capf-field="thread_id" value="' +
@@ -503,6 +509,10 @@
       overlay.querySelectorAll("[data-capf-threshold]:checked"),
       function (input) { return Number(input.getAttribute("data-capf-threshold")); }
     );
+    values.channel_ids = Array.prototype.map.call(
+      overlay.querySelectorAll("[data-capf-channel]:checked"),
+      function (input) { return input.getAttribute("data-capf-channel"); }
+    );
     return values;
   }
 
@@ -510,7 +520,7 @@
     return {
       name: String(values.name || "").trim(),
       status: values.status,
-      channel_id: values.channel_id,
+      channel_ids: values.channel_ids || [],
       thread_id: String(values.thread_id || "").trim() || null,
       offer_ids: values.offer_ids || [],
       user_id: values.user_id || null,
@@ -543,6 +553,7 @@
     try {
       var body = payload(readForm());
       if (!body.name) throw new Error("Укажите название");
+      if (!body.channel_ids.length) throw new Error("Выберите хотя бы один канал");
       if (!(body.limit_value > 0)) throw new Error("Укажите лимит больше нуля");
       if (!body.offer_ids.length && !body.user_id) {
         throw new Error("Выберите офферы или пользователя — иначе непонятно, чей это лимит");
@@ -600,7 +611,9 @@
       var rule = settings.rule
         ? JSON.parse(JSON.stringify(settings.rule))
         : blank(settings.offer);
-      if (!rule.channel_id) rule.channel_id = data.channels[0].id;
+      rule.channel_ids = (rule.channel_ids && rule.channel_ids.length
+        ? rule.channel_ids
+        : (rule.channel_id ? [rule.channel_id] : [data.channels[0].id])).map(String);
       rule.offer_ids = (rule.offer_ids || []).map(String);
 
       // Капы, которые уже висят на этом оффере. Без них кнопка «CapAlert» в

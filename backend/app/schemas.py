@@ -1359,7 +1359,10 @@ class CapRuleIn(BaseModel):
 
     name: str = Field(min_length=1, max_length=160)
     status: Status = Status.active
-    channel_id: uuid.UUID
+    # Канал остался для совместимости: старый клиент шлёт одно поле, новый —
+    # список. Валидатор сводит их в `channel_ids`, а `channel_id` держит первый.
+    channel_id: uuid.UUID | None = None
+    channel_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     thread_id: str | None = Field(default=None, max_length=32)
     offer_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
     user_id: uuid.UUID | None = None
@@ -1371,6 +1374,13 @@ class CapRuleIn(BaseModel):
 
     @model_validator(mode="after")
     def validate_cap(self) -> "CapRuleIn":
+        channels = list(dict.fromkeys(
+            ([self.channel_id] if self.channel_id else []) + list(self.channel_ids)
+        ))
+        if not channels:
+            raise ValueError("Выберите хотя бы один канал")
+        self.channel_ids = channels
+        self.channel_id = channels[0]
         if not self.offer_ids and self.user_id is None:
             raise ValueError("Выберите офферы или пользователя, на кого ставится CAP")
         for percent in self.notify_at:

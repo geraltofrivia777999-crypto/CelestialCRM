@@ -1082,7 +1082,9 @@
         '<td class="cap-cell" style="padding-left:20px">' +
         '<div style="font-weight:700;font-size:13px">' + escapeHtml(rule.name) + "</div></td>" +
         '<td class="cap-cell">' + escapeHtml(rule.user_name || "—") + "</td>" +
-        '<td class="cap-cell">' + escapeHtml(rule.channel_name || "—") + "</td>" +
+        '<td class="cap-cell">' +
+        escapeHtml((rule.channel_names || []).join(", ") || rule.channel_name || "—") +
+        "</td>" +
         '<td class="cap-cell">' + escapeHtml(rule.metric_label || rule.metric) + "</td>" +
         '<td class="cap-cell">' + escapeHtml(period) +
         '<div style="font-size:10.5px;color:#9B9292;margin-top:2px">' +
