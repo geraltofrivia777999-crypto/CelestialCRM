@@ -139,6 +139,25 @@ def cap_offer_ids(rule: CapRule) -> list[uuid.UUID]:
     return result
 
 
+def cap_channel_ids(rule) -> list[uuid.UUID]:
+    """Каналы правила: у капы их список, у остальных правил — один канал.
+
+    Первым всегда идёт `channel_id`: на нём держится внешний ключ, и по нему
+    уходит сообщение у капы, заведённой до появления списка.
+    """
+    result: list[uuid.UUID] = []
+    for value in [rule.channel_id, *(getattr(rule, "channel_ids", None) or [])]:
+        if value is None:
+            continue
+        try:
+            channel_id = value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+        except (TypeError, ValueError):
+            continue
+        if channel_id not in result:
+            result.append(channel_id)
+    return result
+
+
 def cap_today(timezone_name: str | None) -> date:
     """Сегодня по таймзоне капы.
 
@@ -719,25 +738,33 @@ class AlertEngine:
         event_key: str,
     ) -> bool:
         """Один раз записать событие, которое отдельный шаг доставит в Telegram."""
-        exists = await db.scalar(
-            select(AlertEvent.id).where(AlertEvent.event_key == event_key)
-        )
-        if exists:
-            return False
-        event = AlertEvent(
-            workspace_id=rule.workspace_id,
-            rule_name=rule.name,
-            kind=kind,
-            value=value,
-            message=message,
-            event_key=event_key,
-        )
-        if isinstance(rule, CapRule):
-            event.cap_rule_id = rule.id
-        else:
-            event.alert_rule_id = rule.id
-        db.add(event)
-        return True
+        queued = False
+        channels = cap_channel_ids(rule)
+        for index, channel_id in enumerate(channels):
+            # У первого канала ключ прежний: события, отправленные до появления
+            # списка каналов, остаются своими и не уходят повторно.
+            key = event_key if index == 0 else f"{event_key}:ch:{channel_id}"
+            exists = await db.scalar(
+                select(AlertEvent.id).where(AlertEvent.event_key == key)
+            )
+            if exists:
+                continue
+            event = AlertEvent(
+                workspace_id=rule.workspace_id,
+                rule_name=rule.name,
+                kind=kind,
+                value=value,
+                message=message,
+                event_key=key,
+                channel_id=channel_id,
+            )
+            if isinstance(rule, CapRule):
+                event.cap_rule_id = rule.id
+            else:
+                event.alert_rule_id = rule.id
+            db.add(event)
+            queued = True
+        return queued
 
     @staticmethod
     def _retry_at(event: AlertEvent, retry_after: int | None = None) -> datetime:
@@ -764,7 +791,7 @@ class AlertEngine:
                 event.error = "Бот Telegram не подключён"
                 event.next_attempt_at = self._retry_at(event)
                 return False
-            channel = await db.get(AlertChannel, rule.channel_id)
+            channel = await db.get(AlertChannel, event.channel_id or rule.channel_id)
             if channel is None or channel.status != Status.active:
                 event.error = "Канал выключен или удалён"
                 event.next_attempt_at = self._retry_at(event)

@@ -126,11 +126,10 @@ async def test_book_spend_is_written_in_whole_dollars(database) -> None:
     глазах, а копейки рекламных кабинетов на решения финансиста не влияют.
     Округляем по обычным правилам: 0.5 вверх.
     """
+    import uuid as uuid_module
     from decimal import Decimal
 
     from sqlalchemy import select
-
-    import uuid as uuid_module
 
     from app.core.database import SessionLocal
     from app.models import FinanceBook, FinanceBookDay, MediaRecord, User

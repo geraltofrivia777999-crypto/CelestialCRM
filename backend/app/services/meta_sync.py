@@ -101,6 +101,7 @@ class MetaSyncEngine:
                 return {"status": "missing"}
             run.status = SyncStatus.running
             run.started_at = datetime.now(UTC)
+            run.heartbeat_at = run.started_at
             run.details = {"phase": "accounts"}
             await db.commit()
             access_token = decrypt_secret(connection.api_key_encrypted)
@@ -179,6 +180,7 @@ class MetaSyncEngine:
                                 return {"status": "missing"}
                             run.rows_processed = totals["entities"] + totals["stat_rows"]
                             run.progress_pct = int(((index + 1) / max(len(accounts), 1)) * 100)
+                            run.heartbeat_at = datetime.now(UTC)
                             run.details = {
                                 "phase": "insights",
                                 "current_account": account["name"],

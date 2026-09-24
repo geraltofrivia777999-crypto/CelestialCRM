@@ -46,6 +46,7 @@ from app.services.alerts import (
     CAP_PERIODS,
     SCHEDULES,
     ZERO,
+    cap_channel_ids,
     cap_metrics,
     cap_metrics_many,
     cap_offer_ids,
@@ -594,6 +595,8 @@ def _cap_values(payload: CapRuleIn) -> dict:
     """
     values = payload.model_dump()
     values["offer_ids"] = [str(value) for value in values.get("offer_ids") or []]
+    # Первый канал остаётся во внешнем ключе, весь список — в JSON-колонке.
+    values["channel_ids"] = [str(value) for value in values.get("channel_ids") or []]
     values["notify_at"] = normalize_thresholds(values.get("notify_at"))
     return values
 
@@ -814,7 +817,8 @@ async def _names(db: AsyncSession, workspace_id: uuid.UUID) -> dict:
 
 
 async def _validate_targets(db: AsyncSession, current: User, payload) -> None:
-    await _channel(db, current, payload.channel_id)
+    for channel_id in getattr(payload, "channel_ids", None) or [payload.channel_id]:
+        await _channel(db, current, channel_id)
     if payload.user_id is not None:
         user = await db.get(User, payload.user_id)
         if not user or user.workspace_id != current.workspace_id:
@@ -891,6 +895,12 @@ def _cap_row(rule: CapRule, names: dict) -> dict:
         "status": rule.status.value,
         "channel_id": str(rule.channel_id),
         "channel_name": names["channels"].get(rule.channel_id),
+        "channel_ids": [str(value) for value in cap_channel_ids(rule)],
+        "channel_names": [
+            names["channels"].get(value)
+            for value in cap_channel_ids(rule)
+            if names["channels"].get(value)
+        ],
         "thread_id": rule.thread_id,
         "offer_ids": [str(value) for value in cap_offer_ids(rule)],
         "offer_names": [

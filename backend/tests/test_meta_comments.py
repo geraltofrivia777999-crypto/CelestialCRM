@@ -1197,7 +1197,6 @@ async def test_delete_uses_page_token_even_when_comment_id_has_no_page_prefix(
 
     tricky_id = "500001_965938"
     async with SessionLocal() as db:
-        account = await db.get(MetaAdAccount, comment_setup["account"])
         db.add(
             MetaCommentRow(
                 workspace_id=comment_setup["workspace"],

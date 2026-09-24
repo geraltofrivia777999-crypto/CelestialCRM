@@ -134,8 +134,7 @@
     return {
       name: offer ? "CAP · " + offer.name : "",
       status: "active",
-      channel_id: null,
-      thread_id: "",
+      channel_ids: [],
       offer_ids: offer ? [String(offer.id)] : [],
       user_id: null,
       metric: "sales",
@@ -173,9 +172,9 @@
     overlay.addEventListener("click", function (event) {
       if (event.target === overlay) return close();
       var inPicker = event.target.closest ? event.target.closest("[data-capf-ms]") : null;
-      if (inPicker) return offerClick(event);
-      // Клик в любом другом месте формы закрывает список офферов.
-      openOfferList(false);
+      if (inPicker) return pickerClick(event, inPicker);
+      // Клик в любом другом месте формы закрывает открытые списки.
+      closeLists(null);
       var action = event.target.closest
         ? event.target.closest("[data-capf]")
         : null;
@@ -193,16 +192,17 @@
     });
     overlay.addEventListener("input", function (event) {
       if (!event.target.matches || !event.target.matches("[data-capf-search]")) return;
-      openOfferList(true);
-      filterOffers(event.target.value);
+      var typing = event.target.closest("[data-capf-ms]");
+      openList(typing, true);
+      filterItems(typing, event.target.value);
     });
     overlay.addEventListener("keydown", function (event) {
       if (!event.target.matches || !event.target.matches("[data-capf-search]")) return;
-      offerKeydown(event);
+      pickerKeydown(event, event.target.closest("[data-capf-ms]"));
     });
     // Клик по варианту не должен уводить фокус из поля ввода.
     overlay.addEventListener("mousedown", function (event) {
-      if (event.target.closest && event.target.closest("[data-capf-offers]")) {
+      if (event.target.closest && event.target.closest("[data-capf-list]")) {
         event.preventDefault();
       }
     });
@@ -212,12 +212,30 @@
     return overlay;
   }
 
-  /* Офферы — полем с выбранными чипами. Раньше это был список из сотен строк
-     с галочками: отмеченный оффер приходилось искать прокруткой, а понять,
-     что вообще выбрано, можно было только пролистав всё. Теперь выбранное
-     видно в самом поле, ввод там же ищет по названию, а уже выбранные из
-     списка пропадают. */
-  var OFFER_PLACEHOLDER = "Выберите офферы";
+  /* Поле с выбранными чипами и выпадающим списком. Раньше это был список из
+     сотен строк с галочками: отмеченный оффер приходилось искать прокруткой, а
+     понять, что вообще выбрано, можно было только пролистав всё. Теперь
+     выбранное видно в самом поле, ввод там же ищет по названию, а уже
+     выбранное из списка пропадает.
+
+     Полей таких два — офферы и каналы, — поэтому функции получают само поле
+     (`ms`), а не ищут единственное на странице. */
+  var MS_TEXTS = {
+    offers: {
+      placeholder: "Выберите офферы",
+      search: "Поиск офферов",
+      clear: "Снять все офферы",
+      list: "Список офферов",
+      missing: "Оффер недоступен"
+    },
+    channels: {
+      placeholder: "Выберите каналы",
+      search: "Поиск каналов",
+      clear: "Снять все каналы",
+      list: "Список каналов",
+      missing: "Канал недоступен"
+    }
+  };
 
   function crossSvg(size) {
     return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" ' +
@@ -225,53 +243,61 @@
       'stroke-width="2.2" stroke-linecap="round"/></svg>';
   }
 
-  function offerChipHtml(id, name) {
+  function chipHtml(id, name) {
     return '<span class="capf-ms__chip" data-capf-chip="' + escapeHtml(id) + '" title="' +
       escapeHtml(name) + '"><span class="capf-ms__chip-text">' + escapeHtml(name) + "</span>" +
       '<button type="button" class="capf-ms__chip-x" data-capf-chip-drop="' + escapeHtml(id) +
       '" aria-label="Убрать ' + escapeHtml(name) + '">' + crossSvg(12) + "</button></span>";
   }
 
-  function offerPickerHtml(offers, selected) {
+  function pickerHtml(kind, items, selected) {
+    var texts = MS_TEXTS[kind];
     var names = {};
-    offers.forEach(function (offer) { names[String(offer.id)] = offer.name; });
+    items.forEach(function (item) { names[String(item.id)] = item.name; });
     var taken = {};
-    // Оффер, которого уже нет в справочнике, остаётся чипом: иначе первое же
-    // сохранение молча убрало бы его из капы.
+    // Оффера или канала может уже не быть в справочнике — чип всё равно
+    // остаётся: иначе первое же сохранение молча убрало бы его из капы.
     var chips = selected.map(function (id) {
-      taken[id] = true;
-      return offerChipHtml(id, names[id] || "Оффер недоступен");
+      taken[String(id)] = true;
+      return chipHtml(id, names[String(id)] || texts.missing);
     }).join("");
-    return '<div class="capf-ms" data-capf-ms>' +
+    return '<div class="capf-ms" data-capf-ms="' + kind + '">' +
       '<div class="capf-ms__box" data-capf-ms-box>' + chips +
       '<input class="capf-ms__input" data-capf-search autocomplete="off" ' +
-      'aria-label="Поиск офферов" placeholder="' + (selected.length ? "" : OFFER_PLACEHOLDER) + '">' +
+      'aria-label="' + texts.search + '" placeholder="' +
+      (selected.length ? "" : texts.placeholder) + '">' +
       '<span class="capf-ms__tools">' +
       '<button type="button" class="capf-ms__clear" data-capf-ms-clear ' +
-      'aria-label="Снять все офферы"' + (selected.length ? "" : " hidden") + ">" +
+      'aria-label="' + texts.clear + '"' + (selected.length ? "" : " hidden") + ">" +
       crossSvg(14) + "</button>" +
       '<span class="capf-ms__sep" aria-hidden="true"></span>' +
-      '<button type="button" class="capf-ms__caret" data-capf-ms-toggle aria-label="Список офферов">' +
+      '<button type="button" class="capf-ms__caret" data-capf-ms-toggle aria-label="' +
+      texts.list + '">' +
       '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
       '<path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2.2" ' +
       'stroke-linecap="round" stroke-linejoin="round"/></svg></button></span></div>' +
-      '<div class="capf-ms__list" data-capf-offers hidden>' +
-      offers.map(function (offer) {
+      '<div class="capf-ms__list" data-capf-list hidden>' +
+      items.map(function (item) {
         return '<button type="button" class="capf-ms__option" data-capf-option="' +
-          escapeHtml(offer.id) + '"' + (taken[String(offer.id)] ? " hidden" : "") + ">" +
-          escapeHtml(offer.name) + "</button>";
+          escapeHtml(item.id) + '"' + (taken[String(item.id)] ? " hidden" : "") + ">" +
+          escapeHtml(item.name) + "</button>";
       }).join("") +
-      '<div class="capf-none" data-capf-nooffers hidden>Ничего не найдено</div>' +
+      '<div class="capf-none" data-capf-noitems hidden>Ничего не найдено</div>' +
       "</div></div>";
   }
 
-  function picker() {
-    return document.querySelector("[data-capf-ms]");
+  function pickedIds(kind) {
+    var overlay = document.getElementById(MODAL_ID);
+    var ms = overlay ? overlay.querySelector('[data-capf-ms="' + kind + '"]') : null;
+    if (!ms) return [];
+    return Array.prototype.map.call(
+      ms.querySelectorAll("[data-capf-chip]"),
+      function (chip) { return chip.getAttribute("data-capf-chip"); }
+    );
   }
 
   // Офферов у команды сотни: список сужается по мере ввода.
-  function filterOffers(query) {
-    var ms = picker();
+  function filterItems(ms, query) {
     if (!ms) return;
     var clean = String(query || "").trim().toLowerCase();
     var taken = {};
@@ -286,17 +312,16 @@
       if (!hit) node.classList.remove("is-active");
       if (hit && !first) first = node;
     });
-    ms.querySelector("[data-capf-nooffers]").hidden = !!first;
+    ms.querySelector("[data-capf-noitems]").hidden = !!first;
     // Ищут, чтобы выбрать: первое совпадение сразу под Enter.
     if (clean && first && !ms.querySelector(".capf-ms__option.is-active")) {
       first.classList.add("is-active");
     }
   }
 
-  function openOfferList(show) {
-    var ms = picker();
+  function openList(ms, show) {
     if (!ms) return;
-    var list = ms.querySelector("[data-capf-offers]");
+    var list = ms.querySelector("[data-capf-list]");
     if (list.hidden === !show) return;
     list.hidden = !show;
     ms.classList.toggle("is-open", show);
@@ -305,42 +330,46 @@
       if (active) active.classList.remove("is-active");
       return;
     }
-    filterOffers(ms.querySelector("[data-capf-search]").value);
+    filterItems(ms, ms.querySelector("[data-capf-search]").value);
     // Поле бывает у нижнего края формы — список не должен уходить за него.
     if (list.scrollIntoView) list.scrollIntoView({ block: "nearest" });
   }
 
-  function offersChanged() {
-    var ms = picker();
+  function closeLists(except) {
+    var overlay = document.getElementById(MODAL_ID);
+    if (!overlay) return;
+    Array.prototype.forEach.call(overlay.querySelectorAll("[data-capf-ms]"), function (ms) {
+      if (ms !== except) openList(ms, false);
+    });
+  }
+
+  function picksChanged(ms) {
     var input = ms.querySelector("[data-capf-search]");
     var count = ms.querySelectorAll("[data-capf-chip]").length;
-    input.placeholder = count ? "" : OFFER_PLACEHOLDER;
+    input.placeholder = count ? "" : MS_TEXTS[ms.getAttribute("data-capf-ms")].placeholder;
     ms.querySelector("[data-capf-ms-clear]").hidden = !count;
-    filterOffers(input.value);
+    filterItems(ms, input.value);
     input.focus();
   }
 
-  function pickOffer(option) {
-    var ms = picker();
+  function pickOption(ms, option) {
     var input = ms.querySelector("[data-capf-search]");
     var holder = document.createElement("span");
-    holder.innerHTML = offerChipHtml(option.getAttribute("data-capf-option"), option.textContent);
+    holder.innerHTML = chipHtml(option.getAttribute("data-capf-option"), option.textContent);
     ms.querySelector("[data-capf-ms-box]").insertBefore(holder.firstChild, input);
     option.classList.remove("is-active");
     input.value = "";
-    offersChanged();
+    picksChanged(ms);
   }
 
-  function dropOffer(id) {
-    var ms = picker();
+  function dropChip(ms, id) {
     Array.prototype.forEach.call(ms.querySelectorAll("[data-capf-chip]"), function (chip) {
       if (chip.getAttribute("data-capf-chip") === id) chip.remove();
     });
-    offersChanged();
+    picksChanged(ms);
   }
 
-  function moveActive(step) {
-    var ms = picker();
+  function moveActive(ms, step) {
     var options = Array.prototype.filter.call(
       ms.querySelectorAll("[data-capf-option]"),
       function (node) { return !node.hidden; }
@@ -356,44 +385,45 @@
     if (next.scrollIntoView) next.scrollIntoView({ block: "nearest" });
   }
 
-  function offerClick(event) {
+  function pickerClick(event, ms) {
     var target = event.target;
+    // Список второго поля закрываем: открытые разом, они перекрывали бы
+    // друг друга.
+    closeLists(ms);
     var drop = target.closest("[data-capf-chip-drop]");
-    if (drop) return dropOffer(drop.getAttribute("data-capf-chip-drop"));
-    var ms = picker();
+    if (drop) return dropChip(ms, drop.getAttribute("data-capf-chip-drop"));
     if (target.closest("[data-capf-ms-clear]")) {
       Array.prototype.forEach.call(ms.querySelectorAll("[data-capf-chip]"), function (chip) {
         chip.remove();
       });
-      return offersChanged();
+      return picksChanged(ms);
     }
     var option = target.closest("[data-capf-option]");
-    if (option) return pickOffer(option);
+    if (option) return pickOption(ms, option);
     var input = ms.querySelector("[data-capf-search]");
     if (target.closest("[data-capf-ms-toggle]")) {
-      openOfferList(!ms.classList.contains("is-open"));
+      openList(ms, !ms.classList.contains("is-open"));
       return input.focus();
     }
     if (target.closest("[data-capf-ms-box]")) {
-      openOfferList(true);
+      openList(ms, true);
       input.focus();
     }
   }
 
-  function offerKeydown(event) {
+  function pickerKeydown(event, ms) {
     var input = event.target;
-    var ms = picker();
     var listOpen = ms.classList.contains("is-open");
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      openOfferList(true);
-      return moveActive(event.key === "ArrowDown" ? 1 : -1);
+      openList(ms, true);
+      return moveActive(ms, event.key === "ArrowDown" ? 1 : -1);
     }
     if (event.key === "Enter") {
       var active = ms.querySelector(".capf-ms__option.is-active");
       if (listOpen && active && !active.hidden) {
         event.preventDefault();
-        pickOffer(active);
+        pickOption(ms, active);
       }
       return;
     }
@@ -401,11 +431,11 @@
       // Esc сначала закрывает список, а не всю форму с несохранёнными правками.
       event.preventDefault();
       event.stopPropagation();
-      return openOfferList(false);
+      return openList(ms, false);
     }
     if (event.key === "Backspace" && !input.value) {
       var chips = ms.querySelectorAll("[data-capf-chip]");
-      if (chips.length) dropOffer(chips[chips.length - 1].getAttribute("data-capf-chip"));
+      if (chips.length) dropChip(ms, chips[chips.length - 1].getAttribute("data-capf-chip"));
     }
   }
 
@@ -433,16 +463,14 @@
         rule.status
       ) + "</select></label>" +
 
-      '<label class="' + half + '"><span class="capf-label">Канал</span>' +
-      '<select class="capf-input capf-select" data-capf-field="channel_id">' +
-      optionsHtml(data.channels, rule.channel_id) + "</select></label>" +
-
-      '<label class="' + half + '"><span class="capf-label">Thread ID</span>' +
-      '<input class="capf-input" data-capf-field="thread_id" value="' +
-      escapeHtml(rule.thread_id || "") + '"></label>' +
+      // Каналов может быть несколько: один лимит ждут и в чате команды, и у
+      // тимлида. Тема супергруппы у каждого канала своя — её берём из самого
+      // канала, поэтому отдельного поля темы у капы нет.
+      '<div class="capf-field"><span class="capf-label">Каналы</span>' +
+      pickerHtml("channels", data.channels, rule.channel_ids || []) + "</div>" +
 
       '<div class="capf-field"><span class="capf-label">Офферы</span>' +
-      offerPickerHtml(data.reference.offers, rule.offer_ids || []) +
+      pickerHtml("offers", data.reference.offers, rule.offer_ids || []) +
       '<span class="capf-hint">Можно выбрать несколько — их показатели ' +
       "складываются в один лимит</span></div>" +
 
@@ -495,10 +523,8 @@
       overlay.querySelectorAll("[data-capf-field]"),
       function (input) { values[input.getAttribute("data-capf-field")] = input.value; }
     );
-    values.offer_ids = Array.prototype.map.call(
-      overlay.querySelectorAll("[data-capf-chip]"),
-      function (chip) { return chip.getAttribute("data-capf-chip"); }
-    );
+    values.offer_ids = pickedIds("offers");
+    values.channel_ids = pickedIds("channels");
     values.notify_at = Array.prototype.map.call(
       overlay.querySelectorAll("[data-capf-threshold]:checked"),
       function (input) { return Number(input.getAttribute("data-capf-threshold")); }
@@ -510,8 +536,7 @@
     return {
       name: String(values.name || "").trim(),
       status: values.status,
-      channel_id: values.channel_id,
-      thread_id: String(values.thread_id || "").trim() || null,
+      channel_ids: values.channel_ids || [],
       offer_ids: values.offer_ids || [],
       user_id: values.user_id || null,
       metric: values.metric,
@@ -543,6 +568,7 @@
     try {
       var body = payload(readForm());
       if (!body.name) throw new Error("Укажите название");
+      if (!body.channel_ids.length) throw new Error("Выберите хотя бы один канал");
       if (!(body.limit_value > 0)) throw new Error("Укажите лимит больше нуля");
       if (!body.offer_ids.length && !body.user_id) {
         throw new Error("Выберите офферы или пользователя — иначе непонятно, чей это лимит");
@@ -600,7 +626,11 @@
       var rule = settings.rule
         ? JSON.parse(JSON.stringify(settings.rule))
         : blank(settings.offer);
-      if (!rule.channel_id) rule.channel_id = data.channels[0].id;
+      // Канал не подставляем: у новой капы его выбирают сами, иначе капа
+      // молча уезжала бы в первый попавшийся чат.
+      rule.channel_ids = (rule.channel_ids && rule.channel_ids.length
+        ? rule.channel_ids
+        : (rule.channel_id ? [rule.channel_id] : [])).map(String);
       rule.offer_ids = (rule.offer_ids || []).map(String);
 
       // Капы, которые уже висят на этом оффере. Без них кнопка «CapAlert» в

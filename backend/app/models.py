@@ -292,6 +292,11 @@ class SyncRun(UUIDMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     progress_pct: Mapped[int] = mapped_column(default=0)
     rows_processed: Mapped[int] = mapped_column(default=0)
+    # Признак жизни прогона: его двигает сам прогон на каждом шаге. Прогон,
+    # убитый перезапуском контейнера, перестаёт его двигать и освобождается
+    # через минуты, а не висит «running» до общего потолка в два часа, держа
+    # расписание подключения.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(
@@ -1978,6 +1983,12 @@ class CapRule(UUIDMixin, TimestampMixin, Base):
     channel_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("alert_channels.id", ondelete="CASCADE"), index=True
     )
+    # Каналов может быть несколько: один и тот же лимит ждут и в чате команды,
+    # и у тимлида. `channel_id` — первый из них: на нём держится внешний ключ,
+    # и по нему же уходит сообщение у капы, заведённой до этой возможности.
+    channel_ids: Mapped[list] = mapped_column(
+        JSON, default=list, server_default="[]", nullable=False
+    )
     # Несколько офферов на одну капу: их показатели складываются. Одного поля
     # не хватало — партнёрка обычно даёт общий лимит на связку офферов, а не
     # на каждый по отдельности.
@@ -2027,6 +2038,12 @@ class AlertEvent(UUIDMixin, Base):
     )
     cap_rule_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("cap_rules.id", ondelete="CASCADE"), index=True
+    )
+    # Куда именно ушло это событие. У капы каналов может быть несколько, и на
+    # каждый заводится своё событие: доставка в один чат не должна зависеть от
+    # того, приняла ли сообщение другая группа. Пусто — канал правила.
+    channel_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("alert_channels.id", ondelete="SET NULL"), index=True
     )
     rule_name: Mapped[str] = mapped_column(String(160), default="")
     kind: Mapped[str] = mapped_column(String(16), default="trigger")
