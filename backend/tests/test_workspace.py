@@ -1,7 +1,7 @@
 """Workspace: канбан-доска и база знаний (ТЗ 8)."""
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import delete, func, select, update

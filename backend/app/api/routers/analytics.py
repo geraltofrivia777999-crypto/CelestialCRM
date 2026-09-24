@@ -80,7 +80,7 @@ def _many(value) -> list:
     """
     if value is None:
         return []
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return [item for item in value if item is not None and item != ""]
     return [value] if value != "" else []
 
@@ -575,7 +575,7 @@ def _structured_export(
         for bucket in buckets.values():
             for field in ("records", "installs", "registrations", "ftd", "spend", "revenue"):
                 total[field] += bucket[field]
-            total["agents"] = [a + b for a, b in zip(total["agents"], bucket["agents"])]
+            total["agents"] = [a + b for a, b in zip(total["agents"], bucket["agents"], strict=False)]
         labels = ["Общая"] + [""] * (len(levels) - 1) if levels else []
         data.append(line(labels, total) if levels else line([], total))
     headers = [EXPORT_LEVELS[level] for level in levels] + EXPORT_METRICS + [

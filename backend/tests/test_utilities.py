@@ -1613,7 +1613,7 @@ def test_a_long_offer_list_is_cut_at_twenty() -> None:
         name="Связка", metric="sales", limit_value=Decimal("10"),
         period="day", timezone="Europe/Moscow",
     )
-    offers = ["Оффер %d" % index for index in range(1, 26)]
+    offers = [f"Оффер {index}" for index in range(1, 26)]
 
     text = render_cap_message(rule, Decimal("10"), 100, offers)
 

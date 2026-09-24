@@ -1,6 +1,6 @@
 """Когда автоправилу разрешено срабатывать и когда сервер его прогоняет."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
