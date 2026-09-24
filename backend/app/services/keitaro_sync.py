@@ -67,6 +67,7 @@ class KeitaroSyncEngine:
                 return {"status": "missing"}
             run.status = SyncStatus.running
             run.started_at = datetime.now(UTC)
+            run.heartbeat_at = run.started_at
             run.details = {"phase": "references"}
             await db.commit()
             api_key = decrypt_secret(connection.api_key_encrypted)
@@ -103,6 +104,7 @@ class KeitaroSyncEngine:
                         return {"status": "missing"}
                     run.rows_processed = total_rows
                     run.progress_pct = int(((index + 1) / days) * 100)
+                    run.heartbeat_at = datetime.now(UTC)
                     run.details = {
                         "phase": "statistics",
                         "current_day": current_day.isoformat(),

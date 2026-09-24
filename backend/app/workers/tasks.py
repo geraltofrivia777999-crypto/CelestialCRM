@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from celery.utils.log import get_task_logger
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -240,17 +240,27 @@ def run_alerts(self) -> dict:
 
 
 STUCK_RUN_TIMEOUT_MINUTES = 120
+# Прогон отчитывается о каждом шаге. Молчит дольше этого — процесс, который его
+# вёл, уже не вернётся: контейнер пересобрали, воркер упал. Ждать общего потолка
+# в два часа в таком случае незачем — подключение всё это время не синхронизируется.
+STUCK_RUN_SILENCE_MINUTES = 30
 
 
 async def _expire_stuck_runs(db, now: datetime) -> int:
     """Fail runs abandoned by a dead worker, otherwise they block scheduling forever."""
     deadline = now - timedelta(minutes=STUCK_RUN_TIMEOUT_MINUTES)
+    silent_deadline = now - timedelta(minutes=STUCK_RUN_SILENCE_MINUTES)
     stuck = list(
         (
             await db.execute(
                 select(SyncRun).where(
                     SyncRun.status.in_([SyncStatus.queued, SyncStatus.running]),
-                    func.coalesce(SyncRun.started_at, SyncRun.created_at) < deadline,
+                    or_(
+                        func.coalesce(SyncRun.started_at, SyncRun.created_at) < deadline,
+                        func.coalesce(
+                            SyncRun.heartbeat_at, SyncRun.started_at, SyncRun.created_at
+                        ) < silent_deadline,
+                    ),
                 )
             )
         ).scalars()

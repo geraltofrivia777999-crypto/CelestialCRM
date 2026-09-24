@@ -292,6 +292,11 @@ class SyncRun(UUIDMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     progress_pct: Mapped[int] = mapped_column(default=0)
     rows_processed: Mapped[int] = mapped_column(default=0)
+    # Признак жизни прогона: его двигает сам прогон на каждом шаге. Прогон,
+    # убитый перезапуском контейнера, перестаёт его двигать и освобождается
+    # через минуты, а не висит «running» до общего потолка в два часа, держа
+    # расписание подключения.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(
