@@ -135,7 +135,6 @@
       name: offer ? "CAP · " + offer.name : "",
       status: "active",
       channel_ids: [],
-      thread_id: "",
       offer_ids: offer ? [String(offer.id)] : [],
       user_id: null,
       metric: "sales",
@@ -465,13 +464,10 @@
       ) + "</select></label>" +
 
       // Каналов может быть несколько: один лимит ждут и в чате команды, и у
-      // тимлида. Отмеченные горят красным, как пороги уведомлений ниже.
+      // тимлида. Тема супергруппы у каждого канала своя — её берём из самого
+      // канала, поэтому отдельного поля темы у капы нет.
       '<div class="capf-field"><span class="capf-label">Каналы</span>' +
       pickerHtml("channels", data.channels, rule.channel_ids || []) + "</div>" +
-
-      '<label class="' + half + '"><span class="capf-label">Thread ID</span>' +
-      '<input class="capf-input" data-capf-field="thread_id" value="' +
-      escapeHtml(rule.thread_id || "") + '"></label>' +
 
       '<div class="capf-field"><span class="capf-label">Офферы</span>' +
       pickerHtml("offers", data.reference.offers, rule.offer_ids || []) +
@@ -541,7 +537,6 @@
       name: String(values.name || "").trim(),
       status: values.status,
       channel_ids: values.channel_ids || [],
-      thread_id: String(values.thread_id || "").trim() || null,
       offer_ids: values.offer_ids || [],
       user_id: values.user_id || null,
       metric: values.metric,
@@ -631,9 +626,11 @@
       var rule = settings.rule
         ? JSON.parse(JSON.stringify(settings.rule))
         : blank(settings.offer);
+      // Канал не подставляем: у новой капы его выбирают сами, иначе капа
+      // молча уезжала бы в первый попавшийся чат.
       rule.channel_ids = (rule.channel_ids && rule.channel_ids.length
         ? rule.channel_ids
-        : (rule.channel_id ? [rule.channel_id] : [data.channels[0].id])).map(String);
+        : (rule.channel_id ? [rule.channel_id] : [])).map(String);
       rule.offer_ids = (rule.offer_ids || []).map(String);
 
       // Капы, которые уже висят на этом оффере. Без них кнопка «CapAlert» в
