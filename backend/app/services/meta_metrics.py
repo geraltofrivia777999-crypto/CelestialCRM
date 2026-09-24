@@ -223,6 +223,7 @@ async def keitaro_by_campaign(
     start: date,
     end: date,
     sub_id: int | None,
+    geos: set[str] | None = None,
 ) -> dict[str, dict]:
     """Лиды, продажи и доход Keitaro, разложенные по ID кампании Meta.
 
@@ -233,14 +234,17 @@ async def keitaro_by_campaign(
     if not sub_id:
         return {}
     key = f"sub{sub_id}"
+    filters = [
+        KeitaroStatDaily.workspace_id == workspace_id,
+        KeitaroStatDaily.record_date >= start,
+        KeitaroStatDaily.record_date <= end,
+    ]
+    if geos:
+        filters.append(KeitaroStatDaily.country_code.in_(geos))
     rows = list(
         (
             await db.execute(
-                select(KeitaroStatDaily).where(
-                    KeitaroStatDaily.workspace_id == workspace_id,
-                    KeitaroStatDaily.record_date >= start,
-                    KeitaroStatDaily.record_date <= end,
-                )
+                select(KeitaroStatDaily).where(*filters)
             )
         ).scalars()
     )

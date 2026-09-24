@@ -2161,6 +2161,9 @@
     renderFilters(payload);
     renderSyncState();
     await loadLevel();
+    if (byId("metaTreeBody")) {
+      window.dispatchEvent(new Event("celestial:meta-refreshed"));
+    }
   }
 
   function schedulePoll() {

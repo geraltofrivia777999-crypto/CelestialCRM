@@ -97,6 +97,7 @@ from app.services import (
     meta_hourly,
     meta_levels,
     meta_spend,
+    meta_tree,
 )
 from app.services.audit import audit
 from app.services.formulas import amount_with_commission, q
@@ -805,6 +806,82 @@ async def update_account(
     )
     await db.commit()
     return {"id": str(account.id), "owner_id": str(account.owner_id) if account.owner_id else None}
+
+
+@router.get("/tree")
+async def overview_tree(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    geo: list[str] | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.view")),
+) -> dict:
+    """One consistent, zero-metric-inclusive tree for the administrator's V2 view."""
+    if not current.role.is_system or current.role.name != "Administrator":
+        raise HTTPException(status_code=403, detail="Permission denied")
+    start, end = _period(date_from, date_to)
+    selected_geos = {code.strip().upper() for code in geo or [] if code.strip()}
+    if any(len(code) != 2 or not code.isalpha() for code in selected_geos):
+        raise HTTPException(status_code=422, detail="GEO must be two-letter country codes")
+    accounts = await _visible_accounts(db, current, None, None)
+    account_ids = [account.id for account in accounts]
+    entities = []
+    stats = []
+    if account_ids:
+        entities = list((await db.execute(
+            select(MetaEntity).where(
+                MetaEntity.workspace_id == current.workspace_id,
+                MetaEntity.account_id.in_(account_ids),
+                MetaEntity.level.in_(("campaign", "adset", "ad")),
+            )
+        )).scalars())
+        stats = list((await db.execute(
+            select(MetaStatDaily).where(
+                MetaStatDaily.workspace_id == current.workspace_id,
+                MetaStatDaily.account_id.in_(account_ids),
+                MetaStatDaily.record_date >= start,
+                MetaStatDaily.record_date <= end,
+            )
+        )).scalars())
+    available_geos = sorted({
+        row.country_code.strip().upper() for row in stats
+        if row.country_code and len(row.country_code.strip()) == 2
+    })
+    if selected_geos:
+        stats = [row for row in stats if (row.country_code or "").upper() in selected_geos]
+    connections = await _connections(db, current)
+    sub_by_connection = {
+        item.id: item.attribution_sub_id for item in connections if item.attribution_sub_id
+    }
+    campaigns_by_sub: dict[int, set[str]] = {}
+    connection_by_account = {account.id: account.connection_id for account in accounts}
+    for entity in entities:
+        if entity.level != "campaign":
+            continue
+        sub_id = sub_by_connection.get(connection_by_account.get(entity.account_id))
+        if sub_id:
+            campaigns_by_sub.setdefault(sub_id, set()).add(entity.external_id)
+    for fact in stats:
+        sub_id = sub_by_connection.get(connection_by_account.get(fact.account_id))
+        if sub_id and fact.campaign_external_id:
+            campaigns_by_sub.setdefault(sub_id, set()).add(fact.campaign_external_id)
+    # Each connection can use a different Keitaro sub-id. Never join one
+    # connection's tracker figures onto another connection's campaigns.
+    keitaro = {}
+    for sub_id, campaign_ids in campaigns_by_sub.items():
+        matched = await keitaro_by_campaign(
+            db, current.workspace_id, start, end, sub_id, selected_geos or None
+        )
+        keitaro.update({key: value for key, value in matched.items() if key in campaign_ids})
+    rows = meta_tree.build_tree(
+        accounts, entities, stats, keitaro, await _owner_names(db, accounts)
+    )
+    return {
+        "period": {"from": start.isoformat(), "to": end.isoformat()},
+        "rows": rows,
+        "available_geos": available_geos,
+        "attribution_configured": bool(sub_by_connection),
+    }
 
 
 @router.get("/overview")

@@ -1,14 +1,8 @@
 /*
  * MetaAds v2 · «Обзор» деревом: аккаунт → кампании → адсеты → объявления.
  *
- * Пока это прототип интерфейса: строки берутся из демонстрационного набора,
- * а кнопки только открывают свои окна. Все места, где появятся настоящие
- * данные и действия, помечены TODO и собраны в одном месте — loadTree() и
- * runAction(), чтобы подключение к API не задело верстку.
- *
- * Insts, Regs и Deps приходят из Keitaro и сходятся с кампанией по sub2/sub3/
- * sub4 (имя кампании, адсета и объявления), поэтому в строке хранятся именно
- * имена, а не только id.
+ * Числа Meta считаются из дневной статистики на каждом уровне отдельно.
+ * Депозиты Keitaro привязаны к кампании: у адсетов и объявлений они неизвестны.
  */
 (function () {
   "use strict";
@@ -46,20 +40,24 @@
     hideOff: false,
     hideZero: false,
     sort: "",
-    // Пороги подсветки: { GEO: { avg_inst: {green, red}, ... } }.
-    heat: { IN: { avg_inst: { green: 0.35, red: 0.5 },
-                  avg_reg: { green: 0.8, red: 1.1 },
-                  avg_dep: { green: 12, red: 20 } } },
-    filters: { agents: null, geo: null }
+    heat: {},
+    filters: { agents: null, geo: null },
+    availableGeos: [],
+    loading: false,
+    requestId: 0,
+    bound: false
   };
 
   /* ---------- числа ---------- */
 
-  function money(value) {
+  function money(value, currency) {
     if (value == null) return "—";
-    return "$" + Number(value).toLocaleString("ru-RU", {
-      minimumFractionDigits: 2, maximumFractionDigits: 2
-    });
+    try {
+      return new Intl.NumberFormat("ru-RU", {
+        style: "currency", currency: currency || "USD",
+        minimumFractionDigits: 2, maximumFractionDigits: 2
+      }).format(Number(value));
+    } catch (error) { return Number(value).toFixed(2) + " " + (currency || ""); }
   }
 
   function num(value) {
@@ -82,7 +80,7 @@
      зелёная, больше красного — красная, между ними жёлтая. */
   function heatClass(geo, metric, value) {
     var limits = (state.heat[geo] || {})[metric];
-    if (!limits || value == null) return "";
+    if (!limits || value == null || limits.green === "" || limits.red === "") return "";
     if (Number(value) <= Number(limits.green)) return " mt-heat mt-heat--good";
     if (Number(value) >= Number(limits.red)) return " mt-heat mt-heat--bad";
     return " mt-heat mt-heat--warn";
@@ -90,108 +88,50 @@
 
   /* ---------- данные ---------- */
 
-  /* TODO(api): заменить на GET /meta/tree?date_from=&date_to= — дерево одним
-     ответом: аккаунты с агентом, валютой и таймзоной, внутри кампании, адсеты
-     и объявления с числами Meta и подмешанными Insts/Regs/Deps из Keitaro. */
-  function loadTree() {
-    return Promise.resolve(demoRows());
+  async function loadTree() {
+    var from = byId("metaTreeFrom").value;
+    var to = byId("metaTreeTo").value;
+    var query = "?date_from=" + encodeURIComponent(from) + "&date_to=" + encodeURIComponent(to);
+    var geos = state.filters.geo ? state.filters.geo.values() : [];
+    geos.forEach(function (geo) { query += "&geo=" + encodeURIComponent(geo); });
+    return api.get("/meta/tree" + query);
   }
 
-  /* TODO(api): POST /meta/entities/actions — старт, пауза и дубль уже есть на
-     бэкенде, здесь останется передать id и уровень. */
-  function runAction(action, row) {
-    return notify({
-      title: LEVEL_TITLES[row.level] + ": " + row.name,
-      message: "Действие «" + action + "» появится вместе с подключением данных."
-    });
-  }
-
-  function demoChildren(level, parentName, count, base) {
-    var rows = [];
-    for (var index = 1; index <= count; index += 1) {
-      var spend = Math.round((base * (0.6 + index * 0.23)) * 100) / 100;
-      var installs = Math.round(spend / (0.3 + index * 0.05));
-      var regs = Math.round(installs * 0.45);
-      var deps = index % 3 === 0 ? 0 : Math.max(1, Math.round(regs * 0.07));
-      rows.push({
-        id: parentName + "-" + level + "-" + index,
-        level: level,
-        name: parentName + (level === "campaign" ? "_" + index : " · " + index),
-        geo: index % 4 === 0 ? "BD" : "IN",
-        status: index % 3 === 0 ? "PAUSED" : "ACTIVE",
-        items: level === "ad" ? 1 : (index % 2 ? 1 : 2),
-        impressions: Math.round(spend * 480),
-        clicks: Math.round(spend * 3.6),
-        insts: installs,
-        regs: regs,
-        deps: deps,
-        spend: spend,
-        budget: level === "ad" ? null : (index % 2 ? 30 : 100),
-        children: level === "ad" ? [] : demoChildren(
-          level === "campaign" ? "adset" : "ad",
-          parentName + " · " + index, level === "campaign" ? 2 : 2, base / 2
-        )
+  async function runAction(action, row) {
+    if (!row.external_id) return;
+    var names = { start: "Запустить", pause: "Остановить", duplicate: "Дублировать" };
+    var confirmed = window.CelestialShell && window.CelestialShell.confirm
+      ? await window.CelestialShell.confirm({
+          title: names[action] + " объект Meta?",
+          message: row.name, confirmLabel: names[action], danger: action === "pause"
+        })
+      : window.confirm(names[action] + " «" + row.name + "»?");
+    if (!confirmed) return;
+    try {
+      var result = await api.post("/meta/entities/actions", {
+        level: { campaign: "campaigns", adset: "adsets", ad: "ads" }[row.level],
+        action: action, items: [{ id: row.external_id }]
       });
+      var first = (result.results || [])[0];
+      if (!first || !first.ok) throw new Error(first && first.error || "Meta не выполнила действие");
+      await reload();
+      notify({ title: "Готово", message: names[action] + ": " + row.name });
+    } catch (error) {
+      notify({ title: "Действие не выполнено", message: error.message || String(error) });
     }
-    return rows;
   }
 
-  function demoRows() {
-    return [
-      {
-        id: "886996937382284",
-        level: "account",
-        name: "886996937382284",
-        account_name: "SPX2 · IN",
-        agent: "SPX2",
-        status: "ACTIVE",
-        currency: "USD",
-        gmt: "GMT+3",
-        children: demoChildren("campaign", "24_04_IN_SPX_in_8869_intw1.1", 4, 11)
-      },
-      {
-        id: "774100294851122",
-        level: "account",
-        name: "774100294851122",
-        account_name: "Rampage · BD",
-        agent: "Rampage",
-        status: "PAUSED",
-        currency: "USD",
-        gmt: "GMT+6",
-        children: demoChildren("campaign", "24_05_BD_RMP_bd_7741_intw2.0", 2, 7)
-      }
-    ];
-  }
-
-  /* Числа аккаунта — сумма его кампаний: одна арифметика на всё дерево. */
   function totals(row) {
-    if (!row.children || !row.children.length) {
-      return {
-        impressions: row.impressions || 0, clicks: row.clicks || 0,
-        insts: row.insts || 0, regs: row.regs || 0, deps: row.deps || 0,
-        spend: row.spend || 0
-      };
-    }
-    return row.children.reduce(function (sum, child) {
-      var part = totals(child);
-      return {
-        impressions: sum.impressions + part.impressions,
-        clicks: sum.clicks + part.clicks,
-        insts: sum.insts + part.insts,
-        regs: sum.regs + part.regs,
-        deps: sum.deps + part.deps,
-        spend: sum.spend + part.spend
-      };
-    }, { impressions: 0, clicks: 0, insts: 0, regs: 0, deps: 0, spend: 0 });
+    return row;
   }
 
   function visibleChildren(row) {
     var agents = state.filters.agents ? state.filters.agents.values() : [];
-    var geos = state.filters.geo ? state.filters.geo.values() : [];
     return (row.children || []).filter(function (child) {
       if (state.hideOff && child.status !== "ACTIVE") return false;
-      if (state.hideZero && !child.budget) return false;
-      if (geos.length && child.geo && geos.indexOf(child.geo) < 0) return false;
+      if (state.hideZero && child.level !== "ad" && !child.budget) return false;
+      if (state.filters.geo && state.filters.geo.values().length &&
+          !(child.geos || []).length && !visibleChildren(child).length) return false;
       if (agents.length && row.level === "account" && agents.indexOf(row.agent) < 0) return false;
       return true;
     }).sort(function (left, right) {
@@ -212,6 +152,8 @@
     return state.rows.filter(function (row) {
       if (agents.length && agents.indexOf(row.agent) < 0) return false;
       if (state.hideOff && row.status !== "ACTIVE") return false;
+      if (state.filters.geo && state.filters.geo.values().length &&
+          !(row.geos || []).length && !visibleChildren(row).length) return false;
       return true;
     });
   }
@@ -292,19 +234,19 @@
     var avgDep = ratio(values.spend, values.deps);
     return "<td>" + num(values.impressions) + "</td>" +
       "<td>" + num(values.clicks) + "</td>" +
-      "<td>" + money(cpc) + "</td>" +
-      "<td>" + money(cpm) + "</td>" +
+      "<td>" + money(cpc, row.currency) + "</td>" +
+      "<td>" + money(cpm, row.currency) + "</td>" +
       "<td>" + percent(ctr) + "</td>" +
       "<td>" + num(values.insts) + "</td>" +
       "<td>" + num(values.regs) + "</td>" +
       "<td>" + num(values.deps) + "</td>" +
       '<td><span class="' + heatClass(geo, "avg_inst", avgInst).trim() + '">' +
-      money(avgInst) + "</span></td>" +
+      money(avgInst, row.currency) + "</span></td>" +
       '<td><span class="' + heatClass(geo, "avg_reg", avgReg).trim() + '">' +
-      money(avgReg) + "</span></td>" +
+      money(avgReg, row.currency) + "</span></td>" +
       '<td><span class="' + heatClass(geo, "avg_dep", avgDep).trim() + '">' +
-      money(avgDep) + "</span></td>" +
-      "<td>" + money(values.spend) + "</td>";
+      money(avgDep, row.currency) + "</span></td>" +
+      "<td>" + money(values.spend, row.currency) + "</td>";
   }
 
   function accountRow(row) {
@@ -362,7 +304,7 @@
       "<td>" + (row.items ? row.items + (row.level === "campaign" ? " адсет" : " шт") : "—") +
       "</td><td></td>" +
       metricCells(row, values, row.geo) +
-      "<td>" + (row.budget ? money(row.budget) : "—") + "</td>" +
+      "<td>" + (row.budget != null ? money(row.budget, row.currency) : "—") + "</td>" +
       actionCell(row) + "</tr>";
   }
 
@@ -377,30 +319,44 @@
   }
 
   function renderCards() {
-    var sum = visibleAccounts().reduce(function (acc, row) {
+    var accounts = visibleAccounts();
+    var currencies = {};
+    accounts.forEach(function (row) { currencies[row.currency || "USD"] = true; });
+    var currencyNames = Object.keys(currencies);
+    var oneCurrency = currencyNames.length === 1 ? currencyNames[0] : null;
+    var sum = accounts.reduce(function (acc, row) {
       var part = totals(row);
-      Object.keys(part).forEach(function (key) { acc[key] = (acc[key] || 0) + part[key]; });
+      ["impressions", "clicks", "insts", "regs", "spend"].forEach(function (key) {
+        acc[key] = (acc[key] || 0) + (part[key] || 0);
+      });
+      if (part.deps != null) {
+        acc.deps = (acc.deps || 0) + part.deps;
+        acc.hasDeps = true;
+      }
       return acc;
     }, {});
     var ctr = sum.impressions ? sum.clicks / sum.impressions * 100 : null;
     var cards = [
-      { label: "Total spend", value: money(sum.spend || 0), tone: "spend" },
+      { label: "Total spend", value: oneCurrency ? money(sum.spend || 0, oneCurrency) : "—", tone: "spend" },
       { label: "Impressions", value: num(sum.impressions || 0) },
       { label: "Clicks", value: num(sum.clicks || 0) },
       { label: "CTR", value: percent(ctr) },
-      { label: "CPM", value: money(sum.impressions ? sum.spend / sum.impressions * 1000 : null) },
-      { label: "CPC", value: money(sum.clicks ? sum.spend / sum.clicks : null) },
+      { label: "CPM", value: oneCurrency ? money(sum.impressions ? sum.spend / sum.impressions * 1000 : null, oneCurrency) : "—" },
+      { label: "CPC", value: oneCurrency ? money(sum.clicks ? sum.spend / sum.clicks : null, oneCurrency) : "—" },
       { label: "Installs", value: num(sum.insts || 0), tone: "blue" },
       { label: "Registrations", value: num(sum.regs || 0), tone: "blue" },
-      { label: "Deposits", value: num(sum.deps || 0), tone: "blue" },
-      { label: "Avg install", value: money(ratio(sum.spend, sum.insts)), tone: "avg" },
-      { label: "Avg reg", value: money(ratio(sum.spend, sum.regs)), tone: "avg" },
-      { label: "Avg deposit", value: money(ratio(sum.spend, sum.deps)), tone: "avg" }
+      { label: "Deposits", value: sum.hasDeps ? num(sum.deps) : "—", tone: "blue" },
+      { label: "Avg install", value: oneCurrency ? money(ratio(sum.spend, sum.insts), oneCurrency) : "—", tone: "avg" },
+      { label: "Avg reg", value: oneCurrency ? money(ratio(sum.spend, sum.regs), oneCurrency) : "—", tone: "avg" },
+      { label: "Avg deposit", value: oneCurrency && sum.hasDeps ? money(ratio(sum.spend, sum.deps), oneCurrency) : "—", tone: "avg" }
     ];
     byId("metaTreeCards").innerHTML = cards.map(function (card) {
       return '<div class="mt-card' + (card.tone ? " mt-card--" + card.tone : "") + '">' +
         "<span>" + escapeHtml(card.label) + "</span><b>" + card.value + "</b></div>";
     }).join("");
+    byId("metaTreeNote").textContent = currencyNames.length > 1
+      ? "В кабинетах разные валюты: денежный итог не суммируется. Депозиты ниже кампании не атрибутируются."
+      : "Insts и Regs — события Meta; Deps — продажи Keitaro на уровне кампании.";
   }
 
   function render() {
@@ -418,7 +374,8 @@
     });
     byId("metaTreeBody").innerHTML = html.join("") ||
       '<tr><td colspan="19" style="padding:40px;text-align:center;color:#9B9292">' +
-      "Под фильтры ничего не подошло</td></tr>";
+      (state.loading ? "Загружаем данные…" : state.rows.length ?
+        "Под фильтры ничего не подошло" : "Кабинетов пока нет или данные не загружены") + "</td></tr>";
     var campaigns = accounts.reduce(function (count, row) {
       return count + (row.children || []).length;
     }, 0);
@@ -455,7 +412,7 @@
 
   function geoOptions() {
     var known = {};
-    GEO_CHOICES.concat(collectValues("geo")).forEach(function (geo) { known[geo] = true; });
+    GEO_CHOICES.concat(state.availableGeos).forEach(function (geo) { known[geo] = true; });
     return Object.keys(known).sort();
   }
 
@@ -526,11 +483,10 @@
 
   function limitValue(value) {
     var text = String(value == null ? "" : value).replace(",", ".").trim();
-    return text === "" || isNaN(Number(text)) ? "" : Number(text);
+    return text === "" ? "" : Number(text);
   }
 
-  function saveHeat() {
-    // TODO(api): сохранять пороги в /me/preferences/meta.tree.heat.
+  async function saveHeat() {
     var next = {};
     draft.forEach(function (block) {
       var limits = {};
@@ -540,6 +496,24 @@
       });
       next[block.geo] = limits;
     });
+    var invalid = Object.keys(next).some(function (geo) {
+      return HEAT_ROWS.some(function (row) {
+        var limits = next[geo][row.key];
+        return [limits.green, limits.red].some(function (value) {
+          return value !== "" && (!isFinite(value) || value < 0);
+        }) || (limits.green !== "" && limits.red !== "" && limits.green > limits.red);
+      });
+    });
+    if (invalid) {
+      notify({ title: "Проверьте пороги", message: "Нужны неотрицательные числа; зелёный порог не должен превышать красный." });
+      return;
+    }
+    try {
+      await api.put("/me/preferences/meta.tree.heat", { value: next });
+    } catch (error) {
+      notify({ title: "Не удалось сохранить подсветку", message: error.message || String(error) });
+      return;
+    }
     state.heat = next;
     closeHeat();
     render();
@@ -578,11 +552,16 @@
     var factory = window.CelestialBoard && window.CelestialBoard.multiFilter;
     if (!factory) return;
     state.filters.agents = factory(byId("metaTreeAgents"), render);
-    state.filters.geo = factory(byId("metaTreeGeo"), render);
+    state.filters.geo = factory(byId("metaTreeGeo"), reload);
+    refreshFilters();
+  }
+
+  function refreshFilters() {
+    if (!state.filters.agents || !state.filters.geo) return;
     state.filters.agents.setItems(collectValues("agent").map(function (name) {
       return { value: name, label: name };
     }));
-    state.filters.geo.setItems(collectValues("geo").map(function (name) {
+    state.filters.geo.setItems(state.availableGeos.map(function (name) {
       return { value: name, label: name };
     }));
   }
@@ -663,13 +642,10 @@
     });
     byId("metaTreeHeatSave").addEventListener("click", saveHeat);
     // Период: календарь тот же, что в остальных разделах.
-    var to = byId("metaTreeTo");
-    if (to) {
-      to.addEventListener("change", function () {
-        // TODO(api): перезагрузить дерево за выбранный период.
-        render();
-      });
-    }
+    [byId("metaTreeFrom"), byId("metaTreeTo")].forEach(function (field) {
+      if (field) field.addEventListener("change", reload);
+    });
+    window.addEventListener("celestial:meta-refreshed", reload);
   }
 
   function defaultPeriod() {
@@ -686,21 +662,44 @@
     }
   }
 
+  async function reload() {
+    var requestId = ++state.requestId;
+    state.loading = true;
+    render();
+    try {
+      var payload = await loadTree();
+      if (requestId !== state.requestId) return;
+      state.rows = payload.rows || [];
+      state.availableGeos = payload.available_geos || [];
+      if (!Object.keys(state.open).length && state.rows[0]) state.open[state.rows[0].id] = true;
+      refreshFilters();
+      state.loading = false;
+      render();
+    } catch (error) {
+      if (requestId !== state.requestId) return;
+      state.loading = false;
+      render();
+      byId("metaTreeNote").textContent = "Ошибка загрузки: " + (error.message || String(error));
+      notify({ title: "Не удалось загрузить структуру Meta Ads", message: error.message || String(error) });
+    }
+  }
+
   async function init() {
     if (!byId("metaTreeBody")) return;
     defaultPeriod();
-    state.rows = await loadTree();
-    state.open[state.rows[0] ? state.rows[0].id : ""] = true;
-    bind();
-    bindFilters();
-    render();
+    if (!state.bound) {
+      state.bound = true;
+      bind();
+      bindFilters();
+      try {
+        var saved = await api.get("/me/preferences/meta.tree.heat");
+        if (saved && saved.value && typeof saved.value === "object" && !Array.isArray(saved.value)) {
+          state.heat = saved.value;
+        }
+      } catch (error) { /* Подсветка опциональна. */ }
+    }
+    await reload();
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () { init(); });
-  } else {
-    init();
-  }
-
-  window.CelestialMetaTree = { render: render, state: state };
+  window.CelestialMetaTree = { init: init, reload: reload, render: render, state: state };
 })();
