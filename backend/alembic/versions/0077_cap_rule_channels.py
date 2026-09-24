@@ -13,8 +13,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "0076_cap_rule_channels"
-down_revision = "0075_user_finance_tags"
+revision = "0077_cap_rule_channels"
+down_revision = "0076_manual_partners"
 branch_labels = None
 depends_on = None
 
