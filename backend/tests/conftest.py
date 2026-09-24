@@ -11,6 +11,10 @@ os.environ["ADMIN_LOGIN"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "test-password"
 # Браузерные сессии Meta Ads не должны трогать реальные каталоги проекта.
 os.environ["META_SESSION_DIR"] = str(Path(tempfile.gettempdir()) / "celestial_meta_sessions")
+# Вложения — туда же: по умолчанию это /app/uploads, каталог контейнера. На
+# машине разработчика и на раннере CI его создать нельзя, и тесты падали с
+# PermissionError ещё до первой проверки.
+os.environ["UPLOAD_DIR"] = str(Path(tempfile.gettempdir()) / "celestial_uploads")
 # Тесты ходят по http://test: Secure-куки с продового .env там просто не
 # отправятся, и весь сьют упадёт в 401. Явно выключаем.
 os.environ["COOKIE_SECURE"] = "false"
