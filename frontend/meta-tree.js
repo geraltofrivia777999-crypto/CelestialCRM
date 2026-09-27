@@ -26,6 +26,7 @@
   }
 
   var LEVELS = ["campaign", "adset", "ad"];
+  var API_LEVELS = { campaign: "campaigns", adset: "adsets", ad: "ads" };
   var LEVEL_TITLES = {
     campaign: "Кампания", adset: "Адсет", ad: "Объявление"
   };
@@ -37,6 +38,8 @@
     rows: [],
     open: {},
     picked: {},
+    busy: false,
+    menu: null,
     hideOff: false,
     hideZero: false,
     sort: "",
@@ -97,28 +100,122 @@
     return api.get("/meta/tree" + query);
   }
 
-  async function runAction(action, row) {
-    if (!row.external_id) return;
-    var names = { start: "Запустить", pause: "Остановить", duplicate: "Дублировать" };
-    var confirmed = window.CelestialShell && window.CelestialShell.confirm
-      ? await window.CelestialShell.confirm({
-          title: names[action] + " объект Meta?",
-          message: row.name, confirmLabel: names[action], danger: action === "pause"
-        })
-      : window.confirm(names[action] + " «" + row.name + "»?");
-    if (!confirmed) return;
-    try {
-      var result = await api.post("/meta/entities/actions", {
-        level: { campaign: "campaigns", adset: "adsets", ad: "ads" }[row.level],
-        action: action, items: [{ id: row.external_id }]
-      });
-      var first = (result.results || [])[0];
-      if (!first || !first.ok) throw new Error(first && first.error || "Meta не выполнила действие");
-      await reload();
-      notify({ title: "Готово", message: names[action] + ": " + row.name });
-    } catch (error) {
-      notify({ title: "Действие не выполнено", message: error.message || String(error) });
+  var ACTIONS = {
+    start: {
+      title: "Запустить", label: "Запустить",
+      warn: "Объекты начнут откручиваться и тратить бюджет."
+    },
+    pause: { title: "Поставить на паузу", label: "Пауза" },
+    duplicate: {
+      title: "Дублировать в FB", label: "Дублировать",
+      warn: "Копии создаются вместе с вложенными объектами и сразу стоят на паузе."
+    },
+    "delete": {
+      title: "Удалить в FB", label: "Удалить", danger: true,
+      warn: "Объекты удалятся в Facebook безвозвратно — восстановить их не получится."
     }
+  };
+
+  function askConfirm(options) {
+    if (window.CelestialShell && window.CelestialShell.confirm) {
+      return window.CelestialShell.confirm(options);
+    }
+    return Promise.resolve(window.confirm(options.message || options.title));
+  }
+
+  function actionable(rows) {
+    return rows.filter(function (row) { return row && row.external_id && API_LEVELS[row.level]; });
+  }
+
+  function objectsNoun(count) {
+    var tens = count % 100;
+    var ones = count % 10;
+    if (tens > 10 && tens < 20) return count + " объектов";
+    if (ones === 1) return count + " объект";
+    if (ones > 1 && ones < 5) return count + " объекта";
+    return count + " объектов";
+  }
+
+  function levelsOf(rows) {
+    var found = {};
+    rows.forEach(function (row) { found[row.level] = true; });
+    return Object.keys(found);
+  }
+
+  /* Бюджет и название меняются в окнах meta-ui.js — тех же, что в Meta Ads.
+     Они работают на одном уровне, поэтому смешанный выбор не открываем. */
+  function openEditor(kind, rows) {
+    if (kind === "budget") rows = rows.filter(function (row) { return row.level !== "ad"; });
+    if (!rows.length) return;
+    var levels = levelsOf(rows);
+    if (levels.length > 1) {
+      notify({
+        title: "Отметьте один уровень",
+        message: "Бюджет и название меняются у объектов одного уровня: только кампании, " +
+          "только адсеты или только объявления."
+      });
+      return;
+    }
+    var meta = window.CelestialMeta;
+    if (!meta || !meta.openEntityEditor) {
+      notify({ title: "Окно недоступно", message: "Модуль Meta Ads ещё не загрузился." });
+      return;
+    }
+    meta.openEntityEditor(kind, API_LEVELS[levels[0]], rows.map(function (row) {
+      return { id: row.external_id, name: row.name };
+    }), reload);
+  }
+
+  async function runAction(action, rows) {
+    rows = actionable(rows);
+    if (!rows.length || state.busy) return;
+    if (action === "budget" || action === "rename") return openEditor(action, rows);
+    var meta = ACTIONS[action];
+    var names = rows.slice(0, 5).map(function (row) { return "«" + row.name + "»"; });
+    if (rows.length > 5) names.push("и ещё " + (rows.length - 5));
+    if (!(await askConfirm({
+      title: meta.title + (rows.length > 1 ? ": " + objectsNoun(rows.length) : "") + "?",
+      message: names.join(", ") + (meta.warn ? "\n\n" + meta.warn : ""),
+      confirmLabel: meta.label,
+      danger: !!meta.danger
+    }))) return;
+    var groups = {};
+    rows.forEach(function (row) {
+      (groups[row.level] = groups[row.level] || []).push(row);
+    });
+    var failures = [];
+    var done = 0;
+    state.busy = true;
+    renderBulk();
+    try {
+      for (var level in groups) {
+        var group = groups[level];
+        var result = await api.post("/meta/entities/actions", {
+          level: API_LEVELS[level], action: action,
+          items: group.map(function (row) { return { id: row.external_id }; })
+        });
+        (result.results || []).forEach(function (item) {
+          var row = group.find(function (entry) { return entry.external_id === String(item.id); });
+          if (item.ok) {
+            done += 1;
+            if (action === "delete" && row) delete state.picked[row.id];
+          } else {
+            failures.push("«" + (row ? row.name : item.id) + "»: " + (item.error || "ошибка"));
+          }
+        });
+      }
+    } catch (error) {
+      failures.push(error.message || String(error));
+    } finally {
+      state.busy = false;
+    }
+    await reload();
+    if (!failures.length) return;
+    notify({
+      title: done ? "Готово частично: " + done + " из " + rows.length : "Meta не выполнила действие",
+      message: failures.slice(0, 8).join("\n") +
+        (failures.length > 8 ? "\nи ещё " + (failures.length - 8) : "")
+    });
   }
 
   function totals(row) {
@@ -176,6 +273,18 @@
     '<path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-2.9 3.8M6.3 6.3C3.6 8 2 12 2 12s3.6 7 10 7c1.9 0 3.5-.6 4.9-1.4"/>' +
     '<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>';
 
+  var ICON_SLIDERS = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2.2" stroke-linecap="round">' +
+    '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/>' +
+    '<circle cx="10" cy="17" r="2"/></svg>';
+  var ICON_MORE = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">' +
+    '<circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>';
+  var ICON_PLAY = '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">' +
+    '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>';
+  var ICON_PAUSE = '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">' +
+    '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
+  var HEAT_COLUMNS = { AvgInst: true, AvgReg: true, AvgDep: true };
+
   function anyOpen() {
     return Object.keys(state.open).some(function (id) { return state.open[id]; });
   }
@@ -208,6 +317,11 @@
           headButton("hideZero", state.hideZero,
             state.hideZero ? "Показать с бюджетом 0" : "Скрыть с бюджетом 0",
             state.hideZero ? ICON_EYE_OFF : ICON_EYE) + "</span></th>";
+      }
+      if (HEAT_COLUMNS[title]) {
+        // Подсветка настраивается прямо из заголовков колонок, которые она красит.
+        return '<th><button class="mt-th-link" type="button" data-tree-head="heat" ' +
+          'title="Настроить подсветку">' + escapeHtml(title) + ICON_SLIDERS + "</button></th>";
       }
       return "<th>" + escapeHtml(title) + "</th>";
     }).join("") + "</tr>";
@@ -252,22 +366,41 @@
   function accountRow(row) {
     var open = !!state.open[row.id];
     var values = totals(row);
+    var agent = row.connection_id
+      ? '<button class="mt-chip mt-chip--agent mt-chip--link" type="button" data-tree-agent="' +
+        escapeHtml(row.connection_id) + '" title="Открыть подключение">' +
+        escapeHtml(row.agent || "—") + "</button>"
+      : '<span class="mt-chip mt-chip--agent">' + escapeHtml(row.agent || "—") + "</span>";
     return '<tr class="mt-row mt-row--account" data-tree-row="' + escapeHtml(row.id) + '">' +
-      '<td><div class="mt-name">' + toggleButton(row, open) +
+      '<td><div class="mt-name"><span class="mt-check-gap"></span>' + toggleButton(row, open) +
       '<span class="mt-title">' + escapeHtml(row.name) + "</span>" +
       '<span class="mt-chip mt-chip--geo">' + escapeHtml(row.account_name || "") +
       "</span></div></td>" +
-      '<td><span class="mt-chip mt-chip--agent">' + escapeHtml(row.agent || "—") + "</span></td>" +
+      "<td>" + agent + "</td>" +
       "<td>" + statusCell(row.status) + "</td>" +
       "<td>" + escapeHtml(row.currency || "—") + "</td>" +
       "<td>" + escapeHtml(row.gmt || "—") + "</td>" +
       metricCells(row, values, null) +
-      "<td>—</td><td>—</td></tr>";
+      '<td>—</td><td><span class="mt-act"><button type="button" data-tree-account-menu="' +
+      escapeHtml(row.id) + '" title="Действия с кабинетом" aria-label="Действия с кабинетом" ' +
+      'aria-haspopup="menu">' + ICON_MORE + "</button></span></td></tr>";
   }
 
-  function childHeadRow(level) {
+  /* Галочка в строке «Кампании / Адсеты / Объявления» отмечает всю группу. */
+  function childHeadRow(parent, level, depth) {
     var title = level === "campaign" ? "Кампании" : level === "adset" ? "Адсеты" : "Объявления";
-    return '<tr class="mt-row mt-row--head"><td>' + escapeHtml(title) + "</td>" +
+    var group = actionable(visibleChildren(parent));
+    var picked = group.filter(function (row) { return state.picked[row.id]; }).length;
+    var box = group.length
+      ? '<input class="mt-check" type="checkbox" data-tree-pick-group="' + escapeHtml(parent.id) +
+        '"' + (picked && picked === group.length ? " checked" : "") +
+        (picked && picked < group.length ? " data-indeterminate" : "") +
+        ' aria-label="Отметить все: ' + escapeHtml(title) + '">'
+      : '<span class="mt-check-gap"></span>';
+    // Отступ как у строк группы — галочка встаёт в одну колонку с их галочками.
+    return '<tr class="mt-row mt-row--head"><td><div class="mt-name" style="padding-left:' +
+      (12 + depth * 18) + 'px">' + box + "<span>" + escapeHtml(title) +
+      "</span></div></td>" +
       "<td>GEO</td><td>Статус</td><td>Элементы</td><td></td>" +
       "<td>Показы</td><td>Клики</td><td>CPC</td><td>CPM</td><td>CTR</td>" +
       "<td>Insts</td><td>Regs</td><td>Deps</td><td>AvgInst</td><td>AvgReg</td>" +
@@ -275,19 +408,20 @@
   }
 
   function actionCell(row) {
+    var id = escapeHtml(row.id);
     return '<td><span class="mt-act">' +
-      '<button type="button" data-tree-action="start" data-tree-id="' + escapeHtml(row.id) +
-      '" title="Старт"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">' +
-      '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/>' +
-      "</svg></button>" +
-      '<button type="button" data-tree-action="pause" data-tree-id="' + escapeHtml(row.id) +
-      '" title="Пауза"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">' +
-      '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>' +
-      "</svg></button>" +
-      '<button type="button" data-tree-action="duplicate" data-tree-id="' + escapeHtml(row.id) +
-      '" title="Дублировать"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" ' +
-      'stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/>' +
-      '<path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg></button></span></td>';
+      '<button type="button" data-tree-action="start" data-tree-id="' + id +
+      '" title="Старт" aria-label="Старт">' + ICON_PLAY + "</button>" +
+      '<button type="button" data-tree-action="pause" data-tree-id="' + id +
+      '" title="Пауза" aria-label="Пауза">' + ICON_PAUSE + "</button>" +
+      '<button type="button" data-tree-menu="' + id + '" title="Ещё" aria-label="Ещё" ' +
+      'aria-haspopup="menu">' + ICON_MORE + "</button></span></td>";
+  }
+
+  function budgetCell(row) {
+    if (row.budget == null) return "<td>—</td>";
+    return '<td><button class="mt-budget" type="button" data-tree-budget="' + escapeHtml(row.id) +
+      '" title="Изменить бюджет в FB">' + money(row.budget, row.currency) + "</button></td>";
   }
 
   function childRow(row, depth) {
@@ -296,23 +430,28 @@
     var pad = 12 + depth * 18;
     var toggle = row.children && row.children.length ? toggleButton(row, open) :
       '<span style="width:20px;display:inline-block"></span>';
-    return '<tr class="mt-row" data-tree-row="' + escapeHtml(row.id) + '">' +
-      '<td><div class="mt-name" style="padding-left:' + pad + 'px">' + toggle +
+    var picked = !!state.picked[row.id];
+    var box = row.external_id
+      ? '<input class="mt-check" type="checkbox" data-tree-pick="' + escapeHtml(row.id) + '"' +
+        (picked ? " checked" : "") + ' aria-label="Отметить ' + escapeHtml(row.name) + '">'
+      : '<span class="mt-check-gap"></span>';
+    return '<tr class="mt-row' + (picked ? " is-picked" : "") + '" data-tree-row="' +
+      escapeHtml(row.id) + '">' +
+      '<td><div class="mt-name" style="padding-left:' + pad + 'px">' + box + toggle +
       '<span class="mt-title">' + escapeHtml(row.name) + "</span></div></td>" +
       '<td><span class="mt-chip mt-chip--geo">' + escapeHtml(row.geo || "—") + "</span></td>" +
       "<td>" + statusCell(row.status) + "</td>" +
       "<td>" + (row.items ? row.items + (row.level === "campaign" ? " адсет" : " шт") : "—") +
       "</td><td></td>" +
       metricCells(row, values, row.geo) +
-      "<td>" + (row.budget != null ? money(row.budget, row.currency) : "—") + "</td>" +
-      actionCell(row) + "</tr>";
+      budgetCell(row) + actionCell(row) + "</tr>";
   }
 
   function renderRows(rows, depth, into) {
     rows.forEach(function (row) {
       into.push(childRow(row, depth));
       if (state.open[row.id] && row.children && row.children.length) {
-        into.push(childHeadRow(row.children[0].level));
+        into.push(childHeadRow(row, row.children[0].level, depth + 1));
         renderRows(visibleChildren(row), depth + 1, into);
       }
     });
@@ -368,7 +507,7 @@
     accounts.forEach(function (row) {
       html.push(accountRow(row));
       if (state.open[row.id]) {
-        html.push(childHeadRow("campaign"));
+        html.push(childHeadRow(row, "campaign", 1));
         renderRows(visibleChildren(row), 1, html);
       }
     });
@@ -381,6 +520,336 @@
     }, 0);
     byId("metaTreeCount").textContent = accounts.length + " кабинетов · " +
       campaigns + " кампаний";
+    Array.prototype.forEach.call(
+      byId("metaTreeBody").querySelectorAll("[data-indeterminate]"),
+      function (box) { box.indeterminate = true; }
+    );
+    renderBulk();
+  }
+
+  /* ---------- отмеченные строки и панель действий ---------- */
+
+  function pickedRows() {
+    return Object.keys(state.picked).map(function (id) {
+      return findRow(state.rows, id);
+    }).filter(Boolean);
+  }
+
+  function treeVisible() {
+    var body = byId("metaTreeBody");
+    return !!(body && body.offsetParent);
+  }
+
+  function ensureBulk() {
+    if (byId("metaTreeBulk")) return;
+    var bar = document.createElement("div");
+    bar.className = "mt-bulk";
+    bar.id = "metaTreeBulk";
+    bar.setAttribute("role", "toolbar");
+    bar.setAttribute("aria-label", "Действия с отмеченными");
+    bar.innerHTML = '<span class="mt-bulk__count" id="metaTreeBulkCount"></span>' +
+      '<span class="mt-bulk__sep"></span>' +
+      '<button class="mt-bulk__btn" type="button" data-bulk="start">' + ICON_PLAY + "Старт</button>" +
+      '<button class="mt-bulk__btn" type="button" data-bulk="pause">' + ICON_PAUSE + "Пауза</button>" +
+      '<button class="mt-bulk__btn" type="button" data-bulk="budget">Бюджет</button>' +
+      '<button class="mt-bulk__btn" type="button" data-bulk="more" aria-haspopup="menu">' +
+      ICON_MORE + "Ещё</button>" +
+      '<span class="mt-bulk__sep"></span>' +
+      '<button class="mt-bulk__btn mt-bulk__btn--clear" type="button" data-bulk="clear">' +
+      "Снять выделение</button>";
+    document.body.appendChild(bar);
+    bar.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-bulk]");
+      if (!button || button.disabled) return;
+      var kind = button.getAttribute("data-bulk");
+      if (kind === "clear") {
+        state.picked = {};
+        closeMenu();
+        return render();
+      }
+      if (kind === "more") return toggleMenu(button, { rows: pickedRows() }, true);
+      closeMenu();
+      runAction(kind, pickedRows());
+    });
+  }
+
+  function renderBulk() {
+    ensureBulk();
+    var rows = pickedRows();
+    var bar = byId("metaTreeBulk");
+    var open = rows.length > 0 && treeVisible();
+    bar.classList.toggle("is-open", open);
+    if (!open) closeMenu();
+    byId("metaTreeBulkCount").textContent = "Выбрано: " + rows.length;
+    var levels = levelsOf(rows.filter(function (row) { return row.level !== "ad"; }));
+    Array.prototype.forEach.call(bar.querySelectorAll("[data-bulk]"), function (button) {
+      var kind = button.getAttribute("data-bulk");
+      var off = state.busy && kind !== "clear";
+      if (kind === "budget") {
+        off = off || levels.length !== 1;
+        button.title = levels.length > 1 ? "Бюджет меняется у объектов одного уровня" :
+          !levels.length ? "У объявлений нет бюджета" : "";
+      }
+      button.disabled = off;
+    });
+  }
+
+  /* ---------- меню «⋮» ---------- */
+
+  var ENTITY_MENU = [
+    { action: "rename", label: "Переименовать в FB" },
+    { action: "duplicate", label: "Дублировать в FB" },
+    { action: "delete", label: "Удалить в FB", danger: true }
+  ];
+  var NO_CARD_API = "Meta не даёт привязывать карты через API";
+  var ACCOUNT_MENU = [
+    { action: "rename", label: "Переименовать" },
+    { action: "card", label: "Привязать банковскую карту", off: NO_CARD_API },
+    { action: "bm-card", label: "Привязать карту БМа", off: NO_CARD_API },
+    { action: "pixel", label: "Создать пиксель" },
+    { action: "spend_cap", label: "Установить лимит затрат" }
+  ];
+
+  function ensureMenu() {
+    if (byId("metaTreeMenu")) return;
+    var menu = document.createElement("div");
+    menu.className = "mt-menu";
+    menu.id = "metaTreeMenu";
+    menu.setAttribute("role", "menu");
+    menu.hidden = true;
+    document.body.appendChild(menu);
+    menu.addEventListener("click", function (event) {
+      var item = event.target.closest("[data-menu-action]");
+      if (!item || item.disabled || !state.menu) return;
+      var context = state.menu;
+      closeMenu();
+      if (context.account) openAccountDialog(item.getAttribute("data-menu-action"), context.account);
+      else runAction(item.getAttribute("data-menu-action"), context.rows);
+    });
+  }
+
+  /* `context`: { rows } — объекты структуры, { account } — строка кабинета. */
+  function toggleMenu(anchor, context, above) {
+    ensureMenu();
+    if (state.menu && state.menu.anchor === anchor) return closeMenu();
+    closeMenu();
+    var items = context.account ? ACCOUNT_MENU : ENTITY_MENU;
+    if (!context.account && !actionable(context.rows).length) return;
+    var menu = byId("metaTreeMenu");
+    menu.innerHTML = items.map(function (item) {
+      return '<button type="button" role="menuitem" data-menu-action="' + item.action + '"' +
+        (item.danger ? " data-danger" : "") + (item.off ? ' disabled title="' +
+        escapeHtml(item.off) + '"' : "") + ">" + escapeHtml(item.label) + "</button>";
+    }).join("");
+    state.menu = { anchor: anchor, rows: context.rows || [], account: context.account || null };
+    menu.hidden = false;
+    anchor.setAttribute("aria-expanded", "true");
+    var rect = anchor.getBoundingClientRect();
+    var width = menu.offsetWidth;
+    var height = menu.offsetHeight;
+    var left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    var top = above || rect.bottom + height + 8 > window.innerHeight
+      ? rect.top - height - 6 : rect.bottom + 6;
+    menu.style.left = left + "px";
+    menu.style.top = Math.max(8, top) + "px";
+  }
+
+  function closeMenu() {
+    var menu = byId("metaTreeMenu");
+    if (!state.menu || !menu) return;
+    if (state.menu.anchor) state.menu.anchor.setAttribute("aria-expanded", "false");
+    state.menu = null;
+    menu.hidden = true;
+  }
+
+  /* ---------- действия с кабинетом ---------- */
+
+  var ACCOUNT_DIALOGS = {
+    rename: { title: "Переименовать кабинет", save: "Сохранить" },
+    pixel: { title: "Создать пиксель", save: "Создать" },
+    spend_cap: { title: "Лимит затрат", save: "Сохранить" }
+  };
+
+  var accountDialog = null;
+
+  function ensureAccountModal() {
+    if (byId("metaTreeAccountModal")) return;
+    var modal = document.createElement("div");
+    modal.className = "mt-modal";
+    modal.id = "metaTreeAccountModal";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "metaTreeAccountTitle");
+    modal.innerHTML = '<div class="mt-modal__card mt-modal__card--narrow">' +
+      '<div class="mt-modal__head"><div style="min-width:0">' +
+      '<h2 id="metaTreeAccountTitle" class="mt-modal__title"></h2>' +
+      '<div class="mt-modal__sub" id="metaTreeAccountSub"></div></div>' +
+      '<button class="mt-modal__x" type="button" data-account-close aria-label="Закрыть">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/>' +
+      "</svg></button></div>" +
+      '<div class="mt-modal__body" id="metaTreeAccountBody"></div>' +
+      '<div class="mt-modal__foot"><span class="mt-foot-extra" id="metaTreeAccountExtra"></span>' +
+      '<button class="mt-btn" type="button" data-account-close>Отмена</button>' +
+      '<button class="mt-primary" type="button" id="metaTreeAccountSave"></button></div></div>';
+    document.body.appendChild(modal);
+    modal.addEventListener("click", function (event) {
+      if (event.target === modal || event.target.closest("[data-account-close]")) {
+        return closeAccountDialog();
+      }
+      var extra = event.target.closest("[data-cap-action]");
+      if (extra) saveAccountDialog(extra.getAttribute("data-cap-action"));
+    });
+    byId("metaTreeAccountSave").addEventListener("click", function () {
+      saveAccountDialog("set");
+    });
+    modal.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && event.target.tagName === "INPUT") saveAccountDialog("set");
+    });
+  }
+
+  function openAccountDialog(kind, account) {
+    if (!ACCOUNT_DIALOGS[kind]) return;
+    ensureAccountModal();
+    accountDialog = {
+      kind: kind, account: account, busy: false, error: "",
+      loading: kind !== "rename", billing: null,
+      value: kind === "rename" ? (account.account_name || "") : ""
+    };
+    byId("metaTreeAccountTitle").textContent = ACCOUNT_DIALOGS[kind].title;
+    byId("metaTreeAccountSub").textContent = account.name +
+      (account.account_name ? " · " + account.account_name : "");
+    byId("metaTreeAccountModal").classList.add("is-open");
+    renderAccountDialog();
+    if (kind !== "rename") loadAccountBilling(accountDialog);
+  }
+
+  function closeAccountDialog() {
+    accountDialog = null;
+    var modal = byId("metaTreeAccountModal");
+    if (modal) modal.classList.remove("is-open");
+  }
+
+  async function loadAccountBilling(dialog) {
+    try {
+      var billing = await api.get("/meta/accounts/" + dialog.account.account_id + "/billing");
+      if (accountDialog !== dialog) return;
+      dialog.billing = billing;
+    } catch (error) {
+      if (accountDialog !== dialog) return;
+      dialog.error = error.message || String(error);
+    }
+    dialog.loading = false;
+    renderAccountDialog();
+  }
+
+  function renderAccountDialog() {
+    var dialog = accountDialog;
+    if (!dialog) return;
+    var body = byId("metaTreeAccountBody");
+    var extra = byId("metaTreeAccountExtra");
+    var save = byId("metaTreeAccountSave");
+    save.textContent = dialog.busy ? "Сохраняем…" : ACCOUNT_DIALOGS[dialog.kind].save;
+    save.disabled = dialog.busy || dialog.loading;
+    extra.innerHTML = "";
+    var error = dialog.error
+      ? '<div class="mt-form-error" role="alert">' + escapeHtml(dialog.error) + "</div>" : "";
+    if (dialog.loading) {
+      body.innerHTML = '<div class="mt-note" style="padding:18px 0;text-align:center">' +
+        "Получаем данные из Meta…</div>";
+      return;
+    }
+    var lock = dialog.busy ? " disabled" : "";
+    var billing = dialog.billing || {};
+    var currency = billing.currency || dialog.account.currency || "USD";
+    if (dialog.kind === "rename") {
+      body.innerHTML = '<label class="mt-field"><span>Название</span>' +
+        '<input class="meta-control" id="metaTreeAccountInput" maxlength="300" value="' +
+        escapeHtml(dialog.value) + '"' + lock + "></label>" + error;
+    } else if (dialog.kind === "pixel") {
+      var pixels = billing.pixels || [];
+      body.innerHTML = (pixels.length
+        ? '<div class="mt-field"><span>Пиксели кабинета</span><div class="mt-pixels">' +
+          pixels.map(function (pixel) {
+            return "<div><b>" + escapeHtml(pixel.name || "Без названия") + "</b><i>" +
+              escapeHtml(pixel.id) + "</i></div>";
+          }).join("") + "</div></div>"
+        : "") +
+        '<label class="mt-field"><span>Название нового пикселя</span>' +
+        '<input class="meta-control" id="metaTreeAccountInput" maxlength="120" value="' +
+        escapeHtml(dialog.value) + '"' + lock + "></label>" + error;
+    } else {
+      var hasCap = billing.spend_cap != null;
+      body.innerHTML = '<div class="mt-stats">' +
+        "<div><span>Потрачено</span><b>" + money(billing.amount_spent || 0, currency) + "</b></div>" +
+        "<div><span>Лимит</span><b>" + (hasCap ? money(billing.spend_cap, currency) : "Без лимита") +
+        "</b></div></div>" +
+        '<label class="mt-field"><span>Новый лимит, ' + escapeHtml(currency) + "</span>" +
+        '<input class="meta-control" id="metaTreeAccountInput" type="text" inputmode="decimal" ' +
+        'value="' + escapeHtml(dialog.value) + '"' + lock + "></label>" + error;
+      if (hasCap && !dialog.error) {
+        extra.innerHTML = '<button class="mt-btn" type="button" data-cap-action="reset"' + lock +
+          ">Обнулить потраченное</button>" +
+          '<button class="mt-btn mt-btn--danger" type="button" data-cap-action="delete"' + lock +
+          ">Снять лимит</button>";
+      }
+    }
+    var input = byId("metaTreeAccountInput");
+    if (input) {
+      input.addEventListener("input", function () { dialog.value = input.value; });
+      if (!dialog.busy) input.focus();
+    }
+  }
+
+  async function saveAccountDialog(mode) {
+    var dialog = accountDialog;
+    if (!dialog || dialog.busy || dialog.loading) return;
+    var payload = { action: dialog.kind };
+    var value = String(dialog.value || "").trim();
+    if (dialog.kind === "spend_cap") {
+      payload.spend_cap_action = mode;
+      if (mode === "set") {
+        var amount = Number(value.replace(",", "."));
+        if (!value || !isFinite(amount) || amount <= 0) {
+          dialog.error = "Укажите лимит больше нуля";
+          return renderAccountDialog();
+        }
+        payload.spend_cap = amount;
+      } else if (!(await askConfirm({
+        title: mode === "delete" ? "Снять лимит затрат?" : "Обнулить потраченное?",
+        message: mode === "delete"
+          ? "Кабинет сможет тратить без ограничения."
+          : "Счётчик трат под лимитом начнётся с нуля, лимит останется прежним.",
+        confirmLabel: mode === "delete" ? "Снять лимит" : "Обнулить",
+        danger: mode === "delete"
+      }))) return;
+    } else {
+      if (!value) {
+        dialog.error = dialog.kind === "pixel" ? "Укажите название пикселя" : "Укажите название";
+        return renderAccountDialog();
+      }
+      payload.name = value;
+    }
+    dialog.busy = true;
+    dialog.error = "";
+    renderAccountDialog();
+    var result;
+    try {
+      result = await api.post("/meta/accounts/" + dialog.account.account_id + "/actions", payload);
+    } catch (error) {
+      if (accountDialog !== dialog) return;
+      dialog.busy = false;
+      dialog.error = error.message || String(error);
+      return renderAccountDialog();
+    }
+    if (accountDialog !== dialog) return;
+    closeAccountDialog();
+    if (result && result.warning) {
+      notify({ title: "Проверьте лимит", message: result.warning });
+    } else if (dialog.kind === "pixel") {
+      notify({ title: "Пиксель создан", message: value + (result.pixel_id ? " · " + result.pixel_id : "") });
+    }
+    reload();
   }
 
   /* ---------- подсветка ---------- */
@@ -579,15 +1048,69 @@
     byId("metaTreeBody").addEventListener("click", function (event) {
       var toggle = event.target.closest("[data-tree-toggle]");
       if (toggle) return toggleRow(toggle.getAttribute("data-tree-toggle"));
+      var menuButton = event.target.closest("[data-tree-menu]");
+      if (menuButton) {
+        var menuRow = findRow(state.rows, menuButton.getAttribute("data-tree-menu"));
+        return toggleMenu(menuButton, { rows: menuRow ? [menuRow] : [] }, false);
+      }
+      var accountMenu = event.target.closest("[data-tree-account-menu]");
+      if (accountMenu) {
+        var account = findRow(state.rows, accountMenu.getAttribute("data-tree-account-menu"));
+        return account && toggleMenu(accountMenu, { account: account }, false);
+      }
+      var budget = event.target.closest("[data-tree-budget]");
+      if (budget) {
+        var budgetRow = findRow(state.rows, budget.getAttribute("data-tree-budget"));
+        return budgetRow && openEditor("budget", [budgetRow]);
+      }
+      var agent = event.target.closest("[data-tree-agent]");
+      if (agent) {
+        var meta = window.CelestialMeta;
+        if (meta && meta.openConnection) meta.openConnection(agent.getAttribute("data-tree-agent"));
+        return;
+      }
       var action = event.target.closest("[data-tree-action]");
       if (!action) return;
       var row = findRow(state.rows, action.getAttribute("data-tree-id"));
-      if (row) runAction(action.getAttribute("data-tree-action"), row);
+      if (row) runAction(action.getAttribute("data-tree-action"), [row]);
+    });
+    byId("metaTreeBody").addEventListener("change", function (event) {
+      var box = event.target;
+      if (box.hasAttribute("data-tree-pick")) {
+        var id = box.getAttribute("data-tree-pick");
+        if (box.checked) state.picked[id] = true;
+        else delete state.picked[id];
+        return render();
+      }
+      if (box.hasAttribute("data-tree-pick-group")) {
+        var parent = findRow(state.rows, box.getAttribute("data-tree-pick-group"));
+        actionable(parent ? visibleChildren(parent) : []).forEach(function (row) {
+          if (box.checked) state.picked[row.id] = true;
+          else delete state.picked[row.id];
+        });
+        render();
+      }
+    });
+    document.addEventListener("click", function (event) {
+      if (!state.menu) return;
+      if (event.target.closest("#metaTreeMenu") || event.target.closest("[data-tree-menu]") ||
+          event.target.closest("[data-tree-account-menu]") ||
+          event.target.closest('[data-bulk="more"]')) return;
+      closeMenu();
+    });
+    window.addEventListener("resize", function () { closeMenu(); });
+    byId("metaTreeTable").closest(".mt-scroll").addEventListener("scroll", function () {
+      closeMenu();
+    });
+    // Вкладки переключает meta-ui.js; панель отмеченных видна только на «Обзоре».
+    Array.prototype.forEach.call(document.querySelectorAll(".meta-tab"), function (tab) {
+      tab.addEventListener("click", function () { window.setTimeout(renderBulk, 0); });
     });
     byId("metaTreeHead").addEventListener("click", function (event) {
       var button = event.target.closest("[data-tree-head]");
       if (!button) return;
       var kind = button.getAttribute("data-tree-head");
+      if (kind === "heat") return openHeat();
       if (kind === "collapse") {
         if (anyOpen()) state.open = {};
         else expandAll(state.rows);
@@ -600,14 +1123,16 @@
       state.sort = event.target.value;
       render();
     });
-    byId("metaTreeHeatOpen").addEventListener("click", openHeat);
     byId("metaTreeHeatClose").addEventListener("click", closeHeat);
     byId("metaTreeHeatCancel").addEventListener("click", closeHeat);
     byId("metaTreeHeatModal").addEventListener("click", function (event) {
       if (event.target === event.currentTarget) closeHeat();
     });
     document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && draft) closeHeat();
+      if (event.key !== "Escape") return;
+      if (state.menu) return closeMenu();
+      if (accountDialog) return closeAccountDialog();
+      if (draft) closeHeat();
     });
     byId("metaTreeHeatAdd").addEventListener("click", function () {
       var free = freeGeos(null);
@@ -671,6 +1196,9 @@
       if (requestId !== state.requestId) return;
       state.rows = payload.rows || [];
       state.availableGeos = payload.available_geos || [];
+      Object.keys(state.picked).forEach(function (id) {
+        if (!findRow(state.rows, id)) delete state.picked[id];
+      });
       if (!Object.keys(state.open).length && state.rows[0]) state.open[state.rows[0].id] = true;
       refreshFilters();
       state.loading = false;

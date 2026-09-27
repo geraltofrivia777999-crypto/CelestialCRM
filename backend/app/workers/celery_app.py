@@ -64,6 +64,12 @@ celery_app.conf.update(
             "task": "app.workers.tasks.run_meta_rules",
             "schedule": clock_aligned(meta_rules_step_minutes()),
         },
+        # GEO-правила MetaAds v2: тик раз в 15 минут, а интервал каждого
+        # воркспейса (15 минут – 4 часа) проверяет сам прогон.
+        "run-meta-geo-rules": {
+            "task": "app.workers.tasks.run_meta_geo_rules",
+            "schedule": clock_aligned(15),
+        },
         # Алерты гоняются чаще правил Meta: их смысл в том, чтобы узнать о
         # проблеме сегодня, а не через полчаса. Пауза между срабатываниями
         # задана у каждого правила отдельно.

@@ -352,19 +352,27 @@ async def test_full_access_is_not_keyed_on_the_role_name(database) -> None:
 
     async with SessionLocal() as db:
         admin = await db.scalar(select(User).where(User.login == "admin"))
+        original_role_id = admin.role_id
         admin.role_id = renamed_id
         await db.commit()
 
-    async with SessionLocal() as db:
-        from sqlalchemy.orm import selectinload
+    try:
+        async with SessionLocal() as db:
+            from sqlalchemy.orm import selectinload
 
-        admin = await db.scalar(
-            select(User)
-            .where(User.login == "admin")
-            .options(selectinload(User.role).selectinload(Role.permissions))
-        )
-        assert admin.role.name == "Главный администратор"
-        assert await has_full_access(db, admin) is True
+            admin = await db.scalar(
+                select(User)
+                .where(User.login == "admin")
+                .options(selectinload(User.role).selectinload(Role.permissions))
+            )
+            assert admin.role.name == "Главный администратор"
+            assert await has_full_access(db, admin) is True
+    finally:
+        # Следующие тесты ждут админа с системной ролью «Administrator».
+        async with SessionLocal() as db:
+            admin = await db.scalar(select(User).where(User.login == "admin"))
+            admin.role_id = original_role_id
+            await db.commit()
 
 async def test_board_spend_lands_in_the_book_of_its_tier(database) -> None:
     """Расход дня расходится по Tier1 и Tier2/3 так же, как офферы.

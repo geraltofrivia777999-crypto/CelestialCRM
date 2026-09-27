@@ -10,8 +10,10 @@ from tests.test_media_finance import _admin_client
 def test_tree_includes_zero_metric_entities_and_keeps_grain() -> None:
     account_id = uuid.uuid4()
     owner_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
     account = SimpleNamespace(
         id=account_id, external_id="act_123", name="Main", owner_id=owner_id,
+        connection_id=connection_id,
         account_status="ACTIVE", status=SimpleNamespace(value="active"),
         currency="EUR", timezone_name="Europe/Berlin",
     )
@@ -46,6 +48,7 @@ def test_tree_includes_zero_metric_entities_and_keeps_grain() -> None:
     assert adset["budget"] == 0
     assert quiet["spend"] == 0
     assert root["currency"] == "EUR" and root["agent"] == "Buyer"
+    assert root["connection_id"] == str(connection_id)
 
 
 def test_tree_endpoint_returns_period_and_geo_options(database) -> None:

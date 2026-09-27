@@ -48,6 +48,9 @@ from app.models import (
     MetaCreative,
     MetaEntity,
     MetaFanPage,
+    MetaGeoRule,
+    MetaGeoRuleEvent,
+    MetaGeoRuleSettings,
     MetaLaunch,
     MetaLaunchCreative,
     MetaOperation,
@@ -66,6 +69,7 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    MetaAccountActionIn,
     MetaAccountUpdate,
     MetaBundleSettings,
     MetaCommentAction,
@@ -75,6 +79,8 @@ from app.schemas import (
     MetaConnectionPreview,
     MetaConnectionUpdate,
     MetaEntityActionIn,
+    MetaGeoRuleIn,
+    MetaGeoRuleSettingsIn,
     MetaLaunchBatch,
     MetaLaunchCreate,
     MetaLaunchUpdate,
@@ -94,6 +100,7 @@ from app.services import (
     finance_spend,
     meta_bundle,
     meta_comments,
+    meta_geo_rules,
     meta_hourly,
     meta_levels,
     meta_spend,
@@ -101,6 +108,7 @@ from app.services import (
 )
 from app.services.audit import audit
 from app.services.formulas import amount_with_commission, q
+from app.services.geo import country_options
 from app.services.meta import (
     AUTH_METHOD_HINTS,
     AUTH_METHODS,
@@ -881,6 +889,174 @@ async def overview_tree(
         "rows": rows,
         "available_geos": available_geos,
         "attribution_configured": bool(sub_by_connection),
+    }
+
+
+def _require_v2_admin(current: User) -> None:
+    """MetaAds v2 пока открыт только системной роли администратора."""
+    if not current.role.is_system or current.role.name != "Administrator":
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+
+def _geo_rule_out(rule: MetaGeoRule) -> dict:
+    return {
+        "country_code": rule.country_code,
+        "is_enabled": rule.is_enabled,
+        **{
+            key: float(getattr(rule, key)) if getattr(rule, key) is not None else None
+            for key in meta_geo_rules.THRESHOLDS
+        },
+    }
+
+
+def _geo_settings_out(config: MetaGeoRuleSettings) -> dict:
+    return {
+        "level": config.level,
+        "interval_minutes": config.interval_minutes,
+        "auto_enabled": config.auto_enabled,
+        "last_run_at": config.last_run_at.isoformat() if config.last_run_at else None,
+        "last_run_result": config.last_run_result or {},
+        "intervals": list(meta_geo_rules.INTERVALS),
+        # Общий выключатель автоправил сервера: без него автопрогон не идёт.
+        "server_enabled": settings.meta_rules_enabled,
+    }
+
+
+@router.get("/geo-rules")
+async def list_geo_rules(
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    _require_v2_admin(current)
+    config = await meta_geo_rules.get_settings(db, current.workspace_id)
+    await db.commit()
+    rules = (await db.execute(
+        select(MetaGeoRule)
+        .where(MetaGeoRule.workspace_id == current.workspace_id)
+        .order_by(MetaGeoRule.country_code)
+    )).scalars()
+    return {
+        "settings": _geo_settings_out(config),
+        "rules": [_geo_rule_out(rule) for rule in rules],
+        "countries": country_options(),
+    }
+
+
+@router.put("/geo-rules/settings")
+async def update_geo_rule_settings(
+    payload: MetaGeoRuleSettingsIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    _require_v2_admin(current)
+    config = await meta_geo_rules.get_settings(db, current.workspace_id)
+    for key, value in payload.model_dump(exclude_none=True).items():
+        setattr(config, key, value)
+    await audit(
+        db, current, "meta.geo_rules_settings",
+        f"GEO-правила: уровень {config.level}, интервал {config.interval_minutes} мин, "
+        f"автопрогон {'вкл' if config.auto_enabled else 'выкл'}",
+        request=request,
+    )
+    await db.commit()
+    return _geo_settings_out(config)
+
+
+@router.put("/geo-rules/{country_code}")
+async def save_geo_rule(
+    country_code: str,
+    payload: MetaGeoRuleIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    _require_v2_admin(current)
+    code = country_code.strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        raise HTTPException(status_code=422, detail="GEO — двухбуквенный код страны")
+    rule = await db.scalar(select(MetaGeoRule).where(
+        MetaGeoRule.workspace_id == current.workspace_id, MetaGeoRule.country_code == code
+    ))
+    if rule is None:
+        rule = MetaGeoRule(workspace_id=current.workspace_id, country_code=code)
+        db.add(rule)
+    for key, value in payload.model_dump().items():
+        setattr(rule, key, value)
+    await audit(db, current, "meta.geo_rule_saved", f"GEO-правило {code} сохранено", request=request)
+    await db.commit()
+    return _geo_rule_out(rule)
+
+
+@router.delete("/geo-rules/{country_code}", status_code=204)
+async def delete_geo_rule(
+    country_code: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> None:
+    _require_v2_admin(current)
+    code = country_code.strip().upper()
+    rule = await db.scalar(select(MetaGeoRule).where(
+        MetaGeoRule.workspace_id == current.workspace_id, MetaGeoRule.country_code == code
+    ))
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Правила для этого GEO нет")
+    await db.delete(rule)
+    await audit(db, current, "meta.geo_rule_deleted", f"GEO-правило {code} удалено", request=request)
+    await db.commit()
+
+
+@router.post("/geo-rules/run")
+async def run_geo_rules_now(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    """«Прогнать сейчас»: те же проверки, что по расписанию, и паузы в Meta."""
+    _require_v2_admin(current)
+    user_id, workspace_id = current.id, current.workspace_id
+    summary = await meta_geo_rules.run_workspace(
+        db, workspace_id, client_for, trigger="manual", user_id=user_id
+    )
+    await audit(
+        db, await db.get(User, user_id), "meta.geo_rules_run",
+        f"GEO-правила вручную: сработало {summary['triggered']}, "
+        f"на паузе {summary['paused']}, ошибок {summary['failed']}",
+        request=request,
+    )
+    await db.commit()
+    return summary
+
+
+@router.get("/geo-rules/events")
+async def geo_rule_events(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    _require_v2_admin(current)
+    base = select(MetaGeoRuleEvent).where(MetaGeoRuleEvent.workspace_id == current.workspace_id)
+    total = await db.scalar(select(func.count()).select_from(base.subquery()))
+    rows = (await db.execute(
+        base.order_by(MetaGeoRuleEvent.created_at.desc()).limit(limit).offset(offset)
+    )).scalars()
+    return {
+        "total": total or 0,
+        "items": [
+            {
+                "id": str(row.id),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "trigger": row.trigger, "level": row.level,
+                "external_id": row.external_id, "name": row.name,
+                "account_external_id": row.account_external_id,
+                "account_name": row.account_name, "country_code": row.country_code,
+                "checks": row.checks or [], "reason": row.reason,
+                "metrics": row.metrics or {}, "status": row.status, "error": row.error,
+            }
+            for row in rows
+        ],
     }
 
 
@@ -3130,6 +3306,118 @@ async def entity_actions(
     )
     await db.commit()
     return {"results": results, "done": done, "failed": len(results) - done}
+
+
+async def _cabinet_client(db: AsyncSession, account: MetaAdAccount) -> MetaClient:
+    connection = await db.get(IntegrationConnection, account.connection_id)
+    if not connection:
+        raise HTTPException(status_code=409, detail="У кабинета нет подключения")
+    try:
+        return await client_for(connection, db)
+    except Exception as exc:  # noqa: BLE001 — текст ошибки нужен в окне
+        raise HTTPException(
+            status_code=409, detail="Нет доступа к Meta: " + " ".join(str(exc).split())[:300]
+        ) from exc
+
+
+def _meta_failure(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=422, detail=" ".join(str(exc).split())[:500])
+
+
+@router.get("/accounts/{account_id}/billing")
+async def account_billing(
+    account_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    """Лимит затрат и пиксели кабинета прямо из Meta — для окон MetaAds v2."""
+    account = await _account(db, current, account_id)
+    client = await _cabinet_client(db, account)
+    try:
+        live = await client.object_fields(
+            account.external_id, ["name", "currency", "spend_cap", "amount_spent"]
+        )
+        pixels = await client.pixels(account.external_id)
+    except Exception as exc:  # noqa: BLE001 — ошибка Meta уходит в окно
+        raise _meta_failure(exc) from exc
+    cap = money_from_minor(live.get("spend_cap"))
+    return {
+        "name": live.get("name") or account.name,
+        "currency": live.get("currency") or account.currency,
+        "spend_cap": float(cap) if cap else None,
+        "amount_spent": float(money_from_minor(live.get("amount_spent")) or 0),
+        "pixels": [{"id": str(row.get("id")), "name": row.get("name")} for row in pixels],
+    }
+
+
+@router.post("/accounts/{account_id}/actions")
+async def account_action(
+    account_id: uuid.UUID,
+    payload: MetaAccountActionIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    """Переименовать кабинет, задать лимит затрат или создать пиксель в Meta.
+
+    Привязку карт Marketing API не даёт, поэтому её здесь нет.
+    """
+    account = await _account(db, current, account_id)
+    client = await _cabinet_client(db, account)
+    result: dict = {"ok": True}
+    try:
+        if payload.action == "rename":
+            name = (payload.name or "").strip()
+            if not name:
+                raise HTTPException(status_code=422, detail="Укажите название")
+            await client.update_object(account.external_id, {"name": name})
+            account.name = name
+            summary = f"Кабинет {account.external_id} переименован: {name}"
+        elif payload.action == "pixel":
+            name = (payload.name or "").strip()
+            if not name:
+                raise HTTPException(status_code=422, detail="Укажите название пикселя")
+            created = await client.create_pixel(account.external_id, name)
+            result["pixel_id"] = str(created.get("id") or "")
+            summary = f"В кабинете {account.external_id} создан пиксель {name}"
+        else:
+            if payload.spend_cap_action == "set":
+                if payload.spend_cap is None:
+                    raise HTTPException(status_code=422, detail="Укажите лимит")
+                # При записи Meta ждёт лимит кабинета в основных единицах валюты
+                # (долларах), а отдаёт его в центах — поэтому ниже сверяемся.
+                data = {"spend_cap": str(payload.spend_cap)}
+            elif payload.spend_cap_action == "reset":
+                data = {"spend_cap_action": "reset"}
+            else:
+                data = {"spend_cap_action": "delete"}
+            await client.update_object(account.external_id, data)
+            live = await client.object_fields(account.external_id, ["spend_cap", "amount_spent"])
+            cap = money_from_minor(live.get("spend_cap"))
+            account.spend_cap = cap or None
+            account.amount_spent = money_from_minor(live.get("amount_spent")) or ZERO
+            result["spend_cap"] = float(cap) if cap else None
+            result["amount_spent"] = float(account.amount_spent)
+            if payload.spend_cap_action == "set" and cap != payload.spend_cap:
+                result["warning"] = (
+                    f"Meta сохранила лимит {cap or 0} {account.currency or ''} вместо "
+                    f"{payload.spend_cap} — проверьте кабинет"
+                )
+            summary = {
+                "set": f"Лимит затрат кабинета {account.external_id}: {payload.spend_cap}",
+                "reset": f"Обнулены траты под лимитом кабинета {account.external_id}",
+                "delete": f"Снят лимит затрат кабинета {account.external_id}",
+            }[payload.spend_cap_action]
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — MetaError, сеть, прокси
+        raise _meta_failure(exc) from exc
+    await audit(
+        db, current, "meta.account_action", summary,
+        request=request, entity_id=str(account.id),
+    )
+    await db.commit()
+    return result
 
 
 @router.get("/entities/campaigns")

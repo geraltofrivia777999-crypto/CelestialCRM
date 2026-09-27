@@ -296,6 +296,38 @@ class MetaAccountUpdate(BaseModel):
     status: Status | None = None
 
 
+class MetaAccountActionIn(BaseModel):
+    """Действие с рекламным кабинетом в Meta из MetaAds v2.
+
+    `spend_cap_action`: «set» — новый лимит, «reset» — обнулить потраченное
+    с текущим лимитом, «delete» — снять лимит совсем.
+    """
+
+    action: Literal["rename", "spend_cap", "pixel"]
+    name: str | None = Field(default=None, max_length=300)
+    spend_cap: Decimal | None = Field(default=None, gt=0)
+    spend_cap_action: Literal["set", "reset", "delete"] = "set"
+
+
+class MetaGeoRuleIn(BaseModel):
+    """Строка таблицы GEO-правил. Пустой порог — проверка выключена."""
+
+    is_enabled: bool = True
+    no_clicks: Decimal | None = Field(default=None, gt=0, le=1000000)
+    no_insts: Decimal | None = Field(default=None, gt=0, le=1000000)
+    no_regs: Decimal | None = Field(default=None, gt=0, le=1000000)
+    no_deps: Decimal | None = Field(default=None, gt=0, le=1000000)
+    max_avg_inst: Decimal | None = Field(default=None, gt=0, le=1000000)
+    max_avg_reg: Decimal | None = Field(default=None, gt=0, le=1000000)
+    max_avg_dep: Decimal | None = Field(default=None, gt=0, le=1000000)
+
+
+class MetaGeoRuleSettingsIn(BaseModel):
+    level: Literal["campaign", "adset", "ad"] | None = None
+    interval_minutes: Literal[15, 30, 60, 120, 240] | None = None
+    auto_enabled: bool | None = None
+
+
 class MetaConnectionPreview(BaseModel):
     """Шаг «Проверка» в мастере: токен уже введён, но ещё ничего не сохранено."""
 

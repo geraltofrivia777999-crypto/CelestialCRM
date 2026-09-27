@@ -34,9 +34,12 @@ def build_tree(
 
     for account in accounts:
         node = {
-            "id": f"account:{account.id}", "external_id": account.external_id,
+            "id": f"account:{account.id}", "account_id": str(account.id),
+            "external_id": account.external_id,
             "level": "account", "name": account.external_id,
             "account_name": account.name, "agent": owners.get(account.owner_id),
+            # По агенту открывается окно подключения, из которого пришёл кабинет.
+            "connection_id": str(account.connection_id) if account.connection_id else None,
             "status": (
                 account.account_status or "ACTIVE"
                 if account.status.value == "active" else "PAUSED"

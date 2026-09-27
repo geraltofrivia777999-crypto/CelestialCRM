@@ -962,6 +962,75 @@ class MetaOperation(UUIDMixin, Base):
     )
 
 
+class MetaGeoRule(UUIDMixin, TimestampMixin, Base):
+    """Правило MetaAds v2 для одного GEO: когда ставить объект на паузу.
+
+    `no_*` — сколько долларов объект может потратить за сегодня без кликов,
+    инсталлов, регистраций или депозитов. `max_avg_*` — предельная цена
+    инсталла, регистрации или депозита. Пустое поле — проверка выключена.
+    """
+
+    __tablename__ = "meta_geo_rules"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "country_code", name="uq_meta_geo_rule_country"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    no_clicks: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    no_insts: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    no_regs: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    no_deps: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    max_avg_inst: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    max_avg_reg: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    max_avg_dep: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+
+
+class MetaGeoRuleSettings(TimestampMixin, Base):
+    """Общие настройки GEO-правил воркспейса: уровень, интервал, автопрогон."""
+
+    __tablename__ = "meta_geo_rule_settings"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    # С чем работают правила: campaign | adset | ad.
+    level: Mapped[str] = mapped_column(String(10), default="campaign", server_default="campaign")
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
+    auto_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_run_result: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MetaGeoRuleEvent(UUIDMixin, TimestampMixin, Base):
+    """Срабатывание GEO-правила: какой объект, почему и чем кончилась пауза."""
+
+    __tablename__ = "meta_geo_rule_events"
+    __table_args__ = (Index("ix_meta_geo_rule_events_ws_created", "workspace_id", "created_at"),)
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE")
+    )
+    # auto — по расписанию, manual — кнопкой «Прогнать сейчас».
+    trigger: Mapped[str] = mapped_column(String(10), default="auto")
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    level: Mapped[str] = mapped_column(String(10), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    account_external_id: Mapped[str | None] = mapped_column(String(100))
+    account_name: Mapped[str | None] = mapped_column(String(240))
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    checks: Mapped[list] = mapped_column(JSON, default=list)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    # paused | failed
+    status: Mapped[str] = mapped_column(String(10), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
 class MetaRule(UUIDMixin, TimestampMixin, Base):
     """Автоправило — ТЗ 3.8.
 

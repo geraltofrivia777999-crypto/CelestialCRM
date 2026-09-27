@@ -2442,6 +2442,9 @@
           if (path.indexOf("structure") >= 0 && window.CelestialMetaTree) {
             await window.CelestialMetaTree.init(currentSessionUser);
           }
+          if (path.indexOf("structure") >= 0 && window.CelestialMetaGeoRules) {
+            await window.CelestialMetaGeoRules.init(currentSessionUser);
+          }
         }
         else if (path.indexOf("offer") >= 0) {
           if (window.CelestialCatalog) await window.CelestialCatalog.initOffers(currentSessionUser);
