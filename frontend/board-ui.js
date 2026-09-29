@@ -676,15 +676,27 @@
 
   var TIER_NAMES = { T1: "Tier1", T23: "Tier2/3", unassigned: "Без тира" };
 
-  function subTh(label, extra, background, color, drag) {
-    return '<th title="' + escapeHtml(label) + '" draggable="true"' +
+  /* Стрелка у названия колонки: показывает, по какой из них сейчас
+     отсортирована таблица. Место под неё занято всегда, иначе заголовок
+     дёргался бы по ширине при каждом клике. */
+  function sortCaret(active) {
+    return '<span style="display:inline-block;width:9px;margin-left:5px;color:' +
+      (active ? "#B91414" : "transparent") + '">▼</span>';
+  }
+
+  function subTh(label, extra, background, color, drag, sort) {
+    return '<th title="' + escapeHtml(label) +
+      (sort ? (sort.active ? " · сортировка по убыванию" : " · нажмите, чтобы отсортировать") : "") +
+      '" draggable="true"' +
       (drag ? ' data-col-drag="' + escapeHtml(drag.group) + '" data-col-label="' +
         escapeHtml(label) + '"' : "") +
+      (sort ? ' data-sort-label="' + escapeHtml(label) + '"' +
+        ' aria-sort="' + (sort.active ? "descending" : "none") + '"' : "") +
       ' style="position:sticky;top:41px;z-index:4;cursor:grab;background:' + (background || "#FBF9F9") +
       ';text-align:right;padding:9px 12px;border-bottom:1px solid #E8E2E2;font-size:11px;' +
-      'font-weight:700;color:' + (color || "#857D7D") +
+      'font-weight:700;color:' + (sort && sort.active ? "#B91414" : (color || "#857D7D")) +
       ';font-family:Inter;white-space:nowrap;' + (extra || "") + '">' +
-      escapeHtml(label) + "</th>";
+      escapeHtml(label) + (sort ? sortCaret(sort.active) : "") + "</th>";
   }
 
   /* Последний блок доводит заливку до края карточки: правая граница там лишняя,
@@ -1531,8 +1543,14 @@
           result.push(byLabel[current]);
         }
       });
-      columns.forEach(function (column) {
-        if (result.indexOf(column) < 0) result.push(column);
+      // Новая колонка в сохранённом порядке не значится. Её ставим туда, где
+      // она объявлена, а не в конец блока: INST2DEP нужен сразу за INST, и
+      // уезжать в хвост только потому, что человек однажды переставил колонки,
+      // он не должен.
+      columns.forEach(function (column, index) {
+        if (result.indexOf(column) < 0) {
+          result.splice(Math.min(index, result.length), 0, column);
+        }
       });
       return result;
     }
@@ -1541,6 +1559,75 @@
       state.display.columnOrder = state.display.columnOrder || {};
       state.display.columnOrder[groupKey] = labels;
       persistDisplay();
+    }
+
+    /* ----- сортировка по колонке -----
+
+       Клик по названию числовой колонки выстраивает строки от большего к
+       меньшему: и группы внутри своего уровня, и записи внутри группы.
+       Повторный клик по той же колонке возвращает порядок доски. */
+    var sortLabel = null;
+
+    function sortColumn() {
+      if (!sortLabel) return null;
+      var found = null;
+      layout.forEach(function (group) {
+        group.columns.forEach(function (column) {
+          // Сортируем только по вычислимым колонкам: у сервисов и агентов
+          // значение лежит в своей корзине и к строке-группе не приводится.
+          if (!found && column.label === sortLabel && column.get) found = column;
+        });
+      });
+      return found;
+    }
+
+    function sortValue(column, sums) {
+      var value = column.get(sums || {});
+      return value == null || !isFinite(Number(value)) ? null : Number(value);
+    }
+
+    // Пустое значение всегда внизу: прочерк — это «нет данных», а не ноль.
+    function byValueDesc(left, right) {
+      if (left == null && right == null) return 0;
+      if (left == null) return 1;
+      if (right == null) return -1;
+      return right - left;
+    }
+
+    function sortedOrder(node) {
+      var column = sortColumn();
+      if (!column) return node.order;
+      return node.order.slice().sort(function (leftKey, rightKey) {
+        return byValueDesc(
+          sortValue(column, node.children[leftKey].aggregate.sums),
+          sortValue(column, node.children[rightKey].aggregate.sums)
+        );
+      });
+    }
+
+    function recordSums(record) {
+      var sums = {};
+      config.sumFields.forEach(function (field) {
+        sums[field] = record[field] == null ? null : Number(record[field]);
+      });
+      return sums;
+    }
+
+    function sortedRecords(items) {
+      var column = sortColumn();
+      if (!column) return items;
+      return items.slice().sort(function (left, right) {
+        return byValueDesc(
+          sortValue(column, recordSums(left)),
+          sortValue(column, recordSums(right))
+        );
+      });
+    }
+
+    function toggleSort(label) {
+      sortLabel = sortLabel === label ? null : label;
+      renderHead();
+      renderTable();
     }
 
     /* The trailing column exists only to hold the pencil button. Where a click on the
@@ -1587,13 +1674,38 @@
               opener,
               group.subBackground,
               group.color,
-              { group: group.key }
+              { group: group.key },
+              column.get ? { active: column.label === sortLabel } : null
             );
           }).join("");
         }).join("") +
         "</tr>";
       head.innerHTML = row1 + row2;
       bindHeadDrag(head);
+      bindHeadSort(head);
+    }
+
+    /* Клик и перетаскивание живут на одном заголовке: клик считается только
+       тогда, когда мышь не уехала — иначе каждая попытка переставить колонку
+       заодно меняла бы сортировку. */
+    function bindHeadSort(head) {
+      if (head.getAttribute("data-sort-bound") === "1") return;
+      head.setAttribute("data-sort-bound", "1");
+      var start = null;
+      head.addEventListener("mousedown", function (event) {
+        start = { x: event.clientX, y: event.clientY };
+      });
+      head.addEventListener("click", function (event) {
+        var cell = event.target.closest
+          ? event.target.closest("[data-sort-label]")
+          : null;
+        if (!cell) return;
+        var moved = start &&
+          (Math.abs(event.clientX - start.x) > 4 || Math.abs(event.clientY - start.y) > 4);
+        start = null;
+        if (moved) return;
+        toggleSort(cell.getAttribute("data-sort-label"));
+      });
     }
 
     /* Перетаскивание заголовков: за верхний ряд переставляются блоки целиком,
@@ -2058,7 +2170,7 @@
         renderLeafRows(node, depth + 1, path, output);
         return;
       }
-      node.order.forEach(function (key) {
+      sortedOrder(node).forEach(function (key) {
         renderNodeRows(node.children[key], depth + 1, nodePath(path, key), output);
       });
     }
@@ -2075,7 +2187,7 @@
           escapeHtml(leaf.error) + "</span>"));
         return;
       }
-      leaf.items.forEach(function (record) {
+      sortedRecords(leaf.items).forEach(function (record) {
         output.push(renderLeafRow(record, depth, path, (node.scope || {}).agent));
       });
       if (leaf.loading) {
@@ -2171,7 +2283,7 @@
       }
       currentTree = groupRecords(rowsByAgent(state.groups), activeLevels());
       var output = [];
-      currentTree.order.forEach(function (key) {
+      sortedOrder(currentTree).forEach(function (key) {
         renderNodeRows(currentTree.children[key], 0, key, output);
       });
       output.push(totalRow(currentTree.aggregate));
@@ -3301,7 +3413,22 @@
     keitaroRefresh: true,
     metricColumns: [
       { group: "funnel", label: "INST", kind: "num", get: function (s) { return s.installs; } },
+      {
+        // Доля установок, дошедших до депозита.
+        group: "funnel", label: "INST2DEP", kind: "percent",
+        get: function (s) {
+          var installs = amount(s.installs);
+          return installs > 0 ? amount(s.ftd) / installs * 100 : null;
+        }
+      },
       { group: "funnel", label: "REG", kind: "num", get: function (s) { return s.registrations; } },
+      {
+        group: "funnel", label: "REG2DEP", kind: "percent",
+        get: function (s) {
+          var registrations = amount(s.registrations);
+          return registrations > 0 ? amount(s.ftd) / registrations * 100 : null;
+        }
+      },
       { group: "funnel", label: "FTD", kind: "num", get: function (s) { return s.ftd; } },
       {
         group: "costs", label: "SPEND", kind: "money", editKey: "spend",
@@ -3324,6 +3451,14 @@
         get: function (s) {
           var spend = amount(s.spend);
           return s.ftd > 0 && spend > 0 ? spend / s.ftd : null;
+        }
+      },
+      {
+        // Сколько принесла одна установка: прибыль, делённая на INST.
+        group: "result", label: "EPI", kind: "money", tone: signTone,
+        get: function (s) {
+          var installs = amount(s.installs);
+          return installs > 0 ? (amount(s.revenue) - amount(s.spend)) / installs : null;
         }
       }
     ],
