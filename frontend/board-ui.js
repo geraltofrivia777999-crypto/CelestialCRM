@@ -3431,6 +3431,14 @@
       },
       { group: "funnel", label: "FTD", kind: "num", get: function (s) { return s.ftd; } },
       {
+        // Сколько дохода принесла одна установка.
+        group: "funnel", label: "EPI", kind: "money",
+        get: function (s) {
+          var installs = amount(s.installs);
+          return installs > 0 ? amount(s.revenue) / installs : null;
+        }
+      },
+      {
         group: "costs", label: "SPEND", kind: "money", editKey: "spend",
         get: function (s) { return s.spend; }
       },
@@ -3451,14 +3459,6 @@
         get: function (s) {
           var spend = amount(s.spend);
           return s.ftd > 0 && spend > 0 ? spend / s.ftd : null;
-        }
-      },
-      {
-        // Сколько принесла одна установка: прибыль, делённая на INST.
-        group: "result", label: "EPI", kind: "money", tone: signTone,
-        get: function (s) {
-          var installs = amount(s.installs);
-          return installs > 0 ? (amount(s.revenue) - amount(s.spend)) / installs : null;
         }
       }
     ],
