@@ -674,22 +674,37 @@ async def _upsert_partners(
         ).scalars()
     )
     by_external = {item.external_id: item for item in existing}
+    # Та же партнёрка, но заведённая раньше по названию из оффера: у ключа API
+    # не было доступа к разделу сетей, и трекер отдавал имя строкой. Теперь
+    # сеть приехала своей записью, и второй строки с тем же именем быть не
+    # должно — к офферам и книгам привязана именно первая.
+    by_name = {
+        item.name.strip().lower(): item
+        for item in existing
+        if item.external_id and item.external_id.startswith(NAME_PARTNER_PREFIX)
+    }
     seen: set[str] = set()
     for row in rows:
         external_id = str(row.get("id") or "")
         if not external_id:
             continue
         seen.add(external_id)
+        name = str(row.get("name") or f"Partner {external_id}")
         item = by_external.get(external_id)
         if not item:
-            item = Partner(
-                workspace_id=config["workspace_id"],
-                connection_id=config["id"],
-                external_id=external_id,
-            )
-            db.add(item)
+            item = by_name.pop(name.strip().lower(), None)
+            if item:
+                by_external.pop(item.external_id, None)
+                item.external_id = external_id
+            else:
+                item = Partner(
+                    workspace_id=config["workspace_id"],
+                    connection_id=config["id"],
+                    external_id=external_id,
+                )
+                db.add(item)
             by_external[external_id] = item
-        item.name = str(row.get("name") or f"Partner {external_id}")
+        item.name = name
         if not item.status_overridden:
             item.status = _status(row.get("state"))
     for external_id, item in by_external.items():

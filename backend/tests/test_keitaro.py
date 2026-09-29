@@ -656,3 +656,61 @@ async def test_a_partner_named_by_an_offer_stays_active_across_syncs(database) -
         )
         assert partner is not None
         assert partner.status == Status.active
+
+
+class LateNetworkClient(FakeKeitaroClient):
+    """Сеть, которая была строкой в оффере, приехала своей записью.
+
+    Так выглядит трекер после того, как ключу API открыли доступ к разделу
+    сетей: то же имя теперь приходит с собственным id.
+    """
+
+    async def affiliate_networks(self) -> list[dict]:
+        return [{"id": 77, "name": "Fame Partners", "state": "active"}]
+
+
+async def test_a_network_opened_later_adopts_its_partner_instead_of_doubling_it(
+    database,
+) -> None:
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        connection = IntegrationConnection(
+            workspace_id=admin.workspace_id,
+            name="Late networks",
+            base_url="https://tracker.example",
+            api_key_encrypted=encrypt_secret("test-key"),
+            timezone="UTC",
+            buyer_sub_id=1,
+            lookback_days=1,
+        )
+        db.add(connection)
+        await db.flush()
+        runs = [SyncRun(connection_id=connection.id, mode="incremental") for _ in range(2)]
+        db.add_all(runs)
+        await db.commit()
+        connection_id = str(connection.id)
+        first_run, second_run = (str(run.id) for run in runs)
+
+    # Первый прогон: ключ сеть не видит, партнёрка заводится по имени оффера.
+    await KeitaroSyncEngine(SessionLocal, client_factory=NamedNetworkClient).run(
+        connection_id, first_run, "incremental"
+    )
+    # Второй: доступ открыли, та же сеть пришла со своим id.
+    await KeitaroSyncEngine(SessionLocal, client_factory=LateNetworkClient).run(
+        connection_id, second_run, "incremental"
+    )
+
+    async with SessionLocal() as db:
+        partners = list(
+            (
+                await db.execute(
+                    select(Partner).where(
+                        Partner.connection_id == uuid.UUID(connection_id),
+                        Partner.name == "Fame Partners",
+                    )
+                )
+            ).scalars()
+        )
+        assert len(partners) == 1
+        assert partners[0].external_id == "77"
+        assert partners[0].status == Status.active
