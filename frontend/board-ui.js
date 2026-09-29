@@ -1560,6 +1560,44 @@
       persistDisplay();
     }
 
+    /* Свёрнута ли доска целиком: считаем по верхнему уровню — он и есть то,
+       что человек видит, когда всё закрыто. */
+    function allFolded() {
+      if (!currentTree || !currentTree.order.length) return false;
+      return currentTree.order.every(function (key) { return state.collapsed[key]; });
+    }
+
+    function foldPaths(node, path, paths) {
+      node.order.forEach(function (key) {
+        var childPath = nodePath(path, key);
+        paths.push(childPath);
+        foldPaths(node.children[key], childPath, paths);
+      });
+    }
+
+    function toggleFoldAll() {
+      if (!currentTree) return;
+      if (allFolded()) {
+        state.collapsed = {};
+      } else {
+        var paths = [];
+        currentTree.order.forEach(function (key) {
+          paths.push(key);
+          foldPaths(currentTree.children[key], key, paths);
+        });
+        state.collapsed = {};
+        paths.forEach(function (item) { state.collapsed[item] = true; });
+        // Списки записей тоже закрываются: иначе раскрытый день остался бы
+        // висеть под свёрнутым баером.
+        Object.keys(state.leavesOpen).forEach(function (item) {
+          state.leavesOpen[item] = false;
+        });
+      }
+      renderHead();
+      renderTable();
+      persistFolds();
+    }
+
     /* ----- сортировка по колонке -----
 
        Клик по названию числовой колонки выстраивает строки от большего к
@@ -1651,8 +1689,20 @@
       var head = el("TableHead");
       if (!head) return;
       buildLayout();
+      // Стрелка у подписи сворачивает и разворачивает доску целиком: иначе
+      // свернуть десяток баеров можно только по одному.
+      var folded = allFolded();
       var row1 = "<tr>" +
-        '<th rowspan="2" class="cs-head-structure" style="position:sticky;left:0;top:0;z-index:5;background:#F8F5F5;text-align:left;padding:14px 16px;border-bottom:1px solid #E8E2E2;border-right:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#857D7D;text-transform:uppercase;letter-spacing:.6px">Структура</th>' +
+        '<th rowspan="2" class="cs-head-structure" style="position:sticky;left:0;top:0;z-index:5;background:#F8F5F5;text-align:left;padding:14px 16px;border-bottom:1px solid #E8E2E2;border-right:1px solid #E8E2E2;font-size:11px;font-weight:700;color:#857D7D;text-transform:uppercase;letter-spacing:.6px">' +
+        '<span style="display:flex;align-items:center;gap:9px">' +
+        '<button type="button" data-fold-all aria-expanded="' + (folded ? "false" : "true") +
+        '" title="' + (folded ? "Развернуть всё" : "Свернуть всё") +
+        '" aria-label="' + (folded ? "Развернуть всё" : "Свернуть всё") +
+        '" style="border:0;background:none;padding:0;line-height:0;cursor:pointer;color:#857D7D">' +
+        '<svg class="cs-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none"' +
+        (folded ? ' style="transform:rotate(-90deg)"' : "") + '>' +
+        '<path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2.4" ' +
+        'stroke-linecap="round" stroke-linejoin="round"/></svg></button>Структура</span></th>' +
         layout.map(function (group, groupIndex) {
           return groupTh(
             group.label, group.columns.length,
@@ -1695,6 +1745,10 @@
         start = { x: event.clientX, y: event.clientY };
       });
       head.addEventListener("click", function (event) {
+        if (event.target.closest && event.target.closest("[data-fold-all]")) {
+          start = null;
+          return toggleFoldAll();
+        }
         var cell = event.target.closest
           ? event.target.closest("[data-sort-label]")
           : null;
@@ -2288,6 +2342,7 @@
       output.push(totalRow(currentTree.aggregate));
       body.innerHTML = output.join("");
       applyVisibility();
+      syncFoldAllArrow();
     }
 
     /* Итог по всему, что сейчас на доске. Считается по корню дерева, а не
@@ -2380,8 +2435,23 @@
         state.collapsed[path] = !state.collapsed[path];
         row.setAttribute("data-open", state.collapsed[path] ? "0" : "1");
         applyVisibility();
+        syncFoldAllArrow();
         persistFolds();
       });
+    }
+
+    /* Стрелку в шапке двигает не только она сама: свернули последнюю ветку
+       руками — она тоже должна показать «всё свёрнуто». */
+    function syncFoldAllArrow() {
+      var head = el("TableHead");
+      var button = head ? head.querySelector("[data-fold-all]") : null;
+      if (!button) return;
+      var folded = allFolded();
+      var icon = button.querySelector("svg");
+      if (icon) icon.style.transform = folded ? "rotate(-90deg)" : "";
+      button.setAttribute("aria-expanded", folded ? "false" : "true");
+      button.setAttribute("title", folded ? "Развернуть всё" : "Свернуть всё");
+      button.setAttribute("aria-label", folded ? "Развернуть всё" : "Свернуть всё");
     }
 
     function findLoadedRecord(id) {
