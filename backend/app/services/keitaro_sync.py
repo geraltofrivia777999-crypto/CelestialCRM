@@ -693,8 +693,15 @@ async def _upsert_partners(
         if not item.status_overridden:
             item.status = _status(row.get("state"))
     for external_id, item in by_external.items():
-        if external_id not in seen and not item.status_overridden:
-            item.status = Status.inactive
+        if external_id in seen or item.status_overridden:
+            continue
+        # Партнёрку, заведённую по названию из оффера, в списке сетей трекера
+        # не найти никогда: её там и не было. Гасить её по отсутствию в этом
+        # списке нельзя — иначе каждая синхронизация выключала бы все
+        # партнёрки, которых Keitaro не отдаёт отдельной сущностью.
+        if external_id.startswith(NAME_PARTNER_PREFIX):
+            continue
+        item.status = Status.inactive
     await db.flush()
     return by_external
 
@@ -941,6 +948,10 @@ def _network_name(row: dict) -> str:
     return " ".join(str(candidate or "").split())[:200]
 
 
+# Префикс внешнего id у партнёрки, выведенной из названия оффера.
+NAME_PARTNER_PREFIX = "name:"
+
+
 async def _resolve_offer_partner(
     db: AsyncSession,
     config: dict,
@@ -970,12 +981,16 @@ async def _resolve_offer_partner(
         partner = Partner(
             workspace_id=config["workspace_id"],
             connection_id=config["id"],
-            external_id=f"name:{name.lower()[:94]}",
+            external_id=f"{NAME_PARTNER_PREFIX}{name.lower()[:94]}",
             name=name,
         )
         db.add(partner)
         await db.flush()
         partners[partner.external_id] = partner
+    elif partner.status != Status.active and not partner.status_overridden:
+        # Партнёрка снова названа живым оффером — значит она в работе, и
+        # прежние прогоны выключили её зря.
+        partner.status = Status.active
     return partner.id
 
 

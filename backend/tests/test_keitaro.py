@@ -600,3 +600,59 @@ async def test_resync_needs_a_supported_period(database, monkeypatch) -> None:
         run = await db.get(SyncRun, uuid.UUID(run_id))
         assert run.mode == "resync"
         assert run.details["days"] == 30
+
+
+class NamedNetworkClient(FakeKeitaroClient):
+    """Трекер, у которого сеть оффера не заведена отдельной сущностью.
+
+    Так выглядит боевой Keitaro: /affiliate_networks отдаёт несколько сетей,
+    а имена партнёрок у большинства офферов приходят строкой.
+    """
+
+    async def offers(self) -> list[dict]:
+        return [
+            {
+                "id": 41,
+                "name": "Offer by name",
+                "group_id": 20,
+                "affiliate_network": "Fame Partners",
+                "country": ["DE"],
+                "state": "active",
+            }
+        ]
+
+
+async def test_a_partner_named_by_an_offer_stays_active_across_syncs(database) -> None:
+    """Раньше каждый прогон гасил такие партнёрки: их нет в списке сетей."""
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        connection = IntegrationConnection(
+            workspace_id=admin.workspace_id,
+            name="Named networks",
+            base_url="https://tracker.example",
+            api_key_encrypted=encrypt_secret("test-key"),
+            timezone="UTC",
+            buyer_sub_id=1,
+            lookback_days=1,
+        )
+        db.add(connection)
+        await db.flush()
+        runs = [SyncRun(connection_id=connection.id, mode="incremental") for _ in range(2)]
+        db.add_all(runs)
+        await db.commit()
+        connection_id = str(connection.id)
+        run_ids = [str(run.id) for run in runs]
+
+    engine = KeitaroSyncEngine(SessionLocal, client_factory=NamedNetworkClient)
+    for run_id in run_ids:
+        assert (await engine.run(connection_id, run_id, "incremental"))["status"] == "success"
+
+    async with SessionLocal() as db:
+        partner = await db.scalar(
+            select(Partner).where(
+                Partner.connection_id == uuid.UUID(connection_id),
+                Partner.name == "Fame Partners",
+            )
+        )
+        assert partner is not None
+        assert partner.status == Status.active
