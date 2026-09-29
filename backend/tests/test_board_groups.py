@@ -195,7 +195,6 @@ async def test_media_groups_match_the_raw_records(board_rows) -> None:
         payload = grouped.json()
 
     assert payload["record_count"] == len(items) == DAYS
-    assert payload["truncated"] is False
 
     fields = ("installs", "registrations", "ftd", "revenue", "rent", "spend")
     assert _totals(items, fields) == _totals(payload["groups"], fields)

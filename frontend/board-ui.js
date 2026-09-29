@@ -861,7 +861,6 @@
       // fetched only for the branch the user actually opens (see loadLeaves).
       groups: [],
       recordCount: 0,
-      truncated: false,
       leaves: {},
       leavesOpen: {},
       structure: null,
@@ -2529,12 +2528,8 @@
       state.groupsByDate = wanted;
       state.groups = data.groups || [];
       state.recordCount = data.record_count || 0;
-      state.truncated = !!data.truncated;
       state.leaves = {};
       renderTable();
-      if (state.truncated) {
-        toast("Слишком много групп — показан срез. Сузьте период или фильтры", "info");
-      }
       if (config.onData) config.onData(state, currentTree);
       // Branches the user had open must not be left showing a spinner forever.
       await Promise.all(Object.keys(state.leavesOpen)
