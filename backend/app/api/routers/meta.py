@@ -21,7 +21,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from redis.asyncio import Redis
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.analytics import invalidate_dashboard_cache
@@ -50,7 +50,7 @@ from app.models import (
     MetaFanPage,
     MetaGeoRule,
     MetaGeoRuleEvent,
-    MetaGeoRuleSettings,
+    MetaGeoRuleSet,
     MetaLaunch,
     MetaLaunchCreative,
     MetaOperation,
@@ -80,7 +80,8 @@ from app.schemas import (
     MetaConnectionUpdate,
     MetaEntityActionIn,
     MetaGeoRuleIn,
-    MetaGeoRuleSettingsIn,
+    MetaGeoRuleSetIn,
+    MetaGeoRuleSetUpdate,
     MetaLaunchBatch,
     MetaLaunchCreate,
     MetaLaunchUpdate,
@@ -881,9 +882,16 @@ async def overview_tree(
             db, current.workspace_id, start, end, sub_id, selected_geos or None
         )
         keitaro.update({key: value for key, value in matched.items() if key in campaign_ids})
-    rows = meta_tree.build_tree(
-        accounts, entities, stats, keitaro, await _owner_names(db, accounts)
-    )
+    # Агент — название подключения, которое задают в мастере («RAMP2»,
+    # «Celestial BM»), а не пользователь-владелец кабинета.
+    connection_ids = {account.connection_id for account in accounts if account.connection_id}
+    agents = {
+        row_id: name for row_id, name in (await db.execute(
+            select(IntegrationConnection.id, IntegrationConnection.name)
+            .where(IntegrationConnection.id.in_(connection_ids))
+        )).all()
+    } if connection_ids else {}
+    rows = meta_tree.build_tree(accounts, entities, stats, keitaro, agents)
     return {
         "period": {"from": start.isoformat(), "to": end.isoformat()},
         "rows": rows,
@@ -909,128 +917,100 @@ def _geo_rule_out(rule: MetaGeoRule) -> dict:
     }
 
 
-def _geo_settings_out(config: MetaGeoRuleSettings) -> dict:
+def _geo_set_out(rule_set: MetaGeoRuleSet, geos: list[str] | None = None) -> dict:
     return {
-        "level": config.level,
-        "interval_minutes": config.interval_minutes,
-        "auto_enabled": config.auto_enabled,
-        "last_run_at": config.last_run_at.isoformat() if config.last_run_at else None,
-        "last_run_result": config.last_run_result or {},
+        "id": str(rule_set.id),
+        "name": rule_set.name,
+        "level": rule_set.level,
+        "interval_minutes": rule_set.interval_minutes,
+        "auto_enabled": rule_set.auto_enabled,
+        "last_run_at": rule_set.last_run_at.isoformat() if rule_set.last_run_at else None,
+        "last_run_result": rule_set.last_run_result or {},
+        "geos": geos or [],
+    }
+
+
+async def _geo_set(db: AsyncSession, current: User, rule_set_id: uuid.UUID) -> MetaGeoRuleSet:
+    rule_set = await db.get(MetaGeoRuleSet, rule_set_id)
+    if rule_set is None or rule_set.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Автоправило не найдено")
+    return rule_set
+
+
+async def _geo_name_free(
+    db: AsyncSession, current: User, name: str, exclude: uuid.UUID | None = None
+) -> None:
+    # Регистр сравниваем в Python: lower() в SQLite не знает кириллицу.
+    rows = (await db.execute(
+        select(MetaGeoRuleSet.id, MetaGeoRuleSet.name)
+        .where(MetaGeoRuleSet.workspace_id == current.workspace_id)
+    )).all()
+    if any(row_id != exclude and row_name.casefold() == name.casefold()
+           for row_id, row_name in rows):
+        raise HTTPException(status_code=409, detail="Автоправило с таким названием уже есть")
+
+
+def _geo_code(country_code: str) -> str:
+    code = country_code.strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        raise HTTPException(status_code=422, detail="GEO — двухбуквенный код страны")
+    return code
+
+
+@router.get("/geo-rules")
+async def list_geo_rule_sets(
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    _require_v2_admin(current)
+    sets = list((await db.execute(
+        select(MetaGeoRuleSet)
+        .where(MetaGeoRuleSet.workspace_id == current.workspace_id)
+        .order_by(MetaGeoRuleSet.created_at)
+    )).scalars())
+    geos: dict[uuid.UUID, list[str]] = {}
+    if sets:
+        for set_id, code in (await db.execute(
+            select(MetaGeoRule.rule_set_id, MetaGeoRule.country_code)
+            .where(MetaGeoRule.rule_set_id.in_([row.id for row in sets]))
+            .order_by(MetaGeoRule.country_code)
+        )).all():
+            geos.setdefault(set_id, []).append(code)
+    return {
+        "items": [_geo_set_out(row, geos.get(row.id)) for row in sets],
+        "countries": country_options(),
         "intervals": list(meta_geo_rules.INTERVALS),
         # Общий выключатель автоправил сервера: без него автопрогон не идёт.
         "server_enabled": settings.meta_rules_enabled,
     }
 
 
-@router.get("/geo-rules")
-async def list_geo_rules(
-    db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.launch")),
-) -> dict:
-    _require_v2_admin(current)
-    config = await meta_geo_rules.get_settings(db, current.workspace_id)
-    await db.commit()
-    rules = (await db.execute(
-        select(MetaGeoRule)
-        .where(MetaGeoRule.workspace_id == current.workspace_id)
-        .order_by(MetaGeoRule.country_code)
-    )).scalars()
-    return {
-        "settings": _geo_settings_out(config),
-        "rules": [_geo_rule_out(rule) for rule in rules],
-        "countries": country_options(),
-    }
-
-
-@router.put("/geo-rules/settings")
-async def update_geo_rule_settings(
-    payload: MetaGeoRuleSettingsIn,
+@router.post("/geo-rules", status_code=201)
+async def create_geo_rule_set(
+    payload: MetaGeoRuleSetIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
     current: User = Depends(require_permission("meta.launch")),
 ) -> dict:
     _require_v2_admin(current)
-    config = await meta_geo_rules.get_settings(db, current.workspace_id)
-    for key, value in payload.model_dump(exclude_none=True).items():
-        setattr(config, key, value)
-    await audit(
-        db, current, "meta.geo_rules_settings",
-        f"GEO-правила: уровень {config.level}, интервал {config.interval_minutes} мин, "
-        f"автопрогон {'вкл' if config.auto_enabled else 'выкл'}",
-        request=request,
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Укажите название")
+    await _geo_name_free(db, current, name)
+    rule_set = MetaGeoRuleSet(
+        workspace_id=current.workspace_id, name=name, level=payload.level,
+        interval_minutes=30, auto_enabled=False, last_run_result={},
     )
+    db.add(rule_set)
+    await audit(db, current, "meta.geo_rule_set_created", f"Автоправило «{name}» создано",
+                request=request)
     await db.commit()
-    return _geo_settings_out(config)
-
-
-@router.put("/geo-rules/{country_code}")
-async def save_geo_rule(
-    country_code: str,
-    payload: MetaGeoRuleIn,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.launch")),
-) -> dict:
-    _require_v2_admin(current)
-    code = country_code.strip().upper()
-    if len(code) != 2 or not code.isalpha():
-        raise HTTPException(status_code=422, detail="GEO — двухбуквенный код страны")
-    rule = await db.scalar(select(MetaGeoRule).where(
-        MetaGeoRule.workspace_id == current.workspace_id, MetaGeoRule.country_code == code
-    ))
-    if rule is None:
-        rule = MetaGeoRule(workspace_id=current.workspace_id, country_code=code)
-        db.add(rule)
-    for key, value in payload.model_dump().items():
-        setattr(rule, key, value)
-    await audit(db, current, "meta.geo_rule_saved", f"GEO-правило {code} сохранено", request=request)
-    await db.commit()
-    return _geo_rule_out(rule)
-
-
-@router.delete("/geo-rules/{country_code}", status_code=204)
-async def delete_geo_rule(
-    country_code: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.launch")),
-) -> None:
-    _require_v2_admin(current)
-    code = country_code.strip().upper()
-    rule = await db.scalar(select(MetaGeoRule).where(
-        MetaGeoRule.workspace_id == current.workspace_id, MetaGeoRule.country_code == code
-    ))
-    if rule is None:
-        raise HTTPException(status_code=404, detail="Правила для этого GEO нет")
-    await db.delete(rule)
-    await audit(db, current, "meta.geo_rule_deleted", f"GEO-правило {code} удалено", request=request)
-    await db.commit()
-
-
-@router.post("/geo-rules/run")
-async def run_geo_rules_now(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    current: User = Depends(require_permission("meta.launch")),
-) -> dict:
-    """«Прогнать сейчас»: те же проверки, что по расписанию, и паузы в Meta."""
-    _require_v2_admin(current)
-    user_id, workspace_id = current.id, current.workspace_id
-    summary = await meta_geo_rules.run_workspace(
-        db, workspace_id, client_for, trigger="manual", user_id=user_id
-    )
-    await audit(
-        db, await db.get(User, user_id), "meta.geo_rules_run",
-        f"GEO-правила вручную: сработало {summary['triggered']}, "
-        f"на паузе {summary['paused']}, ошибок {summary['failed']}",
-        request=request,
-    )
-    await db.commit()
-    return summary
+    return _geo_set_out(rule_set)
 
 
 @router.get("/geo-rules/events")
 async def geo_rule_events(
+    rule_set_id: uuid.UUID | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -1038,6 +1018,8 @@ async def geo_rule_events(
 ) -> dict:
     _require_v2_admin(current)
     base = select(MetaGeoRuleEvent).where(MetaGeoRuleEvent.workspace_id == current.workspace_id)
+    if rule_set_id:
+        base = base.where(MetaGeoRuleEvent.rule_set_id == rule_set_id)
     total = await db.scalar(select(func.count()).select_from(base.subquery()))
     rows = (await db.execute(
         base.order_by(MetaGeoRuleEvent.created_at.desc()).limit(limit).offset(offset)
@@ -1048,6 +1030,8 @@ async def geo_rule_events(
             {
                 "id": str(row.id),
                 "created_at": row.created_at.isoformat() if row.created_at else None,
+                "rule_set_id": str(row.rule_set_id) if row.rule_set_id else None,
+                "rule_name": row.rule_name,
                 "trigger": row.trigger, "level": row.level,
                 "external_id": row.external_id, "name": row.name,
                 "account_external_id": row.account_external_id,
@@ -1058,6 +1042,145 @@ async def geo_rule_events(
             for row in rows
         ],
     }
+
+
+@router.get("/geo-rules/{rule_set_id}")
+async def get_geo_rule_set(
+    rule_set_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    _require_v2_admin(current)
+    rule_set = await _geo_set(db, current, rule_set_id)
+    rules = list((await db.execute(
+        select(MetaGeoRule)
+        .where(MetaGeoRule.rule_set_id == rule_set.id)
+        .order_by(MetaGeoRule.country_code)
+    )).scalars())
+    return {
+        **_geo_set_out(rule_set, [rule.country_code for rule in rules]),
+        "rules": [_geo_rule_out(rule) for rule in rules],
+    }
+
+
+@router.patch("/geo-rules/{rule_set_id}")
+async def update_geo_rule_set(
+    rule_set_id: uuid.UUID,
+    payload: MetaGeoRuleSetUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    _require_v2_admin(current)
+    rule_set = await _geo_set(db, current, rule_set_id)
+    changes = payload.model_dump(exclude_none=True)
+    if "name" in changes:
+        changes["name"] = changes["name"].strip()
+        if not changes["name"]:
+            raise HTTPException(status_code=422, detail="Укажите название")
+        await _geo_name_free(db, current, changes["name"], exclude=rule_set.id)
+    for key, value in changes.items():
+        setattr(rule_set, key, value)
+    await audit(
+        db, current, "meta.geo_rule_set_updated",
+        f"Автоправило «{rule_set.name}»: уровень {rule_set.level}, интервал "
+        f"{rule_set.interval_minutes} мин, автопрогон "
+        f"{'вкл' if rule_set.auto_enabled else 'выкл'}",
+        request=request,
+    )
+    await db.commit()
+    return _geo_set_out(rule_set)
+
+
+@router.delete("/geo-rules/{rule_set_id}", status_code=204)
+async def delete_geo_rule_set(
+    rule_set_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> None:
+    _require_v2_admin(current)
+    rule_set = await _geo_set(db, current, rule_set_id)
+    name = rule_set.name
+    await db.execute(delete(MetaGeoRule).where(MetaGeoRule.rule_set_id == rule_set.id))
+    await db.delete(rule_set)
+    await audit(db, current, "meta.geo_rule_set_deleted", f"Автоправило «{name}» удалено",
+                request=request)
+    await db.commit()
+
+
+@router.put("/geo-rules/{rule_set_id}/geo/{country_code}")
+async def save_geo_rule(
+    rule_set_id: uuid.UUID,
+    country_code: str,
+    payload: MetaGeoRuleIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    _require_v2_admin(current)
+    rule_set = await _geo_set(db, current, rule_set_id)
+    code = _geo_code(country_code)
+    rule = await db.scalar(select(MetaGeoRule).where(
+        MetaGeoRule.rule_set_id == rule_set.id, MetaGeoRule.country_code == code
+    ))
+    if rule is None:
+        rule = MetaGeoRule(
+            workspace_id=current.workspace_id, rule_set_id=rule_set.id, country_code=code
+        )
+        db.add(rule)
+    for key, value in payload.model_dump().items():
+        setattr(rule, key, value)
+    await audit(db, current, "meta.geo_rule_saved",
+                f"Автоправило «{rule_set.name}»: GEO {code} сохранено", request=request)
+    await db.commit()
+    return _geo_rule_out(rule)
+
+
+@router.delete("/geo-rules/{rule_set_id}/geo/{country_code}", status_code=204)
+async def delete_geo_rule(
+    rule_set_id: uuid.UUID,
+    country_code: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> None:
+    _require_v2_admin(current)
+    rule_set = await _geo_set(db, current, rule_set_id)
+    code = _geo_code(country_code)
+    rule = await db.scalar(select(MetaGeoRule).where(
+        MetaGeoRule.rule_set_id == rule_set.id, MetaGeoRule.country_code == code
+    ))
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Этого GEO в правиле нет")
+    await db.delete(rule)
+    await audit(db, current, "meta.geo_rule_deleted",
+                f"Автоправило «{rule_set.name}»: GEO {code} удалено", request=request)
+    await db.commit()
+
+
+@router.post("/geo-rules/{rule_set_id}/run")
+async def run_geo_rule_set(
+    rule_set_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(require_permission("meta.launch")),
+) -> dict:
+    """«Прогнать сейчас»: те же проверки, что по расписанию, и паузы в Meta."""
+    _require_v2_admin(current)
+    rule_set = await _geo_set(db, current, rule_set_id)
+    user_id, name = current.id, rule_set.name
+    summary = await meta_geo_rules.run_rule_set(
+        db, rule_set.id, client_for, trigger="manual", user_id=user_id
+    )
+    await audit(
+        db, await db.get(User, user_id), "meta.geo_rules_run",
+        f"Автоправило «{name}» вручную: сработало {summary['triggered']}, "
+        f"на паузе {summary['paused']}, ошибок {summary['failed']}",
+        request=request,
+    )
+    await db.commit()
+    return summary
 
 
 @router.get("/overview")

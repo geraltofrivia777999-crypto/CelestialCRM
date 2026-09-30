@@ -1898,6 +1898,8 @@
     menu.appendChild(menuTitle("Баеры"));
     (state.scopes.buyers || []).forEach(function (buyer) {
       var item = el("li", null, buyer.name);
+      // Заблокированный не теряет книг: они на месте, просто вход закрыт.
+      if (buyer.blocked) item.appendChild(el("span", "fin-menu-muted", " · заблокирован"));
       item.setAttribute("role", "option");
       item.dataset.sheet = "buyer:" + buyer.id;
       item.setAttribute("aria-selected", String(item.dataset.sheet === state.sheet));

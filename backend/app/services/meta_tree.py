@@ -26,8 +26,9 @@ def build_tree(
     entities: list[MetaEntity],
     stats: list[MetaStatDaily],
     keitaro: dict[str, dict],
-    owners: dict,
+    agents: dict,
 ) -> list[dict]:
+    """`agents` — название подключения по его id: это и есть «агент» кабинета."""
     roots: dict = {}
     nodes: dict[tuple, dict] = {}
     geo_sets: dict[str, set[str]] = defaultdict(set)
@@ -37,7 +38,7 @@ def build_tree(
             "id": f"account:{account.id}", "account_id": str(account.id),
             "external_id": account.external_id,
             "level": "account", "name": account.external_id,
-            "account_name": account.name, "agent": owners.get(account.owner_id),
+            "account_name": account.name, "agent": agents.get(account.connection_id),
             # По агенту открывается окно подключения, из которого пришёл кабинет.
             "connection_id": str(account.connection_id) if account.connection_id else None,
             "status": (

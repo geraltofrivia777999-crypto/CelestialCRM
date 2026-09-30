@@ -26,7 +26,7 @@ from app.models import (
     MetaEntity,
     MetaGeoRule,
     MetaGeoRuleEvent,
-    MetaGeoRuleSettings,
+    MetaGeoRuleSet,
     MetaStatDaily,
     Status,
 )
@@ -101,18 +101,6 @@ def _local_today(account: MetaAdAccount, now: datetime) -> date:
     except ZoneInfoNotFoundError:
         zone = business_timezone()
     return now.astimezone(zone).date()
-
-
-async def get_settings(db: AsyncSession, workspace_id: uuid.UUID) -> MetaGeoRuleSettings:
-    row = await db.get(MetaGeoRuleSettings, workspace_id)
-    if row is None:
-        row = MetaGeoRuleSettings(
-            workspace_id=workspace_id, level="campaign", interval_minutes=30,
-            auto_enabled=False, last_run_result={},
-        )
-        db.add(row)
-        await db.flush()
-    return row
 
 
 async def collect(
@@ -216,21 +204,24 @@ async def _deposits(
     return result
 
 
-async def run_workspace(
-    db: AsyncSession, workspace_id: uuid.UUID, client_getter: ClientGetter, *,
+async def run_rule_set(
+    db: AsyncSession, rule_set_id: uuid.UUID, client_getter: ClientGetter, *,
     trigger: str = "auto", user_id: uuid.UUID | None = None, now: datetime | None = None,
 ) -> dict:
-    """Один прогон правил воркспейса: проверить, поставить на паузу, записать историю."""
+    """Один прогон автоправила: проверить, поставить на паузу, записать историю."""
     now = now or datetime.now(UTC)
-    config = await get_settings(db, workspace_id)
+    rule_set = await db.get(MetaGeoRuleSet, rule_set_id)
+    if rule_set is None:
+        return {"checked": 0, "triggered": 0, "paused": 0, "failed": 0}
+    workspace_id = rule_set.workspace_id
     rules = {
         rule.country_code: rule for rule in (await db.execute(
             select(MetaGeoRule).where(
-                MetaGeoRule.workspace_id == workspace_id, MetaGeoRule.is_enabled.is_(True)
+                MetaGeoRule.rule_set_id == rule_set.id, MetaGeoRule.is_enabled.is_(True)
             )
         )).scalars()
     }
-    rows = await collect(db, workspace_id, config.level, rules, now)
+    rows = await collect(db, workspace_id, rule_set.level, rules, now)
     clients: dict = {}
     handled: set[tuple] = set()
     summary = {"checked": len(rows), "triggered": 0, "paused": 0, "failed": 0}
@@ -256,7 +247,8 @@ async def run_workspace(
             status, error = "failed", " ".join(str(exc).split())[:500]
             summary["failed"] += 1
         db.add(MetaGeoRuleEvent(
-            workspace_id=workspace_id, trigger=trigger, user_id=user_id, level=config.level,
+            workspace_id=workspace_id, rule_set_id=rule_set.id, rule_name=rule_set.name,
+            trigger=trigger, user_id=user_id, level=rule_set.level,
             external_id=entity.external_id, name=entity.name or entity.external_id,
             account_external_id=account.external_id, account_name=account.name,
             country_code=row["geo"], checks=[key for key, _ in hits],
@@ -268,38 +260,40 @@ async def run_workspace(
             },
             status=status, error=error,
         ))
-    config.last_run_at = now
-    config.last_run_result = {**summary, "trigger": trigger}
+    rule_set.last_run_at = now
+    rule_set.last_run_result = {**summary, "trigger": trigger}
     await db.commit()
     return summary
 
 
-def is_due(config: MetaGeoRuleSettings, now: datetime) -> bool:
-    if not config.auto_enabled:
+def is_due(rule_set: MetaGeoRuleSet, now: datetime) -> bool:
+    if not rule_set.auto_enabled:
         return False
-    if config.last_run_at is None:
+    if rule_set.last_run_at is None:
         return True
-    last = config.last_run_at
+    last = rule_set.last_run_at
     if last.tzinfo is None:
         last = last.replace(tzinfo=UTC)
     # Минута допуска: beat срабатывает по часам, а прогон длится секунды.
-    return now - last >= timedelta(minutes=config.interval_minutes) - timedelta(minutes=1)
+    return now - last >= timedelta(minutes=rule_set.interval_minutes) - timedelta(minutes=1)
 
 
 async def run_due(
     session_factory: async_sessionmaker[AsyncSession], client_getter: ClientGetter,
 ) -> dict:
-    """Прогон по расписанию: только воркспейсы с автопрогоном и истёкшим интервалом."""
+    """Прогон по расписанию: автоправила с автопрогоном и истёкшим интервалом."""
     now = datetime.now(UTC)
     async with session_factory() as db:
         due = [
-            row.workspace_id for row in (await db.execute(select(MetaGeoRuleSettings))).scalars()
+            row.id for row in (await db.execute(
+                select(MetaGeoRuleSet).order_by(MetaGeoRuleSet.created_at)
+            )).scalars()
             if is_due(row, now)
         ]
-    total = {"workspaces": len(due), "triggered": 0, "paused": 0, "failed": 0}
-    for workspace_id in due:
+    total = {"rule_sets": len(due), "triggered": 0, "paused": 0, "failed": 0}
+    for rule_set_id in due:
         async with session_factory() as db:
-            result = await run_workspace(db, workspace_id, client_getter, now=now)
+            result = await run_rule_set(db, rule_set_id, client_getter, now=now)
         for key in ("triggered", "paused", "failed"):
             total[key] += result[key]
     return total

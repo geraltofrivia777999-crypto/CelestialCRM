@@ -14,7 +14,7 @@ from app.models import (
     MetaEntity,
     MetaGeoRule,
     MetaGeoRuleEvent,
-    MetaGeoRuleSettings,
+    MetaGeoRuleSet,
     MetaStatDaily,
     User,
 )
@@ -135,8 +135,8 @@ async def geo_setup(database, monkeypatch):
         await db.execute(delete(MetaGeoRuleEvent).where(
             MetaGeoRuleEvent.workspace_id == made["workspace"]))
         await db.execute(delete(MetaGeoRule).where(MetaGeoRule.workspace_id == made["workspace"]))
-        await db.execute(delete(MetaGeoRuleSettings).where(
-            MetaGeoRuleSettings.workspace_id == made["workspace"]))
+        await db.execute(delete(MetaGeoRuleSet).where(
+            MetaGeoRuleSet.workspace_id == made["workspace"]))
         await db.execute(delete(MetaStatDaily).where(
             MetaStatDaily.connection_id == made["connection"]))
         await db.execute(delete(MetaEntity).where(MetaEntity.connection_id == made["connection"]))
@@ -157,22 +157,29 @@ async def test_run_now_pauses_matching_objects_and_logs_history(geo_setup) -> No
     fake, made = geo_setup
     client = _admin()
     try:
-        listed = client.get(BASE)
-        assert listed.status_code == 200, listed.text
-        assert listed.json()["settings"]["level"] == "campaign"
-        assert listed.json()["settings"]["auto_enabled"] is False
+        assert client.get(BASE).json()["items"] == []
+        created = client.post(BASE, json={"name": " Индия стоп ", "level": "campaign"})
+        assert created.status_code == 201, created.text
+        rule_set = created.json()
+        assert rule_set["name"] == "Индия стоп" and rule_set["auto_enabled"] is False
+        one = f"{BASE}/{rule_set['id']}"
+        assert client.post(BASE, json={"name": "индия СТОП"}).status_code == 409
+        assert client.post(BASE, json={"name": "  "}).status_code == 422
 
-        saved = client.put(BASE + "/in", json={"no_clicks": "3", "max_avg_inst": "2"})
+        saved = client.put(one + "/geo/in", json={"no_clicks": "3", "max_avg_inst": "2"})
         assert saved.status_code == 200, saved.text
         assert saved.json()["country_code"] == "IN" and saved.json()["no_insts"] is None
-        assert client.put(BASE + "/IND", json={}).status_code == 422
-        assert client.put(BASE + "/MX", json={"no_clicks": "-1"}).status_code == 422
+        assert client.put(one + "/geo/IND", json={}).status_code == 422
+        assert client.put(one + "/geo/MX", json={"no_clicks": "-1"}).status_code == 422
 
-        settings = client.put(BASE + "/settings", json={"interval_minutes": 60, "auto_enabled": True})
-        assert settings.json()["interval_minutes"] == 60 and settings.json()["auto_enabled"]
-        assert client.put(BASE + "/settings", json={"interval_minutes": 7}).status_code == 422
+        updated = client.patch(one, json={"interval_minutes": 60, "auto_enabled": True})
+        assert updated.json()["interval_minutes"] == 60 and updated.json()["auto_enabled"]
+        assert client.patch(one, json={"interval_minutes": 7}).status_code == 422
+        listed = client.get(BASE).json()
+        assert [row["geos"] for row in listed["items"]] == [["IN"]]
+        assert listed["countries"] and 60 in listed["intervals"]
 
-        run = client.post(BASE + "/run")
+        run = client.post(one + "/run")
         assert run.status_code == 200, run.text
         assert run.json() == {"checked": 4, "triggered": 3, "paused": 2, "failed": 1}
         assert sorted(fake.paused) == ["c-idle", "c-pricey"]
@@ -186,21 +193,30 @@ async def test_run_now_pauses_matching_objects_and_logs_history(geo_setup) -> No
         by_id = {row["external_id"]: row for row in events["items"]}
         assert by_id["c-idle"]["checks"] == ["no_clicks"]
         assert by_id["c-idle"]["reason"] == "Потрачено 5,00 $ без кликов (порог 3,00 $)"
+        assert by_id["c-idle"]["rule_name"] == "Индия стоп"
         assert by_id["c-idle"]["trigger"] == "manual" and by_id["c-idle"]["status"] == "paused"
         assert by_id["c-pricey"]["checks"] == ["max_avg_inst"]
         assert by_id["c-broken"]["status"] == "failed"
         assert "недоступен" in by_id["c-broken"]["error"]
+        scoped = client.get(BASE + f"/events?rule_set_id={rule_set['id']}").json()
+        assert scoped["total"] == 3
 
         # Второй прогон не трогает уже остановленное.
-        assert client.post(BASE + "/run").json()["triggered"] == 1
+        assert client.post(one + "/run").json()["triggered"] == 1
 
-        # Выключенное правило не срабатывает.
-        client.put(BASE + "/IN", json={"is_enabled": False, "no_clicks": "3"})
-        assert client.post(BASE + "/run").json()["triggered"] == 0
+        # Выключенное GEO не срабатывает.
+        client.put(one + "/geo/IN", json={"is_enabled": False, "no_clicks": "3"})
+        assert client.post(one + "/run").json()["triggered"] == 0
 
-        assert client.delete(BASE + "/IN").status_code == 204
-        assert client.delete(BASE + "/IN").status_code == 404
-        assert client.get(BASE).json()["rules"] == []
+        assert client.delete(one + "/geo/IN").status_code == 204
+        assert client.delete(one + "/geo/IN").status_code == 404
+        assert client.get(one).json()["rules"] == []
+
+        # Удаление правила оставляет историю с его названием.
+        assert client.delete(one).status_code == 204
+        assert client.get(one).status_code == 404
+        kept = client.get(BASE + "/events").json()["items"]
+        assert kept and all(row["rule_name"] == "Индия стоп" for row in kept)
     finally:
         client.__exit__(None, None, None)
 
@@ -217,12 +233,37 @@ async def test_adset_level_uses_adset_objects(geo_setup) -> None:
         await db.commit()
     client = _admin()
     try:
-        client.put(BASE + "/settings", json={"level": "adset"})
-        client.put(BASE + "/IN", json={"no_clicks": "3", "no_deps": "1"})
-        run = client.post(BASE + "/run").json()
+        rule_set = client.post(BASE, json={"name": "Адсеты", "level": "adset"}).json()
+        one = f"{BASE}/{rule_set['id']}"
+        client.put(one + "/geo/IN", json={"no_clicks": "3", "no_deps": "1"})
+        run = client.post(one + "/run").json()
         assert run["triggered"] == 1 and fake.paused == ["c-idle-s"]
         event = client.get(BASE + "/events").json()["items"][0]
         # На уровне адсетов депозитов нет — сработали только клики.
         assert event["level"] == "adset" and event["checks"] == ["no_clicks"]
     finally:
         client.__exit__(None, None, None)
+
+
+async def test_due_rule_sets_run_on_schedule(geo_setup) -> None:
+    from app.services.meta_geo_rules import run_due
+
+    fake, made = geo_setup
+
+    async def getter(connection, db=None):
+        return fake
+
+    async with SessionLocal() as db:
+        auto = MetaGeoRuleSet(workspace_id=made["workspace"], name="Авто", level="campaign",
+                              interval_minutes=15, auto_enabled=True, last_run_result={})
+        manual = MetaGeoRuleSet(workspace_id=made["workspace"], name="Ручное", level="campaign",
+                                interval_minutes=15, auto_enabled=False, last_run_result={})
+        db.add_all([auto, manual])
+        await db.flush()
+        for rule_set in (auto, manual):
+            db.add(MetaGeoRule(workspace_id=made["workspace"], rule_set_id=rule_set.id,
+                               country_code="IN", is_enabled=True, no_clicks=Decimal("3")))
+        await db.commit()
+    result = await run_due(SessionLocal, getter)
+    assert result["rule_sets"] == 1 and result["paused"] == 1
+    assert fake.paused == ["c-idle"]

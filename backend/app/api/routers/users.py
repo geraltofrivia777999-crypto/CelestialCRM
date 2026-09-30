@@ -69,7 +69,9 @@ async def user_options(
     баера, чьи цифры на доске видны.
     """
     visible_users = await accessible_user_ids(db, current)
-    query = select(User.id, User.name, User.login, User.keitaro_offer_group).where(
+    query = select(
+        User.id, User.name, User.login, User.keitaro_offer_group, User.status
+    ).where(
         User.workspace_id == current.workspace_id,
         User.id.in_(visible_users),
     )
@@ -89,8 +91,9 @@ async def user_options(
             "login": login,
             # Медиаборд сужает список офферов по этой группе, когда выбран баер.
             "keitaro_offer_group": offer_group,
+            "blocked": status != Status.active,
         }
-        for user_id, name, login, offer_group in rows
+        for user_id, name, login, offer_group, status in rows
     ]
 
 

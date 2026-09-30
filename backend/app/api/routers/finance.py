@@ -26,6 +26,7 @@ from app.models import (
     Partner,
     PartnerIntegration,
     PartnerSyncRun,
+    Status,
     User,
     UserParent,
 )
@@ -332,7 +333,12 @@ async def scopes(
         ] if workspace_summaries else [],
         "teams": teams,
         "buyers": [
-            {"id": str(user.id), "name": user.name or user.login} for user in users
+            {
+                "id": str(user.id),
+                "name": user.name or user.login,
+                "blocked": user.status != Status.active,
+            }
+            for user in users
         ],
     }
 

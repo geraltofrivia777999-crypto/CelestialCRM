@@ -1,5 +1,6 @@
 /*
- * MetaAds v2 · «Автоправила» по GEO: пороги, при которых объект встаёт на паузу.
+ * MetaAds v2 · «Автоправила»: сначала создаётся автоправило (название и
+ * уровень), внутри него — интервал, автопрогон и пороги по каждому GEO.
  *
  * NoClicks / NoInsts / NoRegs / NoDeps — сколько долларов объект может
  * потратить за сегодня без кликов, инсталлов, регистраций или депозитов.
@@ -47,22 +48,31 @@
   ];
   var DEPS_ONLY_CAMPAIGN = "Депозиты Keitaro известны только у кампаний";
   var LEVEL_WORDS = { campaign: "Кампания", adset: "Адсет", ad: "Объявление" };
+  var LEVEL_PLURAL = { campaign: "Кампании", adset: "Адсеты", ad: "Объявления" };
   var INTERVAL_WORDS = { 15: "15 мин", 30: "30 мин", 60: "1 час", 120: "2 часа", 240: "4 часа" };
+  var ICON_PLAY = '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+    '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>';
+  var ICON_TRASH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6' +
+    'M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
 
   var state = {
-    settings: null,
-    rules: [],
+    sets: [],
     countries: [],
+    intervals: [15, 30, 60, 120, 240],
+    serverEnabled: true,
+    current: null,      // открытое автоправило вместе с его строками GEO
     drafts: {},
     saving: {},
     view: "rules",
     events: [],
     eventsTotal: 0,
-    running: false,
+    historySet: "",
+    running: {},
     bound: false
   };
 
-  /* ---------- числа ---------- */
+  /* ---------- общее ---------- */
 
   function shown(value) {
     return value == null ? "" : String(value).replace(".", ",");
@@ -82,52 +92,252 @@
 
   function stamp(iso) {
     if (!iso) return "—";
-    var date = new Date(iso);
-    return date.toLocaleString("ru-RU", {
+    return new Date(iso).toLocaleString("ru-RU", {
       day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"
     });
   }
 
-  /* ---------- настройки ---------- */
-
-  function renderSettings() {
-    var config = state.settings;
-    if (!config) return;
-    byId("grLevel").value = config.level;
-    byId("grInterval").innerHTML = (config.intervals || [15, 30, 60, 120, 240]).map(function (minutes) {
-      return '<option value="' + minutes + '"' + (minutes === config.interval_minutes ? " selected" : "") +
-        ">" + (INTERVAL_WORDS[minutes] || minutes + " мин") + "</option>";
-    }).join("");
-    var auto = byId("grAuto");
-    auto.checked = !!config.auto_enabled;
-    auto.disabled = !config.server_enabled;
-    byId("grAutoWrap").classList.toggle("meta-switch--off", !config.server_enabled);
-    byId("grAutoLabel").textContent = config.server_enabled
-      ? "Автопрогон" : "Автопрогон выключен на сервере";
-    var last = config.last_run_result || {};
-    byId("grLast").textContent = config.last_run_at
-      ? "Последний прогон: " + stamp(config.last_run_at) + " · сработало " + (last.triggered || 0)
-      : "";
-    var run = byId("grRun");
-    run.disabled = state.running;
-    run.lastChild.textContent = state.running ? "Проверяем…" : "Прогнать сейчас";
+  function failed(title, error) {
+    notify({ title: title, message: (error && error.message) || String(error) });
   }
 
-  async function saveSettings(patch) {
+  /* ---------- список автоправил ---------- */
+
+  function showScreen(name) {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-gr-screen]"), function (screen) {
+      screen.hidden = screen.getAttribute("data-gr-screen") !== name;
+    });
+  }
+
+  function renderSets() {
+    byId("grSets").innerHTML = state.sets.length ? state.sets.map(function (set) {
+      var geos = set.geos || [];
+      var chips = geos.slice(0, 6).map(function (code) {
+        return "<b>" + escapeHtml(code) + "</b>";
+      }).join("") + (geos.length > 6 ? "<b>+" + (geos.length - 6) + "</b>" : "");
+      var last = set.last_run_result || {};
+      var busy = !!state.running[set.id];
+      return '<tr data-gr-open="' + set.id + '">' +
+        "<td>" + escapeHtml(set.name) + "</td>" +
+        "<td>" + escapeHtml(LEVEL_PLURAL[set.level] || set.level) + "</td>" +
+        "<td>" + escapeHtml(INTERVAL_WORDS[set.interval_minutes] || set.interval_minutes + " мин") +
+        "</td>" +
+        '<td><span class="gr-on gr-on--' + (set.auto_enabled ? "yes" : "no") + '">' +
+        (set.auto_enabled ? "Вкл" : "Выкл") + "</span></td>" +
+        '<td><span class="gr-chips">' + (chips || "—") + "</span></td>" +
+        "<td>" + (set.last_run_at
+          ? escapeHtml(stamp(set.last_run_at)) + " · сработало " + (last.triggered || 0) : "—") +
+        "</td>" +
+        '<td><span class="gr-actions">' +
+        '<button type="button" data-gr-run-set="' + set.id + '" title="Прогнать сейчас" ' +
+        'aria-label="Прогнать сейчас"' + (busy || !geos.length ? " disabled" : "") + ">" +
+        ICON_PLAY + "</button>" +
+        '<button type="button" data-gr-drop-set="' + set.id + '" title="Удалить" aria-label="Удалить">' +
+        ICON_TRASH + "</button></span></td></tr>";
+    }).join("") : '<tr><td colspan="7" style="padding:40px;text-align:center;color:#9B9292;' +
+      'cursor:default;font-weight:600">Автоправил пока нет</td></tr>';
+  }
+
+  async function loadSets() {
     try {
-      state.settings = Object.assign(state.settings || {},
-        await api.put("/meta/geo-rules/settings", patch));
+      var payload = await api.get("/meta/geo-rules");
+      state.sets = payload.items || [];
+      state.countries = payload.countries || [];
+      state.intervals = payload.intervals || state.intervals;
+      state.serverEnabled = payload.server_enabled !== false;
     } catch (error) {
-      notify({ title: "Настройка не сохранилась", message: error.message || String(error) });
+      byId("grSets").innerHTML = '<tr><td colspan="7" style="padding:36px;color:#B91414">' +
+        escapeHtml(error.message || "Не удалось загрузить автоправила") + "</td></tr>";
+      return;
     }
+    renderSets();
+    renderHistoryFilter();
+  }
+
+  /* Окно «Создать автоправило»: только название и область — остальное внутри. */
+  function ensureCreateModal() {
+    if (byId("grCreateModal")) return;
+    var modal = document.createElement("div");
+    modal.className = "mt-modal";
+    modal.id = "grCreateModal";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "grCreateTitle");
+    modal.innerHTML = '<div class="mt-modal__card mt-modal__card--narrow">' +
+      '<div class="mt-modal__head"><h2 class="mt-modal__title" id="grCreateTitle">' +
+      "Новое автоправило</h2>" +
+      '<button class="mt-modal__x" type="button" data-gr-create-close aria-label="Закрыть">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/>' +
+      "</svg></button></div>" +
+      '<div class="mt-modal__body">' +
+      '<label class="mt-field"><span>Название</span>' +
+      '<input class="meta-control" id="grCreateName" maxlength="160"></label>' +
+      '<label class="mt-field"><span>Область действия</span>' +
+      '<select class="meta-control" id="grCreateLevel">' +
+      '<option value="campaign">Кампании</option><option value="adset">Адсеты</option>' +
+      '<option value="ad">Объявления</option></select></label>' +
+      '<div class="mt-form-error" id="grCreateError" role="alert" hidden></div></div>' +
+      '<div class="mt-modal__foot">' +
+      '<button class="mt-btn" type="button" data-gr-create-close>Отмена</button>' +
+      '<button class="mt-primary" type="button" id="grCreateSave">Создать</button></div></div>';
+    document.body.appendChild(modal);
+    modal.addEventListener("click", function (event) {
+      if (event.target === modal || event.target.closest("[data-gr-create-close]")) closeCreate();
+    });
+    byId("grCreateSave").addEventListener("click", createSet);
+    byId("grCreateName").addEventListener("keydown", function (event) {
+      if (event.key === "Enter") createSet();
+    });
+  }
+
+  function openCreate() {
+    ensureCreateModal();
+    byId("grCreateName").value = "Автоправило " + (state.sets.length + 1);
+    byId("grCreateLevel").value = "campaign";
+    byId("grCreateError").hidden = true;
+    byId("grCreateModal").classList.add("is-open");
+    byId("grCreateName").select();
+  }
+
+  function closeCreate() {
+    var modal = byId("grCreateModal");
+    if (modal) modal.classList.remove("is-open");
+  }
+
+  async function createSet() {
+    var name = byId("grCreateName").value.trim();
+    var error = byId("grCreateError");
+    if (!name) {
+      error.textContent = "Укажите название";
+      error.hidden = false;
+      return;
+    }
+    var save = byId("grCreateSave");
+    save.disabled = true;
+    try {
+      var created = await api.post("/meta/geo-rules", {
+        name: name, level: byId("grCreateLevel").value
+      });
+      closeCreate();
+      await loadSets();
+      await openSet(created.id);
+    } catch (problem) {
+      error.textContent = problem.message || String(problem);
+      error.hidden = false;
+    } finally {
+      save.disabled = false;
+    }
+  }
+
+  async function dropSet(id) {
+    var set = state.sets.find(function (row) { return row.id === id; }) || state.current;
+    if (!(await askConfirm({
+      title: "Удалить автоправило «" + (set ? set.name : "") + "»?",
+      message: "Его GEO перестанут проверяться. История срабатываний останется.",
+      confirmLabel: "Удалить", danger: true
+    }))) return;
+    try {
+      await api["delete"]("/meta/geo-rules/" + id);
+    } catch (error) {
+      return failed("Не удалось удалить", error);
+    }
+    if (state.current && state.current.id === id) closeSet();
+    await loadSets();
+  }
+
+  async function runSet(id) {
+    var set = state.current && state.current.id === id ? state.current :
+      state.sets.find(function (row) { return row.id === id; });
+    if (!set || state.running[id]) return;
+    if (!(await askConfirm({
+      title: "Прогнать «" + set.name + "» сейчас?",
+      message: "Активные " + (LEVEL_PLURAL[set.level] || "").toLowerCase() +
+        ", которые подходят под правило, встанут на паузу в FB.",
+      confirmLabel: "Прогнать"
+    }))) return;
+    state.running[id] = true;
+    renderSets();
+    renderSettings();
+    try {
+      var result = await api.post("/meta/geo-rules/" + id + "/run", {});
+      notify({
+        title: result.triggered ? "Правило сработало" : "Ничего не сработало",
+        message: "Проверено: " + result.checked + " · сработало: " + result.triggered +
+          " · на паузе: " + result.paused + (result.failed ? " · ошибок: " + result.failed : "")
+      });
+      if (result.triggered && window.CelestialMetaTree) window.CelestialMetaTree.reload();
+    } catch (error) {
+      failed("Прогон не выполнен", error);
+    } finally {
+      delete state.running[id];
+    }
+    await loadSets();
+    if (state.current && state.current.id === id) await openSet(id);
+    if (state.view === "history") await loadEvents(true);
+  }
+
+  /* ---------- одно автоправило ---------- */
+
+  async function openSet(id) {
+    try {
+      state.current = await api.get("/meta/geo-rules/" + id);
+    } catch (error) {
+      return failed("Автоправило не открылось", error);
+    }
+    state.drafts = {};
+    showScreen("editor");
+    byId("grName").value = state.current.name;
     renderSettings();
     renderTable();
   }
 
-  /* ---------- таблица правил ---------- */
+  function closeSet() {
+    state.current = null;
+    state.drafts = {};
+    showScreen("list");
+  }
+
+  function renderSettings() {
+    var set = state.current;
+    if (!set) return;
+    byId("grLevel").value = set.level;
+    byId("grInterval").innerHTML = state.intervals.map(function (minutes) {
+      return '<option value="' + minutes + '"' + (minutes === set.interval_minutes ? " selected" : "") +
+        ">" + (INTERVAL_WORDS[minutes] || minutes + " мин") + "</option>";
+    }).join("");
+    var auto = byId("grAuto");
+    auto.checked = !!set.auto_enabled;
+    auto.disabled = !state.serverEnabled;
+    byId("grAutoWrap").classList.toggle("meta-switch--off", !state.serverEnabled);
+    byId("grAutoLabel").textContent = state.serverEnabled
+      ? "Автопрогон" : "Автопрогон выключен на сервере";
+    var last = set.last_run_result || {};
+    byId("grLast").textContent = set.last_run_at
+      ? "Последний прогон: " + stamp(set.last_run_at) + " · сработало " + (last.triggered || 0)
+      : "";
+    var run = byId("grRun");
+    var busy = !!state.running[set.id];
+    run.disabled = busy || !(set.rules || []).length;
+    run.lastChild.textContent = busy ? "Проверяем…" : "Прогнать сейчас";
+  }
+
+  async function saveSet(patch) {
+    var set = state.current;
+    if (!set) return;
+    try {
+      Object.assign(set, await api.patch("/meta/geo-rules/" + set.id, patch));
+    } catch (error) {
+      failed("Настройка не сохранилась", error);
+      byId("grName").value = set.name;
+    }
+    renderSettings();
+    renderTable();
+    loadSets();
+  }
 
   function renderHead() {
-    var campaignLevel = !state.settings || state.settings.level === "campaign";
+    var campaignLevel = !state.current || state.current.level === "campaign";
     byId("grHead").innerHTML = "<tr><th>GEO</th><th>Вкл/Выкл</th>" + COLUMNS.map(function (column) {
       var muted = column.deps && !campaignLevel;
       return '<th title="' + escapeHtml(muted ? DEPS_ONLY_CAMPAIGN : column.title) + '"' +
@@ -135,14 +345,11 @@
     }).join("") + "<th>Действия</th></tr>";
   }
 
-  function draftOf(rule) {
-    return state.drafts[rule.country_code] || null;
-  }
-
   function isDirty(rule) {
-    var draft = draftOf(rule);
+    var draft = state.drafts[rule.country_code];
     if (!draft) return false;
     return COLUMNS.some(function (column) {
+      if (!(column.key in draft)) return false;
       var value = parsed(draft[column.key]);
       return !value.ok || value.value !== rule[column.key];
     });
@@ -150,10 +357,11 @@
 
   function renderTable() {
     renderHead();
-    var campaignLevel = !state.settings || state.settings.level === "campaign";
-    byId("grBody").innerHTML = state.rules.length ? state.rules.map(function (rule) {
+    var rules = (state.current && state.current.rules) || [];
+    var campaignLevel = !state.current || state.current.level === "campaign";
+    byId("grBody").innerHTML = rules.length ? rules.map(function (rule) {
       var code = rule.country_code;
-      var draft = draftOf(rule) || {};
+      var draft = state.drafts[code] || {};
       var dirty = isDirty(rule);
       var busy = !!state.saving[code];
       return '<tr class="gr-row' + (rule.is_enabled ? "" : " is-off") + (dirty ? " is-dirty" : "") +
@@ -162,7 +370,7 @@
         escapeHtml(countryName(code)) + "</div></td>" +
         '<td><label class="meta-switch" style="justify-content:center"><input type="checkbox" ' +
         'data-gr-toggle="' + code + '"' + (rule.is_enabled ? " checked" : "") +
-        (busy ? " disabled" : "") + ' aria-label="Правило ' + code + '">' +
+        (busy ? " disabled" : "") + ' aria-label="GEO ' + code + '">' +
         '<span class="meta-switch__box"></span></label></td>' +
         COLUMNS.map(function (column) {
           var text = column.key in draft ? draft[column.key] : shown(rule[column.key]);
@@ -180,18 +388,19 @@
         '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
         'stroke-width="2" stroke-linejoin="round"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h8V3M8 21v-7h8v7"/>' +
         "</svg></button>" +
-        '<button type="button" data-gr-drop="' + code + '" title="Удалить" aria-label="Удалить"' +
-        (busy ? " disabled" : "") + '><svg width="14" height="14" viewBox="0 0 24 24" fill="none" ' +
-        'stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M10 11v6M14 11v6' +
-        'M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></td></tr>';
+        '<button type="button" data-gr-drop="' + code + '" title="Убрать GEO" aria-label="Убрать GEO"' +
+        (busy ? " disabled" : "") + ">" + ICON_TRASH + "</button></span></td></tr>";
     }).join("") : '<tr><td colspan="10" style="padding:36px;color:#9B9292">' +
-      "Добавьте GEO, чтобы настроить правила</td></tr>";
+      "Добавьте GEO, чтобы задать пороги</td></tr>";
     renderGeoPicker();
+    renderSettings();
   }
 
   function renderGeoPicker() {
     var used = {};
-    state.rules.forEach(function (rule) { used[rule.country_code] = true; });
+    ((state.current && state.current.rules) || []).forEach(function (rule) {
+      used[rule.country_code] = true;
+    });
     var free = state.countries.filter(function (row) { return !used[row.code]; });
     byId("grGeo").innerHTML = '<option value="">Выберите GEO</option>' + free.map(function (row) {
       return '<option value="' + escapeHtml(row.code) + '">' + escapeHtml(row.code) + " · " +
@@ -212,10 +421,11 @@
   }
 
   async function saveRule(code, patch) {
-    var rule = state.rules.find(function (row) { return row.country_code === code; });
-    var draft = state.drafts[code];
+    var set = state.current;
+    if (!set) return;
+    var rule = set.rules.find(function (row) { return row.country_code === code; });
     var prepared = payloadOf(Object.assign({}, rule || { country_code: code, is_enabled: true },
-      patch || {}), draft);
+      patch || {}), state.drafts[code]);
     if (prepared.bad.length) {
       notify({ title: "Проверьте значения", message: "Нужны числа больше нуля: " + prepared.bad.join(", ") });
       return;
@@ -223,14 +433,16 @@
     state.saving[code] = true;
     renderTable();
     try {
-      var saved = await api.put("/meta/geo-rules/" + encodeURIComponent(code), prepared.body);
-      var index = state.rules.findIndex(function (row) { return row.country_code === code; });
-      if (index >= 0) state.rules[index] = saved;
-      else state.rules.push(saved);
-      state.rules.sort(function (a, b) { return a.country_code.localeCompare(b.country_code); });
+      var saved = await api.put("/meta/geo-rules/" + set.id + "/geo/" + encodeURIComponent(code),
+        prepared.body);
+      var index = set.rules.findIndex(function (row) { return row.country_code === code; });
+      if (index >= 0) set.rules[index] = saved;
+      else set.rules.push(saved);
+      set.rules.sort(function (a, b) { return a.country_code.localeCompare(b.country_code); });
       delete state.drafts[code];
+      if (index < 0) loadSets();
     } catch (error) {
-      notify({ title: "Правило не сохранилось", message: error.message || String(error) });
+      failed("GEO не сохранилось", error);
     } finally {
       delete state.saving[code];
       renderTable();
@@ -238,68 +450,50 @@
   }
 
   async function dropRule(code) {
-    if (!(await askConfirm({
-      title: "Удалить правило " + code + "?",
-      message: "Объекты этого GEO перестанут проверяться.",
-      confirmLabel: "Удалить", danger: true
+    var set = state.current;
+    if (!set || !(await askConfirm({
+      title: "Убрать " + code + " из автоправила?",
+      message: "Объекты этого GEO перестанут проверяться этим правилом.",
+      confirmLabel: "Убрать", danger: true
     }))) return;
     try {
-      await api["delete"]("/meta/geo-rules/" + encodeURIComponent(code));
-      state.rules = state.rules.filter(function (row) { return row.country_code !== code; });
+      await api["delete"]("/meta/geo-rules/" + set.id + "/geo/" + encodeURIComponent(code));
+      set.rules = set.rules.filter(function (row) { return row.country_code !== code; });
       delete state.drafts[code];
       renderTable();
+      loadSets();
     } catch (error) {
-      notify({ title: "Не удалось удалить", message: error.message || String(error) });
+      failed("Не удалось убрать GEO", error);
     }
-  }
-
-  /* ---------- прогон ---------- */
-
-  async function runNow() {
-    if (state.running) return;
-    var level = { campaign: "кампании", adset: "адсеты", ad: "объявления" }[
-      state.settings ? state.settings.level : "campaign"];
-    if (!(await askConfirm({
-      title: "Прогнать правила сейчас?",
-      message: "Активные " + level + ", которые подходят под правила, встанут на паузу в FB.",
-      confirmLabel: "Прогнать"
-    }))) return;
-    state.running = true;
-    renderSettings();
-    try {
-      var result = await api.post("/meta/geo-rules/run", {});
-      notify({
-        title: result.triggered ? "Правила сработали" : "Ничего не сработало",
-        message: "Проверено: " + result.checked + " · сработало: " + result.triggered +
-          " · на паузе: " + result.paused + (result.failed ? " · ошибок: " + result.failed : "")
-      });
-      if (result.triggered && window.CelestialMetaTree) window.CelestialMetaTree.reload();
-    } catch (error) {
-      notify({ title: "Прогон не выполнен", message: error.message || String(error) });
-    } finally {
-      state.running = false;
-    }
-    await loadRules();
-    if (state.view === "history") await loadEvents(true);
   }
 
   /* ---------- история ---------- */
 
+  function renderHistoryFilter() {
+    var select = byId("grHistorySet");
+    if (!select) return;
+    select.innerHTML = '<option value="">Все автоправила</option>' + state.sets.map(function (set) {
+      return '<option value="' + set.id + '"' + (set.id === state.historySet ? " selected" : "") +
+        ">" + escapeHtml(set.name) + "</option>";
+    }).join("");
+  }
+
   function renderEvents() {
     byId("grEvents").innerHTML = state.events.length ? state.events.map(function (row) {
-      var failed = row.status === "failed";
+      var failedRow = row.status === "failed";
       return "<tr><td>" + escapeHtml(stamp(row.created_at)) + "</td>" +
+        '<td><b class="gr-rule-name">' + escapeHtml(row.rule_name || "—") + "</b></td>" +
         '<td><div class="gr-obj"><b>' + escapeHtml(row.name) + "</b><i>" +
         escapeHtml((LEVEL_WORDS[row.level] || row.level) + " · " + row.external_id) + "</i></div></td>" +
         '<td><div class="gr-obj"><b>' + escapeHtml(row.account_name || "—") + "</b><i>" +
         escapeHtml(row.account_external_id || "") + "</i></div></td>" +
         '<td><span class="gr-geo"><b>' + escapeHtml(row.country_code) + "</b></span></td>" +
         "<td>" + escapeHtml(row.reason) + "</td>" +
-        '<td><span class="gr-badge gr-badge--' + (failed ? "failed" : "paused") + '"' +
-        (failed && row.error ? ' title="' + escapeHtml(row.error) + '"' : "") + ">" +
-        (failed ? "Ошибка" : "Пауза") + "</span></td>" +
+        '<td><span class="gr-badge gr-badge--' + (failedRow ? "failed" : "paused") + '"' +
+        (failedRow && row.error ? ' title="' + escapeHtml(row.error) + '"' : "") + ">" +
+        (failedRow ? "Ошибка" : "Пауза") + "</span></td>" +
         "<td>" + (row.trigger === "manual" ? "Вручную" : "Авто") + "</td></tr>";
-    }).join("") : '<tr><td colspan="7" style="padding:36px;text-align:center;color:#9B9292">' +
+    }).join("") : '<tr><td colspan="8" style="padding:36px;text-align:center;color:#9B9292">' +
       "Срабатываний пока не было</td></tr>";
     byId("grEventsCount").textContent = state.eventsTotal
       ? "Показано " + state.events.length + " из " + state.eventsTotal : "";
@@ -308,12 +502,14 @@
 
   async function loadEvents(reset) {
     var offset = reset ? 0 : state.events.length;
+    var query = "?limit=50&offset=" + offset +
+      (state.historySet ? "&rule_set_id=" + encodeURIComponent(state.historySet) : "");
     try {
-      var page = await api.get("/meta/geo-rules/events?limit=50&offset=" + offset);
+      var page = await api.get("/meta/geo-rules/events" + query);
       state.events = reset ? page.items : state.events.concat(page.items);
       state.eventsTotal = page.total;
     } catch (error) {
-      notify({ title: "История не загрузилась", message: error.message || String(error) });
+      failed("История не загрузилась", error);
     }
     renderEvents();
   }
@@ -335,16 +531,48 @@
     Array.prototype.forEach.call(document.querySelectorAll("[data-gr-view]"), function (button) {
       button.addEventListener("click", function () { setView(button.getAttribute("data-gr-view")); });
     });
+    byId("grCreate").addEventListener("click", openCreate);
+    byId("grSets").addEventListener("click", function (event) {
+      var run = event.target.closest("[data-gr-run-set]");
+      if (run) return runSet(run.getAttribute("data-gr-run-set"));
+      var drop = event.target.closest("[data-gr-drop-set]");
+      if (drop) return dropSet(drop.getAttribute("data-gr-drop-set"));
+      var row = event.target.closest("[data-gr-open]");
+      if (row) openSet(row.getAttribute("data-gr-open"));
+    });
+    byId("grBack").addEventListener("click", closeSet);
+    byId("grDeleteSet").addEventListener("click", function () {
+      if (state.current) dropSet(state.current.id);
+    });
+    var name = byId("grName");
+    name.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") name.blur();
+      if (event.key === "Escape") {
+        name.value = state.current ? state.current.name : "";
+        name.blur();
+      }
+    });
+    name.addEventListener("blur", function () {
+      var value = name.value.trim();
+      if (!state.current) return;
+      if (!value) {
+        name.value = state.current.name;
+        return;
+      }
+      if (value !== state.current.name) saveSet({ name: value });
+    });
     byId("grLevel").addEventListener("change", function (event) {
-      saveSettings({ level: event.target.value });
+      saveSet({ level: event.target.value });
     });
     byId("grInterval").addEventListener("change", function (event) {
-      saveSettings({ interval_minutes: Number(event.target.value) });
+      saveSet({ interval_minutes: Number(event.target.value) });
     });
     byId("grAuto").addEventListener("change", function (event) {
-      saveSettings({ auto_enabled: event.target.checked });
+      saveSet({ auto_enabled: event.target.checked });
     });
-    byId("grRun").addEventListener("click", runNow);
+    byId("grRun").addEventListener("click", function () {
+      if (state.current) runSet(state.current.id);
+    });
     byId("grAdd").addEventListener("click", function () {
       var code = byId("grGeo").value;
       if (!code) return byId("grGeo").focus();
@@ -358,7 +586,7 @@
       state.drafts[code] = state.drafts[code] || {};
       state.drafts[code][field.getAttribute("data-gr-key")] = field.value;
       field.classList.toggle("is-invalid", !parsed(field.value).ok);
-      var rule = state.rules.find(function (row) { return row.country_code === code; });
+      var rule = state.current.rules.find(function (row) { return row.country_code === code; });
       var row = field.closest("tr");
       var dirty = rule && isDirty(rule);
       row.classList.toggle("is-dirty", !!dirty);
@@ -381,32 +609,25 @@
       var drop = event.target.closest("[data-gr-drop]");
       if (drop) dropRule(drop.getAttribute("data-gr-drop"));
     });
+    byId("grHistorySet").addEventListener("change", function (event) {
+      state.historySet = event.target.value;
+      loadEvents(true);
+    });
     byId("grMore").addEventListener("click", function () { loadEvents(false); });
-  }
-
-  async function loadRules() {
-    try {
-      var payload = await api.get("/meta/geo-rules");
-      state.settings = payload.settings;
-      state.rules = payload.rules || [];
-      state.countries = payload.countries || [];
-    } catch (error) {
-      byId("grBody").innerHTML = '<tr><td colspan="10" style="padding:36px;color:#B91414">' +
-        escapeHtml(error.message || "Не удалось загрузить правила") + "</td></tr>";
-      return;
-    }
-    renderSettings();
-    renderTable();
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") closeCreate();
+    });
   }
 
   async function init() {
-    if (!byId("grBody")) return;
+    if (!byId("grSets")) return;
     if (!state.bound) {
       state.bound = true;
       bind();
     }
-    await loadRules();
+    showScreen("list");
+    await loadSets();
   }
 
-  window.CelestialMetaGeoRules = { init: init, reload: loadRules };
+  window.CelestialMetaGeoRules = { init: init, reload: loadSets };
 })();

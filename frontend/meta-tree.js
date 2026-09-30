@@ -527,7 +527,7 @@
     renderBulk();
   }
 
-  /* ---------- отмеченные строки и панель действий ---------- */
+  /* ---------- отмеченные строки и панель действий (в строке фильтров) ---------- */
 
   function pickedRows() {
     return Object.keys(state.picked).map(function (id) {
@@ -557,7 +557,9 @@
       '<span class="mt-bulk__sep"></span>' +
       '<button class="mt-bulk__btn mt-bulk__btn--clear" type="button" data-bulk="clear">' +
       "Снять выделение</button>";
-    document.body.appendChild(bar);
+    // Панель живёт в строке фильтров, сразу за сортировкой.
+    var host = byId("metaTreeSort");
+    host.parentNode.insertBefore(bar, host.nextSibling);
     bar.addEventListener("click", function (event) {
       var button = event.target.closest("[data-bulk]");
       if (!button || button.disabled) return;
@@ -567,7 +569,7 @@
         closeMenu();
         return render();
       }
-      if (kind === "more") return toggleMenu(button, { rows: pickedRows() }, true);
+      if (kind === "more") return toggleMenu(button, { rows: pickedRows() }, false);
       closeMenu();
       runAction(kind, pickedRows());
     });

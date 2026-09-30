@@ -2517,7 +2517,7 @@
     }
 
     function nameItem(row) {
-      return { value: row.id, label: row.name };
+      return { value: row.id, label: row.name + (row.blocked ? " · заблокирован" : "") };
     }
 
     function setFilterItems(id, items) {
@@ -2879,10 +2879,11 @@
       var buyersOptions = state.buyers.map(function (buyer) {
         return '<option value="' + escapeHtml(buyer.id) + '"' +
           (record && record.buyer_id === buyer.id ? " selected" : "") + ">" +
-          escapeHtml(buyer.name) + "</option>";
+          escapeHtml(buyer.name + (buyer.blocked ? " · заблокирован" : "")) + "</option>";
       }).join("");
-      var selectedBuyerId = record && record.buyer_id ||
-        (state.buyers.length ? state.buyers[0].id : "");
+      var firstActive = state.buyers.filter(function (buyer) { return !buyer.blocked; })[0] ||
+        state.buyers[0];
+      var selectedBuyerId = record && record.buyer_id || (firstActive ? firstActive.id : "");
       var offersOptions = modalOfferOptions(
         selectedBuyerId,
         record && record.offer_id

@@ -37,7 +37,9 @@ def test_tree_includes_zero_metric_entities_and_keeps_grain() -> None:
         country_code="DE", impressions=100, clicks=10, spend=Decimal("5.25"),
         actions={"omni_app_install": 4, "complete_registration": 2},
     )
-    roots = build_tree([account], entities, [fact], {"c1": {"sales": 3}}, {owner_id: "Buyer"})
+    roots = build_tree(
+        [account], entities, [fact], {"c1": {"sales": 3}}, {connection_id: "RAMP2"}
+    )
     root = roots[0]
     campaign, quiet = root["children"]
     adset = campaign["children"][0]
@@ -47,7 +49,7 @@ def test_tree_includes_zero_metric_entities_and_keeps_grain() -> None:
     assert (adset["spend"], ad["spend"], adset["deps"], ad["deps"]) == (5.25, 5.25, None, None)
     assert adset["budget"] == 0
     assert quiet["spend"] == 0
-    assert root["currency"] == "EUR" and root["agent"] == "Buyer"
+    assert root["currency"] == "EUR" and root["agent"] == "RAMP2"
     assert root["connection_id"] == str(connection_id)
 
 
