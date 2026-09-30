@@ -2480,7 +2480,9 @@
       var results = await Promise.all([
         api.getAll("/services"),
         api.getAll("/spend-providers"),
-        api.get("/users/options"),
+        // Заблокированный баер остаётся на доске со своими строками, поэтому
+        // и в фильтре он должен выбираться.
+        api.get("/users/options?include_blocked=true"),
         api.getAll("/offers" + (config.offersQuery || "")),
         api.getAll("/partners"),
         api.get("/me/preferences/" + config.preferenceKey),

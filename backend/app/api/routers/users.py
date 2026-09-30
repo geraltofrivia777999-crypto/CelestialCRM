@@ -57,15 +57,24 @@ router = APIRouter(tags=["team"])
 @router.get("/users/options")
 async def user_options(
     role_name: str | None = None,
+    include_blocked: bool = False,
     db: AsyncSession = Depends(get_db),
     current: User = Depends(get_current_user),
 ) -> list[dict]:
+    """Люди для полей выбора.
+
+    По умолчанию только активные: назначать оффер или задачу заблокированному
+    незачем. Медиаборд и Финансы просят `include_blocked`: их строки не
+    исчезают вместе с доступом человека, и без него в фильтре не выбрать
+    баера, чьи цифры на доске видны.
+    """
     visible_users = await accessible_user_ids(db, current)
     query = select(User.id, User.name, User.login, User.keitaro_offer_group).where(
         User.workspace_id == current.workspace_id,
         User.id.in_(visible_users),
-        User.status == Status.active,
     )
+    if not include_blocked:
+        query = query.where(User.status == Status.active)
     # Формы назначения могут запросить конкретную роль. Например, в оффере
     # список «Тимлиды» не должен содержать администраторов и баеров.
     if role_name and role_name.strip():

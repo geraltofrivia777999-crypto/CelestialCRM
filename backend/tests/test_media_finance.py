@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.core.deps import has_full_access
-from app.core.security import encrypt_secret
+from app.core.security import encrypt_secret, hash_password
 from app.main import app
 from app.models import (
     CountryTier,
@@ -22,6 +22,7 @@ from app.models import (
     Role,
     Service,
     SpendProvider,
+    Status,
     User,
 )
 from app.services.formulas import finance_import_key
@@ -798,3 +799,41 @@ async def test_day_spend_for_a_tier_without_offers_is_refused(database) -> None:
         )
     assert refused.status_code == 422
     assert "Tier2/3" in refused.json()["error"]["message"]
+
+
+async def test_a_blocked_buyer_stays_in_the_boards(database) -> None:
+    """Блокировка забирает вход в CRM, а не историю работы человека."""
+    from datetime import date as date_type
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        buyer_role = await db.scalar(select(Role).where(Role.name == "Buyer"))
+        buyer = User(
+            workspace_id=admin.workspace_id,
+            role_id=buyer_role.id,
+            name="Ушедший баер",
+            login="blockedbuyer",
+            password_hash=hash_password("blocked-password"),
+            status=Status.blocked,
+        )
+        db.add(buyer)
+        await db.commit()
+        buyer_id = str(buyer.id)
+
+    today = date_type.today()
+    with _admin_client() as client:
+        options = client.get("/api/v1/users/options").json()
+        with_blocked = client.get("/api/v1/users/options?include_blocked=true").json()
+        book_scopes = client.get(
+            "/api/v1/finance/scopes", params={"year": today.year, "month": today.month}
+        ).json()
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"login": "blockedbuyer", "password": "blocked-password"},
+        )
+
+    assert buyer_id not in [row["id"] for row in options]
+    assert buyer_id in [row["id"] for row in with_blocked]
+    assert buyer_id in [row["id"] for row in book_scopes["buyers"]]
+    # Вход при этом закрыт — ради этого блокировку и включают.
+    assert login.status_code == 403
