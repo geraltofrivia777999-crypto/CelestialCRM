@@ -1135,11 +1135,14 @@
   /* Окно «Бюджет и ставка» и «Переименовать» — одна таблица: строка на объект,
      после сохранения в последней колонке появляется ответ Meta по этой строке. */
 
-  function openEntityModal(kind) {
-    var picks = entityPicks();
+  /* `options` приходит из MetaAds v2: там отмечают строки дерева, а не таблицы
+     уровня, и после сохранения перезагружается дерево. */
+  function openEntityModal(kind, options) {
+    var picks = options ? options.picks : entityPicks();
     if (!picks.length) return;
     state.entityModal = {
-      kind: kind, level: state.level, loading: kind === "budget", saving: false,
+      kind: kind, level: options ? options.level : state.level,
+      onSaved: options ? options.onSaved : null, loading: kind === "budget", saving: false,
       rows: picks.map(function (pick) {
         return { id: pick.id, name: pick.name, draftName: pick.name, result: null };
       }),
@@ -1353,12 +1356,12 @@
       if (!result.ok) return;
       if (modal.kind === "rename") {
         row.name = row.draftName = String(row.draftName).trim();
-        state.spendPick[row.id] = row.name;
+        if (!modal.onSaved) state.spendPick[row.id] = row.name;
       } else {
         row.initial = { budget: row.budget, strategy: row.strategy, bid: row.bid };
       }
     });
-    loadLevel().catch(showFailure);
+    (modal.onSaved ? Promise.resolve(modal.onSaved()) : loadLevel()).catch(showFailure);
     if (!response.failed) {
       closeEntityModal();
       return;
@@ -2161,6 +2164,9 @@
     renderFilters(payload);
     renderSyncState();
     await loadLevel();
+    if (byId("metaTreeBody")) {
+      window.dispatchEvent(new Event("celestial:meta-refreshed"));
+    }
   }
 
   function schedulePoll() {
@@ -10280,5 +10286,22 @@
     schedulePoll();
   }
 
-  window.CelestialMeta = { init: init, reload: load };
+  window.CelestialMeta = {
+    init: init,
+    reload: load,
+    // Для MetaAds v2: те же окна бюджета, переименования и подключения.
+    openEntityEditor: function (kind, level, picks, onSaved) {
+      openEntityModal(kind, { level: level, picks: picks, onSaved: onSaved });
+    },
+    openConnection: function (connectionId) {
+      if (!state.connections.some(function (item) { return item.id === connectionId; })) {
+        notify({
+          title: "Подключение недоступно",
+          message: "Кабинет пришёл из подключения, которого нет в вашем списке."
+        });
+        return;
+      }
+      openModal(connectionId);
+    }
+  };
 })();

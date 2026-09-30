@@ -296,6 +296,38 @@ class MetaAccountUpdate(BaseModel):
     status: Status | None = None
 
 
+class MetaAccountActionIn(BaseModel):
+    """Действие с рекламным кабинетом в Meta из MetaAds v2.
+
+    `spend_cap_action`: «set» — новый лимит, «reset» — обнулить потраченное
+    с текущим лимитом, «delete» — снять лимит совсем.
+    """
+
+    action: Literal["rename", "spend_cap", "pixel"]
+    name: str | None = Field(default=None, max_length=300)
+    spend_cap: Decimal | None = Field(default=None, gt=0)
+    spend_cap_action: Literal["set", "reset", "delete"] = "set"
+
+
+class MetaGeoRuleIn(BaseModel):
+    """Строка таблицы GEO-правил. Пустой порог — проверка выключена."""
+
+    is_enabled: bool = True
+    no_clicks: Decimal | None = Field(default=None, gt=0, le=1000000)
+    no_insts: Decimal | None = Field(default=None, gt=0, le=1000000)
+    no_regs: Decimal | None = Field(default=None, gt=0, le=1000000)
+    no_deps: Decimal | None = Field(default=None, gt=0, le=1000000)
+    max_avg_inst: Decimal | None = Field(default=None, gt=0, le=1000000)
+    max_avg_reg: Decimal | None = Field(default=None, gt=0, le=1000000)
+    max_avg_dep: Decimal | None = Field(default=None, gt=0, le=1000000)
+
+
+class MetaGeoRuleSettingsIn(BaseModel):
+    level: Literal["campaign", "adset", "ad"] | None = None
+    interval_minutes: Literal[15, 30, 60, 120, 240] | None = None
+    auto_enabled: bool | None = None
+
+
 class MetaConnectionPreview(BaseModel):
     """Шаг «Проверка» в мастере: токен уже введён, но ещё ничего не сохранено."""
 
@@ -1476,6 +1508,9 @@ class OfferOut(ORMModel):
     status: OfferStatus
     keitaro_state: Status
     is_starred: bool
+    # Когда строка появилась в CRM. Нужна разделу «Оффера»: там сортируют от
+    # нового к старому, а в таблице этой колонки нет.
+    created_at: datetime
 
 
 class OfferIn(BaseModel):
@@ -1503,6 +1538,10 @@ class OfferIn(BaseModel):
     # Через какую интеграцию с ПП приходят депозиты по этому офферу.
     partner_integration_id: uuid.UUID | None = None
     lead_ids: list[uuid.UUID] = Field(default_factory=list)
+    # Капа каждого тимлида: общий лимит оффера они делят между собой, поэтому
+    # цифра спрашивается там же, где отмечают самих тимлидов. Ключа нет —
+    # капа этого тимлида остаётся прежней, пустая строка её снимает.
+    caps: dict[uuid.UUID, str] = Field(default_factory=dict)
     buyer_ids: list[uuid.UUID] = Field(default_factory=list)
 
 

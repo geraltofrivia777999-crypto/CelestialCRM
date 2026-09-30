@@ -366,10 +366,22 @@
     return (list || []).some(function (person) { return String(person.id) === id; });
   }
 
+  // Дата заведения — единственное, чем «новее» отличается от «старее»: в
+  // таблице этой колонки нет, поэтому сравниваем по ней напрямую.
+  function offerAge(offer) {
+    var stamp = Date.parse(offer.created_at || "");
+    return isFinite(stamp) ? stamp : 0;
+  }
+
   function sortOffers(offers) {
     return offers.slice().sort(function (left, right) {
       if (offersState.starredFirst && !!left.is_starred !== !!right.is_starred) {
         return left.is_starred ? -1 : 1;
+      }
+      var sort = byId("filterSort") ? byId("filterSort").value : "name";
+      if (sort === "new") {
+        var difference = offerAge(right) - offerAge(left);
+        if (difference) return difference;
       }
       return String(left.name).localeCompare(String(right.name), "ru");
     });
@@ -579,7 +591,7 @@
     }), "Все GEO");
     fillSelect("filterPartner", Object.keys(partners).sort().map(function (p) {
       return { value: p, label: p };
-    }), "Все партнёрки");
+    }), "Партнёрки");
     var people = offersState.people.map(function (person) {
       return { value: String(person.id), label: person.name };
     });
@@ -587,7 +599,7 @@
     fillSelect("filterBuyer", people, "Все баеры");
     fillSelect("filterStatus", OFFER_STATUSES.map(function (status) {
       return { value: status.value, label: status.label };
-    }), "Все статусы");
+    }), "Статусы");
   }
 
   function applyOfferFilters() {
@@ -605,7 +617,10 @@
     });
     var search = byId("offerSearch");
     if (search) search.addEventListener("input", applyOfferFilters);
-    ["filterGeo", "filterPartner", "filterLead", "filterBuyer", "filterStatus"].forEach(function (id) {
+    // Сортировка меняет тот же список, что и фильтры, поэтому слушатель общий.
+    [
+      "filterGeo", "filterPartner", "filterLead", "filterBuyer", "filterStatus", "filterSort"
+    ].forEach(function (id) {
       var element = byId(id);
       if (element) element.addEventListener("change", applyOfferFilters);
     });
@@ -764,14 +779,23 @@
     }).join("");
   }
 
+  function leadCaps(leads) {
+    var caps = {};
+    (leads || []).forEach(function (person) {
+      caps[String(person.id)] = person.cap || "";
+    });
+    return caps;
+  }
+
   /* Капы только назначенных: снятого тимлида в наборе быть не должно, иначе
      сервер сохранил бы цифру для того, кого на оффере уже нет. */
   function capValues(overlay, ids) {
     var caps = {};
     ids.forEach(function (id) {
       var field = overlay.querySelector('[data-cap-for="' + id + '"]');
-      var value = field ? field.value.trim() : "";
-      if (value) caps[id] = value;
+      // Пустое поле уезжает пустой строкой: иначе стёртую капу сервер бы
+      // не отличил от «форма про неё не знает» и оставил бы прежнюю.
+      if (field) caps[id] = field.value.trim();
     });
     return caps;
   }
@@ -906,10 +930,9 @@
       '<select id="offerFormGeo" class="offer-field">' +
       selectOptions(offerGeoOptions(editing ? offer.geo : ""), editing ? offer.geo : "",
         "Не выбрано") + "</select></div>" +
-      '<div><div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
-      '<label class="offer-label" for="offerFormPartner">Партнёрка</label>' +
-      '<button id="offerFormPartnerCreate" type="button" style="border:0;background:none;' +
-      'color:#B91414;font:700 11px Inter,sans-serif;cursor:pointer">+ Новая</button></div>' +
+      // Партнёрки приезжают из Keitaro синхронизацией, поэтому заводить их
+      // прямо из карточки оффера больше нечем: список пополняется сам.
+      '<div><label class="offer-label" for="offerFormPartner">Партнёрка</label>' +
       '<select id="offerFormPartner" class="offer-field">' +
       selectOptions(offersState.partners.map(function (p) {
         return { value: p.id, label: p.name };
@@ -938,7 +961,14 @@
       'placeholder="Что важно знать по этому офферу">' +
       escapeHtml(editing ? (offer.comment || "") : "") + "</textarea></div>" +
       '<div style="margin-top:18px"><span class="offer-label">Тимлиды</span>' +
-      peopleChecklist("lead", editing ? (offer.leads || []).map(function (p) { return p.id; }) : []) +
+      // Капа тимлида — рядом с ним же, как в «Назначить тимлидов»: общий
+      // лимит оффера тимлиды делят между собой, и цифра принадлежит связке.
+      peopleChecklist(
+        "lead",
+        editing ? (offer.leads || []).map(function (p) { return p.id; }) : [],
+        leadCaps(editing ? offer.leads : []),
+        offersState.teamLeads
+      ) +
       "</div>" +
       '<div style="margin-top:14px"><span class="offer-label">Баеры</span>' +
       peopleChecklist("buyer", editing ? (offer.buyers || []).map(function (p) { return p.id; }) : []) +
@@ -962,37 +992,14 @@
         }
       );
     });
-    byId("offerFormPartnerCreate").addEventListener("click", async function (event) {
-      var button = event.currentTarget;
-      var name = await window.CelestialShell.prompt({
-        title: "Новая партнёрка",
-        message: "Партнёрка сохранится в справочнике CRM и появится в списке офферов.",
-        placeholder: "Название партнёрки",
-        confirmLabel: "Добавить"
-      });
-      if (name === null) return;
-      button.disabled = true;
-      try {
-        var partner = await api.post("/partners", { name: name.trim() });
-        if (!offersState.partners.some(function (item) { return item.id === partner.id; })) {
-          offersState.partners.push(partner);
-        }
-        var select = byId("offerFormPartner");
-        if (!Array.prototype.some.call(select.options, function (option) {
-          return option.value === partner.id;
-        })) {
-          var option = document.createElement("option");
-          option.value = partner.id;
-          option.textContent = partner.name;
-          select.appendChild(option);
-        }
-        select.value = partner.id;
-        toast("Партнёрка добавлена");
-      } catch (error) {
-        fail(error);
-      } finally {
-        button.disabled = false;
-      }
+    overlay.addEventListener("change", function (event) {
+      var box = event.target.closest ? event.target.closest("[data-lead]") : null;
+      if (!box) return;
+      var field = overlay.querySelector('[data-cap-for="' +
+        box.getAttribute("data-lead") + '"]');
+      if (!field) return;
+      field.disabled = !box.checked;
+      if (!box.checked) field.value = "";
     });
     onSave(overlay, function () {
       var name = byId("offerFormName").value.trim();
@@ -1012,6 +1019,7 @@
         partner_id: byId("offerFormPartner").value || null,
         partner_integration_id: byId("offerFormIntegration").value || null,
         lead_ids: checkedValues(overlay, "lead"),
+        caps: capValues(overlay, checkedValues(overlay, "lead")),
         buyer_ids: checkedValues(overlay, "buyer")
       };
       var request = editing

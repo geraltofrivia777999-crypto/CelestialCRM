@@ -209,6 +209,18 @@ def run_meta_rules() -> dict:
 
 
 @celery_app.task
+def run_meta_geo_rules() -> dict:
+    """GEO-автоправила MetaAds v2 — у каждого воркспейса свой интервал."""
+    if not settings.meta_rules_enabled:
+        logger.info("Meta auto-rules are disabled")
+        return {"workspaces": 0, "triggered": 0, "paused": 0, "failed": 0}
+    from app.api.routers.meta import client_for
+    from app.services.meta_geo_rules import run_due
+
+    return asyncio.run(run_due(WorkerSessionLocal, client_for))
+
+
+@celery_app.task
 def apply_due_budget_increases() -> dict:
     """Запланированные увеличения бюджета («Расширенный режим»)."""
     from app.services.budget_increase import apply_due_budget_increases as _apply

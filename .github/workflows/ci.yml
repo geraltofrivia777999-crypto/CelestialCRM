@@ -42,6 +42,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
+      # Сеть общая с сервисом рекрутинга: в docker-compose она объявлена
+      # внешней и на сервере заводится один раз руками.
+      - run: docker network create recruitmentservice_internal
       - run: docker compose up --build -d
       - run: |
           for attempt in $(seq 1 60); do
@@ -53,3 +56,5 @@ jobs:
         run: docker compose logs
       - if: always()
         run: docker compose down -v
+      - if: always()
+        run: docker network rm recruitmentservice_internal || true

@@ -26,7 +26,6 @@ from app.models import (
     Partner,
     PartnerIntegration,
     PartnerSyncRun,
-    Status,
     User,
     UserParent,
 )
@@ -256,13 +255,9 @@ def _period(year: int, month: int) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-async def _visible_users(
-    db: AsyncSession, current: User, *, active_only: bool = False
-) -> list[User]:
+async def _visible_users(db: AsyncSession, current: User) -> list[User]:
     visible = await _finance_user_ids(db, current)
     filters = [User.workspace_id == current.workspace_id, User.id.in_(visible)]
-    if active_only:
-        filters.append(User.status == Status.active)
     return list(
         (
             await db.execute(select(User).where(*filters).order_by(User.name, User.login))
@@ -295,7 +290,10 @@ async def scopes(
     current: User = Depends(require_permission("finance.view")),
 ) -> dict:
     _period(year, month)
-    users = await _visible_users(db, current, active_only=True)
+    # Заблокированный баер остаётся в списке книг: его месяцы уже посчитаны, и
+    # закрывать их всё равно придётся. Блокировка забирает вход в CRM, а не
+    # историю работы.
+    users = await _visible_users(db, current)
     # Партнёрки — те же, что в Офферах: они приходят из Keitaro, и книга должна
     # называть их так же, иначе одна и та же партнёрка разъедется по написаниям.
     partners = list(

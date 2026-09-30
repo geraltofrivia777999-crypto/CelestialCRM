@@ -600,3 +600,183 @@ async def test_resync_needs_a_supported_period(database, monkeypatch) -> None:
         run = await db.get(SyncRun, uuid.UUID(run_id))
         assert run.mode == "resync"
         assert run.details["days"] == 30
+
+
+class NamedNetworkClient(FakeKeitaroClient):
+    """Трекер, у которого сеть оффера не заведена отдельной сущностью.
+
+    Так выглядит боевой Keitaro: /affiliate_networks отдаёт несколько сетей,
+    а имена партнёрок у большинства офферов приходят строкой.
+    """
+
+    async def offers(self) -> list[dict]:
+        return [
+            {
+                "id": 41,
+                "name": "Offer by name",
+                "group_id": 20,
+                "affiliate_network": "Fame Partners",
+                "country": ["DE"],
+                "state": "active",
+            }
+        ]
+
+
+async def test_a_partner_named_by_an_offer_stays_active_across_syncs(database) -> None:
+    """Раньше каждый прогон гасил такие партнёрки: их нет в списке сетей."""
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        connection = IntegrationConnection(
+            workspace_id=admin.workspace_id,
+            name="Named networks",
+            base_url="https://tracker.example",
+            api_key_encrypted=encrypt_secret("test-key"),
+            timezone="UTC",
+            buyer_sub_id=1,
+            lookback_days=1,
+        )
+        db.add(connection)
+        await db.flush()
+        runs = [SyncRun(connection_id=connection.id, mode="incremental") for _ in range(2)]
+        db.add_all(runs)
+        await db.commit()
+        connection_id = str(connection.id)
+        run_ids = [str(run.id) for run in runs]
+
+    engine = KeitaroSyncEngine(SessionLocal, client_factory=NamedNetworkClient)
+    for run_id in run_ids:
+        assert (await engine.run(connection_id, run_id, "incremental"))["status"] == "success"
+
+    async with SessionLocal() as db:
+        partner = await db.scalar(
+            select(Partner).where(
+                Partner.connection_id == uuid.UUID(connection_id),
+                Partner.name == "Fame Partners",
+            )
+        )
+        assert partner is not None
+        assert partner.status == Status.active
+
+
+class LateNetworkClient(FakeKeitaroClient):
+    """Сеть, которая была строкой в оффере, приехала своей записью.
+
+    Так выглядит трекер после того, как ключу API открыли доступ к разделу
+    сетей: то же имя теперь приходит с собственным id.
+    """
+
+    async def affiliate_networks(self) -> list[dict]:
+        return [{"id": 77, "name": "Fame Partners", "state": "active"}]
+
+
+async def test_a_network_opened_later_adopts_its_partner_instead_of_doubling_it(
+    database,
+) -> None:
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        connection = IntegrationConnection(
+            workspace_id=admin.workspace_id,
+            name="Late networks",
+            base_url="https://tracker.example",
+            api_key_encrypted=encrypt_secret("test-key"),
+            timezone="UTC",
+            buyer_sub_id=1,
+            lookback_days=1,
+        )
+        db.add(connection)
+        await db.flush()
+        runs = [SyncRun(connection_id=connection.id, mode="incremental") for _ in range(2)]
+        db.add_all(runs)
+        await db.commit()
+        connection_id = str(connection.id)
+        first_run, second_run = (str(run.id) for run in runs)
+
+    # Первый прогон: ключ сеть не видит, партнёрка заводится по имени оффера.
+    await KeitaroSyncEngine(SessionLocal, client_factory=NamedNetworkClient).run(
+        connection_id, first_run, "incremental"
+    )
+    # Второй: доступ открыли, та же сеть пришла со своим id.
+    await KeitaroSyncEngine(SessionLocal, client_factory=LateNetworkClient).run(
+        connection_id, second_run, "incremental"
+    )
+
+    async with SessionLocal() as db:
+        partners = list(
+            (
+                await db.execute(
+                    select(Partner).where(
+                        Partner.connection_id == uuid.UUID(connection_id),
+                        Partner.name == "Fame Partners",
+                    )
+                )
+            ).scalars()
+        )
+        assert len(partners) == 1
+        assert partners[0].external_id == "77"
+        assert partners[0].status == Status.active
+
+
+async def test_duplicates_from_an_earlier_sync_are_merged_into_the_network(
+    database,
+) -> None:
+    """Синхронизация уже успела завести обе строки — следующая сводит их в одну."""
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        connection = IntegrationConnection(
+            workspace_id=admin.workspace_id,
+            name="Doubled networks",
+            base_url="https://tracker.example",
+            api_key_encrypted=encrypt_secret("test-key"),
+            timezone="UTC",
+            buyer_sub_id=1,
+            lookback_days=1,
+        )
+        db.add(connection)
+        await db.flush()
+        twin = Partner(
+            workspace_id=admin.workspace_id,
+            connection_id=connection.id,
+            external_id="name:fame partners",
+            name="Fame Partners",
+        )
+        network = Partner(
+            workspace_id=admin.workspace_id,
+            connection_id=connection.id,
+            external_id="77",
+            name="Fame Partners",
+        )
+        db.add_all([twin, network])
+        await db.flush()
+        # Оффер держится за двойника — после склейки он должен смотреть на сеть.
+        offer = Offer(
+            workspace_id=admin.workspace_id,
+            connection_id=connection.id,
+            external_id="dup-offer",
+            name="Offer on the twin",
+            partner_id=twin.id,
+        )
+        db.add(offer)
+        run = SyncRun(connection_id=connection.id, mode="incremental")
+        db.add(run)
+        await db.commit()
+        connection_id, run_id = str(connection.id), str(run.id)
+        offer_id, network_id = offer.id, network.id
+
+    await KeitaroSyncEngine(SessionLocal, client_factory=LateNetworkClient).run(
+        connection_id, run_id, "incremental"
+    )
+
+    async with SessionLocal() as db:
+        partners = list(
+            (
+                await db.execute(
+                    select(Partner).where(
+                        Partner.connection_id == uuid.UUID(connection_id),
+                        Partner.name == "Fame Partners",
+                    )
+                )
+            ).scalars()
+        )
+        assert [item.external_id for item in partners] == ["77"]
+        moved = await db.get(Offer, offer_id)
+        assert moved.partner_id == network_id

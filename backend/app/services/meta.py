@@ -992,6 +992,10 @@ class MetaClient:
         """Удалить комментарий. Необратимо: Meta не отдаёт его больше никогда."""
         return await self._send("DELETE", f"/{comment_external_id}")
 
+    async def create_pixel(self, account_external_id: str, name: str) -> dict:
+        """Новый пиксель в кабинете. Ответ Meta — `{"id": ...}`."""
+        return await self._send("POST", f"/{account_external_id}/adspixels", data={"name": name})
+
     async def update_object(self, external_id: str, data: dict) -> dict:
         return await self._send("POST", f"/{external_id}", data=data)
 

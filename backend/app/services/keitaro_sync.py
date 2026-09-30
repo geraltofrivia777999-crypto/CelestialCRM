@@ -8,7 +8,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from redis.asyncio import Redis
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import business_today
@@ -22,6 +22,7 @@ from app.models import (
     KeitaroGroup,
     KeitaroStatDaily,
     MediaRecord,
+    MetaLaunch,
     Offer,
     Partner,
     Status,
@@ -674,29 +675,87 @@ async def _upsert_partners(
         ).scalars()
     )
     by_external = {item.external_id: item for item in existing}
+    # Та же партнёрка, но заведённая раньше по названию из оффера: у ключа API
+    # не было доступа к разделу сетей, и трекер отдавал имя строкой. Теперь
+    # сеть приехала своей записью, и второй строки с тем же именем быть не
+    # должно — к офферам и книгам привязана именно первая.
+    by_name = {
+        item.name.strip().lower(): item
+        for item in existing
+        if item.external_id and item.external_id.startswith(NAME_PARTNER_PREFIX)
+    }
     seen: set[str] = set()
     for row in rows:
         external_id = str(row.get("id") or "")
         if not external_id:
             continue
         seen.add(external_id)
+        name = str(row.get("name") or f"Partner {external_id}")
         item = by_external.get(external_id)
         if not item:
-            item = Partner(
-                workspace_id=config["workspace_id"],
-                connection_id=config["id"],
-                external_id=external_id,
-            )
-            db.add(item)
+            item = by_name.pop(name.strip().lower(), None)
+            if item:
+                by_external.pop(item.external_id, None)
+                item.external_id = external_id
+            else:
+                item = Partner(
+                    workspace_id=config["workspace_id"],
+                    connection_id=config["id"],
+                    external_id=external_id,
+                )
+                db.add(item)
             by_external[external_id] = item
-        item.name = str(row.get("name") or f"Partner {external_id}")
+        item.name = name
         if not item.status_overridden:
             item.status = _status(row.get("state"))
     for external_id, item in by_external.items():
-        if external_id not in seen and not item.status_overridden:
-            item.status = Status.inactive
+        if external_id in seen or item.status_overridden:
+            continue
+        # Партнёрку, заведённую по названию из оффера, в списке сетей трекера
+        # не найти никогда: её там и не было. Гасить её по отсутствию в этом
+        # списке нельзя — иначе каждая синхронизация выключала бы все
+        # партнёрки, которых Keitaro не отдаёт отдельной сущностью.
+        if external_id.startswith(NAME_PARTNER_PREFIX):
+            continue
+        item.status = Status.inactive
+    await _merge_name_twins(db, by_external, by_name)
     await db.flush()
     return by_external
+
+
+async def _merge_name_twins(
+    db: AsyncSession,
+    by_external: dict[str, Partner],
+    by_name: dict[str, Partner],
+) -> None:
+    """Убрать партнёрку-двойника, заведённую по названию из оффера.
+
+    Пока ключу API не открыли раздел сетей, трекер называл сеть строкой, и
+    CRM заводила её сама. После открытия доступа та же сеть приезжает своей
+    записью, и в списке оказываются две строки с одним именем. Оставляем
+    сетевую, а ссылки двойника переводим на неё: на нём висят офферы и заливы.
+    """
+    if not by_name:
+        return
+    networks = {}
+    for external_id, item in by_external.items():
+        if not external_id.startswith(NAME_PARTNER_PREFIX):
+            networks[item.name.strip().lower()] = item
+    for key, twin in list(by_name.items()):
+        target = networks.get(key)
+        if not target or target.id == twin.id:
+            continue
+        await db.execute(
+            update(Offer).where(Offer.partner_id == twin.id).values(partner_id=target.id)
+        )
+        await db.execute(
+            update(MetaLaunch)
+            .where(MetaLaunch.partner_id == twin.id)
+            .values(partner_id=target.id)
+        )
+        by_external.pop(twin.external_id, None)
+        by_name.pop(key, None)
+        await db.delete(twin)
 
 
 async def _upsert_offers(
@@ -941,6 +1000,10 @@ def _network_name(row: dict) -> str:
     return " ".join(str(candidate or "").split())[:200]
 
 
+# Префикс внешнего id у партнёрки, выведенной из названия оффера.
+NAME_PARTNER_PREFIX = "name:"
+
+
 async def _resolve_offer_partner(
     db: AsyncSession,
     config: dict,
@@ -970,12 +1033,16 @@ async def _resolve_offer_partner(
         partner = Partner(
             workspace_id=config["workspace_id"],
             connection_id=config["id"],
-            external_id=f"name:{name.lower()[:94]}",
+            external_id=f"{NAME_PARTNER_PREFIX}{name.lower()[:94]}",
             name=name,
         )
         db.add(partner)
         await db.flush()
         partners[partner.external_id] = partner
+    elif partner.status != Status.active and not partner.status_overridden:
+        # Партнёрка снова названа живым оффером — значит она в работе, и
+        # прежние прогоны выключили её зря.
+        partner.status = Status.active
     return partner.id
 
 

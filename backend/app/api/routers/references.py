@@ -669,6 +669,10 @@ async def _check_partner_offer_id(
         )
 
 
+def _cap_values(caps: dict) -> dict:
+    return {key: (value or "").strip()[:160] for key, value in caps.items()}
+
+
 @router.post("/offers", response_model=dict, status_code=201)
 async def create_offer(
     payload: OfferIn,
@@ -700,7 +704,11 @@ async def create_offer(
     )
     db.add(offer)
     await db.flush()
-    db.add_all([OfferLead(offer_id=offer.id, user_id=user.id) for user in leads])
+    caps = _cap_values(payload.caps)
+    db.add_all([
+        OfferLead(offer_id=offer.id, user_id=user.id, cap=caps.get(user.id) or None)
+        for user in leads
+    ])
     db.add_all([OfferBuyer(offer_id=offer.id, user_id=user.id) for user in buyers])
     await pull_offer_to_books(db, offer, [user.id for user in buyers])
     await finance_spend.refresh_workspace(db, current.workspace_id)
@@ -769,8 +777,16 @@ async def update_offer(
             *([OfferBuyer.user_id.in_(scope)] if scope is not None else []),
         )
     )
+    caps = _cap_values(payload.caps)
     db.add_all([
-        OfferLead(offer_id=offer.id, user_id=user.id, cap=kept_caps.get(user.id))
+        OfferLead(
+            offer_id=offer.id,
+            user_id=user.id,
+            # Поле капы есть в самой карточке, но тимлида могли назначить и
+            # через «Назначить тимлидов»: чего форма не прислала, то и не
+            # трогаем.
+            cap=caps.get(user.id, kept_caps.get(user.id)) or None,
+        )
         for user in leads
     ])
     db.add_all([OfferBuyer(offer_id=offer.id, user_id=user.id) for user in buyers])

@@ -2435,8 +2435,16 @@
         else if (path.indexOf("tasks") >= 0 || path.indexOf("knowledge") >= 0) {
           if (window.CelestialWorkspace) await window.CelestialWorkspace.init(currentSessionUser);
         }
-        else if (path.indexOf("metaads") >= 0) {
+        // MetaAds v2 (Structure.dc.html) — те же вкладки и окна, что в Meta Ads,
+        // только «Обзор» заменён деревом из meta-tree.js.
+        else if (path.indexOf("metaads") >= 0 || path.indexOf("structure") >= 0) {
           if (window.CelestialMeta) await window.CelestialMeta.init(currentSessionUser);
+          if (path.indexOf("structure") >= 0 && window.CelestialMetaTree) {
+            await window.CelestialMetaTree.init(currentSessionUser);
+          }
+          if (path.indexOf("structure") >= 0 && window.CelestialMetaGeoRules) {
+            await window.CelestialMetaGeoRules.init(currentSessionUser);
+          }
         }
         else if (path.indexOf("offer") >= 0) {
           if (window.CelestialCatalog) await window.CelestialCatalog.initOffers(currentSessionUser);

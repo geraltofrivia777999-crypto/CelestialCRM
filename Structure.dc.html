@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<title>Структура — Celestial Group</title>
+<title>MetaAds v2 — Celestial Group</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -373,7 +373,7 @@
   .meta-random-pct .meta-control{width:72px;padding:0 10px;text-align:right}
   /* Календарь периода — по высоте и ширине как соседний селект кабинетов. */
   .meta-period .cdr-field{width:100%;height:42px;border-color:#E8E2E2;font-weight:600}
-  /* ---------- Структура деревом (аккаунт → кампании → адсеты → объявления) ---------- */
+  /* ---------- MetaAds v2: структура деревом (аккаунт → кампании → адсеты → объявления) ---------- */
   .mt-cards{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:10px;margin-bottom:14px}
   .mt-card{border:1px solid #EBE6E6;border-radius:14px;padding:12px 14px;background:#fff}
   .mt-card span{display:block;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9B9292}
@@ -384,16 +384,21 @@
   .mt-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
   .mt-btn{display:inline-flex;align-items:center;gap:7px;height:38px;padding:0 13px;border:1px solid #EBE6E6;border-radius:11px;background:#fff;color:#3A3030;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap}
   .mt-btn:hover{border-color:#D9CFCF}
-  .mt-btn.is-on{background:#070505;border-color:#070505;color:#fff}
   .mt-btn svg{flex-shrink:0}
   .mt-bar .cmf{min-height:38px}
   .mt-sort{height:38px;border:1px solid #EBE6E6;border-radius:11px;background:#fff;padding:0 10px;font-size:12.5px;font-weight:600;color:#3A3030}
   .mt-wrap{background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden}
   .mt-scroll{overflow:auto}
   .mt-table{border-collapse:collapse;width:100%;min-width:1500px;font-size:12.5px}
-  .mt-table th{position:sticky;top:0;z-index:3;background:#FBF9F9;border-bottom:1px solid #EBE6E6;padding:10px 8px;font-size:10.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#9B9292;text-align:right;white-space:nowrap}
+  .mt-table th{position:sticky;top:0;z-index:3;background:#F4F1F1;border-bottom:1px solid #EBE6E6;padding:10px 8px;font-size:10.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#857D7D;text-align:right;white-space:nowrap}
   .mt-table th:first-child,.mt-table td:first-child{text-align:left;position:sticky;left:0;z-index:2;background:#fff;min-width:330px;box-shadow:1px 0 0 #F0EBEB}
-  .mt-table th:first-child{z-index:4;background:#FBF9F9}
+  .mt-table th:first-child{z-index:4;background:#F4F1F1}
+  .mt-th{display:inline-flex;align-items:center;gap:5px;vertical-align:middle}
+  .mt-th-btn{width:22px;height:22px;flex-shrink:0;border:0;border-radius:6px;background:transparent;color:#9B9292;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0}
+  .mt-th-btn:hover{background:#EAE4E4;color:#3A3030}
+  .mt-th-btn.is-on{color:#B91414;background:#FBE9E9}
+  .mt-th-btn svg{transition:transform .15s}
+  .mt-th-btn.is-open svg{transform:rotate(90deg)}
   .mt-table td{padding:8px;border-bottom:1px solid #F7F4F4;text-align:right;white-space:nowrap;color:#3A3030}
   .mt-row--account>td{background:#FBF9F9;font-weight:700}
   .mt-row--account>td:first-child{background:#FBF9F9}
@@ -419,26 +424,132 @@
   .mt-act{display:inline-flex;gap:4px}
   .mt-act button{width:26px;height:26px;border:1px solid #EBE6E6;border-radius:8px;background:#fff;color:#6A6161;cursor:pointer;display:flex;align-items:center;justify-content:center}
   .mt-act button:hover{border-color:#B91414;color:#B91414}
+  .mt-check{width:15px;height:15px;flex-shrink:0;margin:0;accent-color:#B91414;cursor:pointer}
+  .mt-check-gap{width:15px;flex-shrink:0;display:inline-block}
+  .mt-row.is-picked>td,.mt-row.is-picked>td:first-child{background:#FCF4F4}
+  .mt-row--head .mt-name{gap:8px}
+  .mt-th-link{display:inline-flex;align-items:center;gap:5px;border:0;background:transparent;padding:0;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit;cursor:pointer;border-bottom:1px dashed #B9AFAF;line-height:1.5}
+  .mt-th-link:hover{color:#B91414;border-bottom-color:#B91414}
+  .mt-chip--link{border:0;cursor:pointer;font-family:inherit}
+  .mt-chip--link:hover{background:#E4D6F7;color:#52278F}
+  .mt-budget{border:0;background:transparent;padding:2px 6px;margin:-2px -6px;border-radius:7px;font:inherit;color:inherit;cursor:pointer;border-bottom:1px dashed #C9BFBF}
+  .mt-budget:hover{background:#F7F1F1;color:#B91414;border-bottom-color:#B91414}
+  /* Общая панель действий над отмеченными строками — всплывает снизу. */
+  .mt-bulk{position:fixed;left:50%;bottom:22px;transform:translate(-50%,16px);z-index:50;display:flex;align-items:center;gap:4px;padding:7px;background:#fff;border:1px solid #EBE6E6;border-radius:14px;box-shadow:0 18px 44px rgba(23,17,17,.2);opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;max-width:calc(100vw - 32px);overflow-x:auto}
+  .mt-bulk.is-open{opacity:1;pointer-events:auto;transform:translate(-50%,0)}
+  .mt-bulk__count{font-size:12.5px;font-weight:800;color:#241C1C;padding:0 10px 0 8px;white-space:nowrap}
+  .mt-bulk__sep{width:1px;height:22px;background:#E8E2E2;margin:0 3px;flex-shrink:0}
+  .mt-bulk__btn{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border:0;border-radius:9px;background:transparent;color:#3A3030;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+  .mt-bulk__btn:hover:not(:disabled){background:#F4F1F1}
+  .mt-bulk__btn:disabled{color:#C9BFBF;cursor:not-allowed}
+  .mt-bulk__btn--clear{color:#857D7D}
+  .mt-menu{position:fixed;z-index:55;min-width:210px;padding:6px;background:#fff;border:1px solid #EBE6E6;border-radius:12px;box-shadow:0 16px 40px rgba(23,17,17,.18)}
+  .mt-menu[hidden]{display:none}
+  .mt-menu button{display:flex;align-items:center;gap:9px;width:100%;height:36px;padding:0 11px;border:0;border-radius:8px;background:transparent;color:#3A3030;font-size:12.5px;font-weight:600;text-align:left;cursor:pointer}
+  .mt-menu button:hover{background:#F7F4F4}
+  .mt-menu button[data-danger]{color:#B91414}
+  .mt-menu button:disabled{color:#C9BFBF;cursor:not-allowed;background:transparent}
+  /* Окна действий с кабинетом. */
+  .mt-modal__card--narrow{width:min(480px,100%)}
+  .mt-modal__title{font-family:'Alumni Sans','Inter',sans-serif;font-size:22px;font-weight:700;letter-spacing:-.3px}
+  .mt-modal__sub{margin-top:3px;font-size:12px;font-weight:600;color:#9B9292;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mt-foot-extra{display:flex;gap:8px;margin-right:auto}
+  .mt-primary{height:38px;padding:0 18px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)}
+  .mt-primary:disabled{opacity:.6;cursor:default}
+  .mt-btn--danger{color:#B91414}
+  .mt-btn--danger:hover{border-color:#E3B5B5}
+  .mt-field{display:grid;gap:7px}
+  .mt-field>span{font-size:12.5px;font-weight:700;color:#3A3030}
+  .mt-field .meta-control{width:100%;padding:0 12px}
+  .mt-form-error{padding:10px 12px;border-radius:10px;background:#FDF0F0;color:#B91414;font-size:12.5px;font-weight:600}
+  .mt-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .mt-stats div{border:1px solid #EBE6E6;border-radius:12px;padding:11px 13px;background:#FBF9F9}
+  .mt-stats span{display:block;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9B9292}
+  .mt-stats b{display:block;margin-top:6px;font-family:'Alumni Sans','Inter',sans-serif;font-size:22px;font-weight:700;color:#241C1C}
+  .mt-pixels{display:grid;gap:6px;max-height:170px;overflow:auto}
+  .mt-pixels div{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border:1px solid #EBE6E6;border-radius:10px;font-size:12.5px}
+  .mt-pixels i{font-style:normal;color:#9B9292;font-weight:600}
+  /* ---------- Автоправила по GEO ---------- */
+  .gr-subtabs{display:flex;gap:6px;margin-bottom:14px}
+  .gr-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:12px;padding:14px 16px;background:#fff;border:1px solid #EBE6E6;border-radius:16px}
+  .gr-select{display:grid;gap:6px}
+  .gr-select>span{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#9B9292}
+  .gr-select .mt-sort{min-width:150px}
+  .gr-bar .meta-switch{height:38px}
+  .gr-last{margin-left:auto;font-size:12px;font-weight:600;color:#857D7D;align-self:center}
+  .gr-run{display:inline-flex;align-items:center;gap:8px}
+  .gr-add{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #F0EBEB}
+  .gr-add .mt-sort{min-width:240px}
+  .gr-table{min-width:1100px}
+  .gr-table th,.gr-table td{text-align:center}
+  .gr-table th:first-child,.gr-table td:first-child{min-width:220px}
+  .gr-table th[title]{cursor:help}
+  .gr-table th.is-muted{color:#C9BFBF}
+  .gr-geo{display:flex;align-items:center;gap:9px;font-weight:600}
+  .gr-geo b{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:22px;padding:0 7px;border-radius:999px;background:#F2EDED;color:#3A3030;font-size:11px;font-weight:800}
+  .gr-input{width:92px;height:34px;border:1px solid #E8E2E2;border-radius:9px;background:#fff;padding:0 8px;text-align:center;font-size:12.5px;font-weight:600;color:#3A3030;outline:none}
+  .gr-input:focus{border-color:#B91414;box-shadow:0 0 0 3px rgba(185,20,20,.12)}
+  .gr-input.is-muted{background:#FBF9F9;color:#B0A6A6}
+  .gr-input.is-invalid{border-color:#B91414}
+  .gr-row.is-off td{color:#B0A6A6}
+  .gr-row.is-dirty>td{background:#FFFBF3}
+  .gr-row.is-dirty>td:first-child{background:#FFFBF3}
+  .gr-actions{display:inline-flex;gap:5px}
+  .gr-actions button{width:30px;height:30px;border:1px solid #EBE6E6;border-radius:8px;background:#fff;color:#9B9292;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .gr-actions button:hover:not(:disabled){border-color:#B91414;color:#B91414}
+  .gr-actions button:disabled{opacity:.45;cursor:default}
+  .gr-actions button.is-ready{background:#B91414;border-color:#B91414;color:#fff}
+  .gr-history td{text-align:left;white-space:normal;vertical-align:top}
+  .gr-history th{text-align:left}
+  .gr-history td:first-child{white-space:nowrap}
+  .gr-obj b{display:block;font-weight:700;color:#241C1C}
+  .gr-obj i{display:block;font-style:normal;font-size:11px;color:#9B9292;margin-top:2px}
+  .gr-badge{display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:800}
+  .gr-badge--paused{background:#E4F7F0;color:#0E7350}
+  .gr-badge--failed{background:#FCE4E4;color:#B91414}
+  .gr-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-top:1px solid #F0EBEB}
+  .gr-foot [hidden]{display:none}
+  .mt-note{font-size:12px;color:#9B9292;font-weight:600}
+  /* Окно «Подсветка»: три цветные зоны на каждый показатель. */
   .mt-modal{display:none;position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);align-items:center;justify-content:center;padding:24px}
   .mt-modal.is-open{display:flex}
-  .mt-modal__card{background:#fff;border-radius:18px;width:min(720px,100%);max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3)}
-  .mt-modal__head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 22px 16px;border-bottom:1px solid #EBE6E6}
+  .mt-modal__card{background:#fff;border-radius:18px;width:min(760px,100%);max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3);overflow:hidden}
+  .mt-modal__head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 22px 16px;border-bottom:1px solid #EBE6E6}
+  .mt-modal__x{width:36px;height:36px;border:1px solid #EBE6E6;border-radius:10px;background:#fff;color:#6A6161;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .mt-modal__x:hover{border-color:#D9CFCF;color:#241C1C}
   .mt-modal__body{padding:18px 22px;overflow:auto;display:grid;gap:14px}
-  .mt-modal__foot{display:flex;justify-content:flex-end;gap:10px;padding:16px 22px 20px;border-top:1px solid #EBE6E6}
-  .mt-heat-block{border:1px solid #EBE6E6;border-radius:14px;padding:12px 14px;display:grid;gap:10px}
-  .mt-heat-block header{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:700}
-  .mt-heat-grid{display:grid;grid-template-columns:90px repeat(3,1fr);gap:8px;align-items:center;font-size:12px}
-  .mt-heat-grid span{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#9B9292}
-  .mt-heat-grid input{height:36px;border:1px solid #E8E2E2;border-radius:9px;padding:0 10px;font-size:12.5px;width:100%}
-  .mt-note{font-size:12px;color:#9B9292;font-weight:600}
+  .mt-modal__foot{display:flex;justify-content:flex-end;gap:10px;padding:15px 22px 18px;border-top:1px solid #EBE6E6;background:#fff}
+  .mt-heat-block{border:1px solid #EBE6E6;border-radius:14px;padding:14px 16px;display:grid;gap:12px;background:#fff}
+  .mt-heat-block header{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:800;font-size:14px;color:#241C1C}
+  .mt-heat-block header select{height:34px;min-width:120px;border:1px solid #E8E2E2;border-radius:9px;background:#fff;padding:0 10px;font-size:13px;font-weight:700;color:#241C1C}
+  .mt-heat-drop{height:32px;padding:0 12px;border:1px solid #EBE6E6;border-radius:9px;background:#fff;color:#6A6161;font-size:12px;font-weight:600;cursor:pointer}
+  .mt-heat-drop:hover{border-color:#E3B5B5;color:#B91414}
+  .mt-heat-grid{display:grid;grid-template-columns:88px repeat(3,1fr);gap:8px 10px;align-items:center}
+  .mt-heat-grid b{font-size:12.5px;font-weight:700;color:#3A3030}
+  .mt-heat-bar{height:6px;border-radius:999px}
+  .mt-heat-bar--good{background:#16B57F}
+  .mt-heat-bar--warn{background:#E8912B}
+  .mt-heat-bar--bad{background:#B91414}
+  .mt-heat-cell{height:40px;border-radius:10px;border:1px solid transparent;display:flex;align-items:center;justify-content:center;gap:10px;font-size:13px;font-weight:700;transition:border-color .15s}
+  .mt-heat-cell input{width:100%;height:100%;border:0;outline:0;background:transparent;text-align:center;font:inherit;color:inherit}
+  .mt-heat-cell--good{background:#E4F7F0;color:#0E7350}
+  .mt-heat-cell--warn{background:#FFF4DF;color:#9A6512}
+  .mt-heat-cell--bad{background:#FCE4E4;color:#B91414}
+  .mt-heat-cell--good:focus-within{border-color:#16B57F}
+  .mt-heat-cell--bad:focus-within{border-color:#B91414}
+  .mt-heat-cell i{font-style:normal;color:#C9A36A}
+  .mt-heat-add{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;height:42px;padding:0 14px;border:1px dashed #E0D8D8;border-radius:12px;background:#FBF9F9;font:700 12px 'Inter',sans-serif;color:#6A6161;cursor:pointer;transition:border-color .18s,background .18s,color .18s}
+  .mt-heat-add:hover{border-color:#D06060;background:#FCF7F7;color:#B91414}
+  .mt-heat-add[disabled]{opacity:.5;cursor:default}
   @media (max-width:900px){.mt-cards{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:560px){.mt-heat-grid{grid-template-columns:64px repeat(3,1fr);gap:6px}}
 </style>
 </head>
 <body>
 <div style="display:flex;min-height:100vh;background:#F4F1F1">
 
   <!-- SIDEBAR -->
-<aside class="meta-sidebar" style="width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #EBE6E6;display:flex;flex-direction:column;position:sticky;top:0;height:100vh">
+  <aside class="meta-sidebar" style="width:264px;flex-shrink:0;background:#FFFFFF;border-right:1px solid #EBE6E6;display:flex;flex-direction:column;position:sticky;top:0;height:100vh">
     <div style="padding:26px 24px 22px;display:flex;align-items:center;gap:11px">
       <div style="width:38px;height:38px;border-radius:11px;background:#070505;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(7,5,5,.26)"><img src="/assets/logo-mark-white.png" alt="Celestial Group" style="width:23px;height:auto;display:block"></div>
       <div>
@@ -505,24 +616,39 @@
   <!-- MAIN -->
   <main class="meta-main" style="flex:1;min-width:0;padding:26px 34px 40px">
 
+    <!-- TOP BAR -->
     <div class="meta-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:24px">
-      <h1 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:32px;font-weight:700;letter-spacing:-.6px">Структура</h1>
+      <div>
+        <h1 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:32px;font-weight:700;letter-spacing:-.6px">MetaAds v2</h1>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div id="metaSyncState" style="display:flex;align-items:center;gap:7px;background:#fff;border:1px solid #EBE6E6;border-radius:12px;height:44px;padding:0 14px">
+          <span style="width:7px;height:7px;border-radius:50%;background:#C9BFBF"></span>
+          <span style="font-size:12px;color:#6A6161;font-weight:700">—</span>
+        </div>
+        <button id="metaConnect" type="button" style="height:44px;padding:0 16px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Новое подключение</button>
+        <button id="metaSync" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Синхронизировать</button>
+      </div>
     </div>
 
-<section id="metaTreeRoot">
+    <!-- TABS -->
+    <div class="meta-tabs" style="display:flex;gap:6px;background:#fff;border:1px solid #EBE6E6;border-radius:14px;padding:5px;margin-bottom:20px;overflow-x:auto">
+      <button class="meta-tab meta-tab--active" type="button" data-tab="overview">Обзор</button>
+      <button class="meta-tab" type="button" data-tab="launches">Заливы</button>
+      <button class="meta-tab" type="button" data-tab="rules">Автоправила<span id="metaRulesBadge" style="display:none;margin-left:7px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;border-radius:20px;padding:1px 7px;font-size:10.5px">0</span></button>
+      <button class="meta-tab" type="button" data-tab="comments">Комментарии<span id="metaCommentsBadge" style="display:none;margin-left:7px;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;border-radius:20px;padding:1px 7px;font-size:10.5px">0</span></button>
+    </div>
+
+    <!-- TAB: OVERVIEW -->
+    <section id="metaTabOverview">
       <div class="mt-cards" id="metaTreeCards"></div>
 
       <div class="mt-bar">
         <div class="cdr meta-period" data-date-range data-from="metaTreeFrom" data-to="metaTreeTo" data-exclude="year,prevYear,all"></div>
         <input id="metaTreeFrom" type="date" data-native-date hidden>
         <input id="metaTreeTo" type="date" data-native-date hidden>
-        <button class="mt-btn" type="button" id="metaTreeSync"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5M20 12a8 8 0 0 1-14 5M18 3v4h-4M6 21v-4h4"/></svg>Синхронизировать</button>
-        <button class="mt-btn" type="button" id="metaTreeHeatOpen"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>Подсветка</button>
-        <button class="mt-btn" type="button" id="metaTreeHideOff">Скрыть неактивные</button>
-        <button class="mt-btn" type="button" id="metaTreeHideZero">Скрыть с бюджетом 0</button>
         <div class="cmf" id="metaTreeAgents" data-label="Агент" data-placeholder="Все"></div>
         <div class="cmf" id="metaTreeGeo" data-label="GEO" data-placeholder="Все"></div>
-        <button class="mt-btn" type="button" id="metaTreeCollapse">Свернуть всё</button>
         <select class="mt-sort" id="metaTreeSort" aria-label="Сортировка">
           <option value="">Без сортировки</option>
           <option value="spend">Спенд ↓</option>
@@ -541,30 +667,737 @@
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-top:1px solid #F0EBEB">
           <span id="metaTreeCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
-          <span class="mt-note" id="metaTreeNote">Прототип интерфейса: данные демонстрационные</span>
+          <span class="mt-note" id="metaTreeNote">Загружаем данные Meta Ads…</span>
         </div>
       </div>
     </section>
 
+
+    <!-- Прежний обзор: скрыт, нужен только модулю meta-ui.js. -->
+    <div hidden style="display:none">
+    <section id="metaLegacyOverview">
+
+    <!-- STAT STRIP -->
+    <div class="stat-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px">
+        <div style="font-size:11.5px;color:#6A6161;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Расход</div>
+        <div id="metaSpend" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:26px;font-weight:700;letter-spacing:-.5px;margin-top:8px">—</div>
+      </div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px">
+        <div style="font-size:11.5px;color:#6A6161;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Клики</div>
+        <div id="metaClicks" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:26px;font-weight:700;letter-spacing:-.5px;margin-top:8px">—</div>
+      </div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px">
+        <div style="font-size:11.5px;color:#6A6161;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Лиды</div>
+        <div id="metaLeads" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:26px;font-weight:700;letter-spacing:-.5px;margin-top:8px">—</div>
+      </div>
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:18px 20px">
+        <div style="font-size:11.5px;color:#6A6161;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Профит</div>
+        <div id="metaProfit" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:26px;font-weight:700;letter-spacing:-.5px;margin-top:8px">—</div>
+      </div>
+    </div>
+
+    <!-- ATTRIBUTION NOTICE -->
+    <div id="metaAttribution" style="display:none;margin-bottom:16px"></div>
+
+    <!-- FILTERS -->
+    <div style="background:#fff;border:1px solid #EBE6E6;border-radius:16px;padding:17px 20px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap">
+        <div class="filter-grid" style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:10px;flex:1">
+          <!-- Период — тот же календарь, что в Медиаборде. Даты живут в скрытых
+               полях: их читает вся страница — обзор, структура, часы, выгрузка. -->
+          <div class="cdr meta-period" data-date-range data-from="metaDateFrom" data-to="metaDateTo" data-exclude="year,prevYear,all"></div>
+          <input id="metaDateFrom" type="date" data-native-date hidden>
+          <input id="metaDateTo" type="date" data-native-date hidden>
+          <select id="metaAccountFilter" class="meta-control meta-select" aria-label="Фильтр по кабинету">
+            <option value="">Все кабинеты</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEVELS -->
+    <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 24px 14px;flex-wrap:wrap">
+        <div>
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Структура</h3>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button id="metaSpendOpen" class="meta-btn" type="button" style="display:none;height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;white-space:nowrap;box-shadow:0 8px 18px rgba(185,20,20,.24)">Фиксация расхода</button>
+        <button id="metaColumnsOpen" class="meta-btn" type="button" style="display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 14px;border:1px solid #EBE6E6;border-radius:11px;background:#fff;color:#3A3030;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6A6161" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></svg>Столбцы</button>
+        <label class="meta-search" style="display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #EBE6E6;border-radius:11px;padding:0 13px;height:40px;width:240px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="#9B9292" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#9B9292" stroke-width="2" stroke-linecap="round"/></svg>
+          <input id="metaLevelSearch" type="search" placeholder="Поиск по названию или ID" style="border:0;outline:0;background:transparent;min-width:0;width:100%;color:#3A3030;font-size:13px">
+        </label></div>
+      </div>
+      <div class="meta-levels" style="display:flex;gap:6px;padding:0 24px 14px;overflow-x:auto">
+        <button class="meta-level meta-level--active" type="button" data-level="users">Пользователи</button>
+        <button class="meta-level" type="button" data-level="socials">Аккаунты</button>
+        <button class="meta-level" type="button" data-level="businesses">БМы</button>
+        <button class="meta-level" type="button" data-level="fanpages">Фан-пейджи</button>
+        <button class="meta-level" type="button" data-level="accounts">Кабинеты</button>
+        <button class="meta-level" type="button" data-level="campaigns">Кампании</button>
+        <button class="meta-level" type="button" data-level="adsets">Адсеты</button>
+        <button class="meta-level" type="button" data-level="ads">Объявления</button>
+      </div>
+      <div id="metaEntityBar" class="meta-bulk" style="display:none" role="toolbar" aria-label="Действия с отмеченными">
+        <span id="metaEntityCount" class="meta-bulk__count">Выбрано: 0</span>
+        <span class="meta-bulk__sep"></span>
+        <button class="meta-bulk__btn" type="button" data-entity-action="start"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>Старт</button>
+        <button class="meta-bulk__btn" type="button" data-entity-action="pause"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>Пауза</button>
+        <button class="meta-bulk__btn" type="button" data-entity-action="budget"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v18M16.5 7.5c0-1.9-2-3-4.5-3s-4.5 1.2-4.5 3.2c0 4.6 9 2.4 9 7 0 2-2 3.3-4.5 3.3S7.5 17 7.5 15"/></svg>Бюджет и ставка</button>
+        <button class="meta-bulk__btn" type="button" data-entity-action="duplicate"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg>Дублировать</button>
+        <div class="meta-bulk__more">
+          <button id="metaEntityMore" class="meta-bulk__btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Другие действия"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
+          <div id="metaEntityMenu" class="meta-bulk__menu" role="menu" hidden>
+            <button type="button" role="menuitem" data-entity-action="rename">Переименовать в FB</button>
+            <button type="button" role="menuitem" data-entity-action="delete" class="is-danger">Удалить в FB</button>
+            <button type="button" role="menuitem" data-entity-action="archive">Архивировать</button>
+            <button type="button" role="menuitem" data-entity-action="unarchive">Разархивировать</button>
+            <button type="button" role="menuitem" data-entity-action="rules">Управление автоправилами</button>
+            <button type="button" role="menuitem" data-entity-action="export">Экспорт данных</button>
+          </div>
+        </div>
+        <button id="metaEntityClear" class="meta-bulk__btn meta-bulk__clear" type="button">Снять выбор</button>
+      </div>
+      <div id="metaLevelHint" class="meta-note" style="margin:0 24px 14px;display:none"></div>
+      <div style="overflow-x:auto">
+        <table style="border-collapse:collapse;width:100%;min-width:1180px">
+          <thead id="metaLevelHead"></thead>
+          <tbody id="metaTableBody"></tbody>
+          <tfoot id="metaLevelFoot"></tfoot>
+        </table>
+      </div>
+      <div style="display:flex;align-items:center;padding:16px 24px;border-top:1px solid #F0EBEB">
+        <span id="metaResultCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
+      </div>
+    </div>
+    </section>
+    </div>
+
+    <!-- TAB: LAUNCHES -->
+    <section id="metaTabLaunches" style="display:none">
+      <div class="meta-levels" style="display:flex;gap:6px;margin-bottom:16px;overflow-x:auto">
+        <button class="meta-level meta-level--active" type="button" data-launch-view="bundles">Связки</button>
+        <button class="meta-level" type="button" data-launch-view="queue">Очередь заливки</button>
+      </div>
+
+      <!-- СВЯЗКИ -->
+      <div id="metaBundleList">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+          <div>
+            <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Связки</h3>
+            <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Кампания, адсет и объявление одной заготовкой — заливается на любой кабинет</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:8px;height:44px;padding:0 14px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;min-width:220px">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="#B4ABAB" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#B4ABAB" stroke-width="2" stroke-linecap="round"/></svg>
+              <input id="metaBundleSearch" type="search" placeholder="Поиск по названию" aria-label="Поиск связки" style="border:0;outline:0;background:transparent;min-width:0;width:100%;color:#3A3030;font-size:13px">
+            </div>
+            <button id="metaBundleCreate" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Создать связку</button>
+          </div>
+        </div>
+
+        <div id="metaBundleBulk" style="display:none;align-items:center;gap:12px;background:#FFF9E9;border:1px solid #F2E3B8;border-radius:14px;padding:12px 16px;margin-bottom:14px">
+          <span id="metaBundleBulkCount" style="font-size:12.5px;font-weight:700;color:#6A5A28"></span>
+          <div style="flex:1"></div>
+          <button class="meta-bulk" type="button" data-bundle-bulk="copy">Дублировать</button>
+          <button class="meta-bulk" type="button" data-bundle-bulk="drop">Удалить</button>
+        </div>
+
+        <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+          <div style="overflow-x:auto">
+            <table style="border-collapse:collapse;width:100%;min-width:1080px">
+              <thead>
+                <tr style="border-bottom:1px solid #F0EBEB">
+                  <th class="meta-th meta-th--left" style="padding-left:20px;width:36px"><input id="metaBundleAll" type="checkbox" aria-label="Выбрать все"></th>
+                  <th class="meta-th meta-th--left">Название</th>
+                  <th class="meta-th meta-th--left">Гео</th>
+                  <th class="meta-th meta-th--left">Язык</th>
+                  <th class="meta-th meta-th--left">Плейсменты</th>
+                  <th class="meta-th meta-th--left">Демография</th>
+                  <th class="meta-th meta-th--left">Устройства</th>
+                  <th class="meta-th meta-th--left" style="padding-right:20px">Действия</th>
+                </tr>
+              </thead>
+              <tbody id="metaBundlesGrid"></tbody>
+            </table>
+          </div>
+          <div style="display:flex;align-items:center;padding:16px 20px;border-top:1px solid #F0EBEB">
+            <span id="metaBundleCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="metaLaunchList" style="display:none;margin-bottom:26px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:22px 0 16px">
+        <div>
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Заливы</h3>
+          <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Кампания, группа и объявления создаются в Meta на паузе</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <select id="metaLaunchStatusFilter" class="meta-control meta-select" aria-label="Статус залива">
+            <option value="">Все статусы</option>
+            <option value="draft">Черновики</option>
+            <option value="active">Активные</option>
+            <option value="paused">На паузе</option>
+            <option value="failed">С ошибкой</option>
+            <option value="stopped">Остановленные</option>
+          </select>
+          <button id="metaLaunchCreate" type="button" style="height:44px;padding:0 18px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Новый залив</button>
+        </div>
+      </div>
+
+      <div id="metaBulkBar" style="display:none;align-items:center;gap:12px;background:#FFF9E9;border:1px solid #F2E3B8;border-radius:14px;padding:12px 16px;margin-bottom:14px">
+        <span id="metaBulkCount" style="font-size:12.5px;font-weight:700;color:#6A5A28"></span>
+        <div style="flex:1"></div>
+        <button class="meta-bulk" type="button" data-action="publish">Опубликовать</button>
+        <button class="meta-bulk" type="button" data-action="pause">Остановить</button>
+        <button class="meta-bulk" type="button" data-action="resume">Возобновить</button>
+      </div>
+
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+        <div style="overflow-x:auto">
+          <table style="border-collapse:collapse;width:100%;min-width:1080px">
+            <thead>
+              <tr style="border-bottom:1px solid #F0EBEB">
+                <th class="meta-th meta-th--left" style="padding-left:20px;width:36px"><input id="metaLaunchAll" type="checkbox" aria-label="Выбрать все"></th>
+                <th class="meta-th meta-th--left">Залив</th>
+                <th class="meta-th meta-th--left">Кабинет</th>
+                <th class="meta-th meta-th--left">GEO</th>
+                <th class="meta-th meta-th--left">Ответственный</th>
+                <th class="meta-th">Бюджет/день</th>
+                <th class="meta-th">Креативы</th>
+                <th class="meta-th meta-th--left">Статус</th>
+                <th class="meta-th meta-th--left" style="padding-right:20px">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="metaLaunchBody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;align-items:center;padding:16px 20px;border-top:1px solid #F0EBEB">
+          <span id="metaLaunchCount" style="font-size:12.5px;color:#857D7D;font-weight:600">—</span>
+        </div>
+      </div>
+      </div>
+
+      <!-- ЗАЛИТЬ СВЯЗКУ -->
+      <div id="metaLaunchWizard" style="display:none">
+        <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;padding:22px 24px">
+          <div id="metaUpSteps" style="display:flex;align-items:center;gap:10px;margin-bottom:20px;overflow-x:auto"></div>
+          <div id="metaUpBody"></div>
+          <div id="metaUpError" class="meta-note meta-note--warn" style="display:none;margin-top:16px"></div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:20px;padding-top:18px;border-top:1px solid #F0EBEB">
+            <button id="metaUpBack" class="meta-action" type="button">Назад</button>
+            <span id="metaUpHint" style="flex:1;font-size:11.5px;color:#9B9292;font-weight:600"></span>
+            <button id="metaUpNext" class="meta-action meta-action--primary" type="button" style="height:40px;padding:0 20px">Далее</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: RULES -->
+    <!-- TAB: RULES — GEO-правила MetaAds v2 (meta-geo-rules.js) -->
+    <section id="metaTabRules" style="display:none">
+      <div class="gr-subtabs">
+        <button class="meta-level meta-level--active" type="button" data-gr-view="rules">Правила</button>
+        <button class="meta-level" type="button" data-gr-view="history">История</button>
+      </div>
+
+      <div data-gr-panel="rules">
+        <div class="gr-bar">
+          <label class="gr-select"><span>Область действия</span>
+            <select class="mt-sort" id="grLevel">
+              <option value="campaign">Кампании</option>
+              <option value="adset">Адсеты</option>
+              <option value="ad">Объявления</option>
+            </select>
+          </label>
+          <label class="gr-select"><span>Интервал прогона</span>
+            <select class="mt-sort" id="grInterval"></select>
+          </label>
+          <label class="meta-switch" id="grAutoWrap"><input type="checkbox" id="grAuto"><span class="meta-switch__box"></span><span id="grAutoLabel">Автопрогон</span></label>
+          <span class="gr-last" id="grLast"></span>
+          <button class="mt-primary gr-run" type="button" id="grRun"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>Прогнать сейчас</button>
+        </div>
+
+        <div class="mt-wrap">
+          <div class="gr-add">
+            <select class="mt-sort" id="grGeo" aria-label="GEO"></select>
+            <button class="mt-btn" type="button" id="grAdd"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>Добавить GEO</button>
+          </div>
+          <div class="mt-scroll">
+            <table class="mt-table gr-table">
+              <thead id="grHead"></thead>
+              <tbody id="grBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div data-gr-panel="history" hidden>
+        <div class="mt-wrap">
+          <div class="mt-scroll">
+            <table class="mt-table gr-table gr-history">
+              <thead><tr><th>Время</th><th>Объект</th><th>Кабинет</th><th>GEO</th><th>Причина</th><th>Результат</th><th>Запуск</th></tr></thead>
+              <tbody id="grEvents"></tbody>
+            </table>
+          </div>
+          <div class="gr-foot">
+            <span id="grEventsCount" class="mt-note">—</span>
+            <button class="mt-btn" type="button" id="grMore" hidden>Показать ещё</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Прежние автоправила: скрыты, нужны только модулю meta-ui.js. -->
+    <div hidden style="display:none">
+    <section id="metaLegacyRules">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+        <div>
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Автоправила</h3>
+          <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Считаются по нашим числам: расход из Meta, доход из Keitaro</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button id="metaRulesRun" type="button" style="height:44px;padding:0 16px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Прогнать сейчас</button>
+          <button id="metaRuleCreate" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Новое правило</button>
+        </div>
+      </div>
+
+      <div id="metaRulesRoot" style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden;margin-bottom:20px">
+        <div class="rule-skeleton" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+      </div>
+
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px 14px">
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:17px;font-weight:700;letter-spacing:-.3px">Срабатывания</h3>
+          <button id="metaEventsAck" type="button" style="height:36px;padding:0 14px;border:1px solid #E8E2E2;border-radius:10px;background:#fff;color:#3A3030;font-size:12px;font-weight:700">Отметить прочитанными</button>
+        </div>
+        <div id="metaEventsList" style="border-top:1px solid #F0EBEB"></div>
+      </div>
+    </section>
+    </div>
+
+    <!-- TAB: COMMENTS -->
+    <section id="metaTabComments" style="display:none">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+        <div>
+          <h3 style="font-family:'Alumni Sans','Inter',sans-serif;font-size:18px;font-weight:700;letter-spacing:-.3px">Комментарии</h3>
+          <div style="font-size:11.5px;color:#9B9292;font-weight:600;margin-top:4px">Ручная чистка под постами объявлений: спам скрываем или удаляем, вопросы клиентов оставляем</div>
+        </div>
+      </div>
+
+      <div class="cm-lookup">
+        <label class="meta-field" style="flex:1 1 320px;min-width:0"><span>Пост или объявление по ссылке</span>
+          <input id="metaCommentsRef" class="meta-control" type="search" placeholder="Ссылка Facebook/Dolphin или ID объявления">
+        </label>
+        <button id="metaCommentsResolve" class="meta-action" type="button" style="height:38px">Найти</button>
+        <div id="metaCommentsRefResult" class="cm-lookup__result" style="display:none"></div>
+      </div>
+      <div id="metaCommentsAccess" style="display:none;margin-bottom:16px"></div>
+      <div id="metaCommentsJob" style="display:none;margin-bottom:16px"></div>
+
+      <div style="background:#fff;border:1px solid #EBE6E6;border-radius:18px;overflow:hidden">
+        <div class="cm-filters">
+          <label class="meta-field" style="min-width:210px;flex:1 1 210px"><span>Кабинет</span>
+            <!-- data-search: кабинет тут ищут по ID из чужой ссылки, а не
+                 глазами по названию, поэтому строка поиска нужна и на двух
+                 вариантах. Ищет и по названию, и по act_… из подписи. -->
+            <select id="metaCommentsAccount" class="meta-control meta-select" data-search></select>
+          </label>
+          <label class="meta-field" style="min-width:230px;flex:2 1 260px"><span>Пост</span>
+            <select id="metaCommentsPost" class="meta-control meta-select"></select>
+          </label>
+          <label class="meta-field" style="min-width:170px;flex:1 1 170px"><span>Поиск по тексту</span>
+            <input id="metaCommentsQuery" class="meta-control" type="search" placeholder="слово или фраза">
+          </label>
+          <label class="meta-field" style="min-width:150px;flex:1 1 150px"><span>Автор</span>
+            <input id="metaCommentsAuthor" class="meta-control" type="search" placeholder="имя">
+          </label>
+          <label class="meta-field" style="min-width:140px;flex:0 1 150px"><span>Статус</span>
+            <select id="metaCommentsStatus" class="meta-control meta-select">
+              <option value="visible">Видимые</option>
+              <option value="hidden">Скрытые</option>
+              <option value="deleted">Удалённые</option>
+              <option value="any">Все</option>
+            </select>
+          </label>
+          <!-- Кнопка стоит в строке фильтров: под ними список, который она и
+               наполняет, а в шапке раздела она читалась как что-то отдельное. -->
+          <button id="metaCommentsRefresh" type="button" style="height:38px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;white-space:nowrap;cursor:pointer">Загрузить из Meta</button>
+        </div>
+        <div class="cm-chips">
+          <button type="button" class="cm-chip" data-cm-flag="only_links">Со ссылкой</button>
+          <button type="button" class="cm-chip" data-cm-flag="only_phones">С телефоном</button>
+          <button type="button" class="cm-chip" data-cm-flag="only_replies">Только ответы</button>
+          <div style="flex:1"></div>
+          <span id="metaCommentsHint" style="font-size:11.5px;color:#9B9292;font-weight:600"></span>
+        </div>
+        <div id="metaCommentsBulk" class="cm-bulk" style="display:none"></div>
+        <div id="metaCommentsBody"></div>
+        <div id="metaCommentsFoot" class="rule-foot"></div>
+      </div>
+    </section>
   </main>
+  <div id="metaRuleFormRoot"></div>
+  <!-- SPEND ПО ЧАСАМ -->
+  <!-- ФИКСАЦИЯ РАСХОДА ЗА ОТРЕЗОК ДНЯ (ТЗ 2.4.4) -->
+  <div id="metaSpendModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);align-items:center;justify-content:center;padding:24px">
+    <div role="dialog" aria-modal="true" aria-labelledby="metaSpendTitle" style="background:#fff;border-radius:18px;max-width:820px;width:100%;max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px 16px;border-bottom:1px solid #EBE6E6">
+        <div style="min-width:0">
+          <h2 id="metaSpendTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700;letter-spacing:-.3px">Фиксация расхода</h2>
+          <div id="metaSpendSubtitle" style="font-size:12px;color:#9B9292;font-weight:600;margin-top:4px">Расход выбранных кампаний за отрезок времени уходит на оффер вместе с процентом агента</div>
+        </div>
+        <button id="metaSpendClose" type="button" aria-label="Закрыть" style="width:34px;height:34px;flex-shrink:0;border:0;border-radius:10px;background:#F7F4F4;color:#6A6161;font-size:17px">×</button>
+      </div>
+      <div style="padding:18px 24px;overflow-y:auto">
+        <!-- Дата и время окна стоят здесь, а не в фильтрах наверху: таблицу
+             они не сужают, а нужны только этой форме. -->
+        <div class="spend-window">
+          <div class="spend-field"><span>Окно</span>
+            <div class="meta-window" id="metaWindowBox">
+              <input id="metaWindowDate" class="meta-control" type="date" aria-label="Начало окна фиксации расхода">
+              <select id="metaWindowFrom" class="meta-control meta-select" aria-label="Час начала окна"></select>
+              <span class="meta-window__dash">–</span>
+              <input id="metaWindowDateTo" class="meta-control" type="date" aria-label="Конец окна фиксации расхода">
+              <select id="metaWindowTo" class="meta-control meta-select" aria-label="Час конца окна"></select>
+            </div>
+          </div>
+          <button id="metaSpendLoad" class="meta-btn" type="button" style="height:42px;border:1px solid #E5DFDF;border-radius:11px;background:#fff;padding:0 16px;font-size:12.5px;font-weight:700">Обновить</button>
+        </div>
+        <div id="metaSpendWindowHint" class="meta-note" style="margin-top:12px"></div>
+        <div id="metaSpendAssign" class="spend-assign" style="margin-top:14px"></div>
+        <div id="metaSpendRows" style="margin-top:14px"></div>
+        <div id="metaSpendCommits" style="margin-top:16px"></div>
+      </div>
+      <div id="metaSpendError" role="alert" style="display:none;margin:0 24px;background:#FCF1F1;border-radius:11px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 24px 20px;border-top:1px solid #EBE6E6;flex-wrap:wrap">
+        <div id="metaSpendTotal" style="font-size:12.5px;font-weight:700;color:#3A3030">Выбрано: 0 · $ 0,00</div>
+        <button id="metaSpendCommit" class="meta-btn meta-btn--primary" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)" disabled>Зафиксировать расход</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="metaColumnsModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);align-items:center;justify-content:center;padding:24px">
+    <div role="dialog" aria-modal="true" aria-labelledby="metaColumnsTitle" style="background:#fff;border-radius:18px;max-width:860px;width:100%;max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px 16px;border-bottom:1px solid #EBE6E6">
+        <div style="min-width:0">
+          <h2 id="metaColumnsTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700;letter-spacing:-.3px">Столбцы</h2>
+          <div style="font-size:12px;color:#9B9292;font-weight:600;margin-top:4px">Метрики таблицы «Структура» на всех уровнях. Порядок меняется перетаскиванием.</div>
+        </div>
+        <button id="metaColumnsClose" type="button" aria-label="Закрыть" style="width:34px;height:34px;flex-shrink:0;border:0;border-radius:10px;background:#F7F4F4;color:#6A6161;font-size:17px">×</button>
+      </div>
+      <div style="padding:18px 24px;overflow:auto">
+        <div class="cols-grid">
+          <div class="cols-pane">
+            <div class="cols-pane__head"><span>Доступные</span><span id="metaColumnsAvailableCount"></span></div>
+            <input id="metaColumnsSearch" class="meta-control cols-search" type="search" placeholder="Поиск" aria-label="Поиск столбца">
+            <div id="metaColumnsAvailable" class="cols-list"></div>
+          </div>
+          <div class="cols-pane">
+            <div class="cols-pane__head"><span>В таблице</span><span id="metaColumnsPickedCount"></span></div>
+            <input id="metaColumnsPickedSearch" class="meta-control cols-search" type="search" placeholder="Поиск" aria-label="Поиск среди выбранных">
+            <div id="metaColumnsPicked" class="cols-list"></div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:16px 24px 20px;border-top:1px solid #EBE6E6;flex-wrap:wrap">
+        <button id="metaColumnsReset" class="meta-btn" type="button" style="height:40px;border:0;border-radius:10px;background:transparent;padding:0 6px;color:#6A6161;font-size:12.5px;font-weight:600">По умолчанию</button>
+        <div style="display:flex;gap:10px">
+          <button id="metaColumnsCancel" class="meta-btn" type="button" style="height:40px;border:1px solid #E5DFDF;border-radius:10px;background:#fff;padding:0 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em">Отмена</button>
+          <button id="metaColumnsSave" class="meta-btn meta-btn--primary" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Сохранить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="metaEntityModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);align-items:center;justify-content:center;padding:24px">
+    <div role="dialog" aria-modal="true" aria-labelledby="metaEntityTitle" style="background:#fff;border-radius:18px;max-width:980px;width:100%;max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px 16px;border-bottom:1px solid #EBE6E6">
+        <div style="min-width:0">
+          <h2 id="metaEntityTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700;letter-spacing:-.3px">Бюджет и ставка</h2>
+          <div id="metaEntitySubtitle" style="font-size:12px;color:#9B9292;font-weight:600;margin-top:4px"></div>
+        </div>
+        <button id="metaEntityClose" type="button" aria-label="Закрыть" style="width:34px;height:34px;flex-shrink:0;border:0;border-radius:10px;background:#F7F4F4;color:#6A6161;font-size:17px">×</button>
+      </div>
+      <div id="metaEntityBody" style="padding:18px 24px;overflow:auto"></div>
+      <div id="metaEntityError" role="alert" style="display:none;margin:0 24px;background:#FCF1F1;border-radius:11px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600"></div>
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:16px 24px 20px;border-top:1px solid #EBE6E6;flex-wrap:wrap">
+        <button id="metaEntityCancel" class="meta-btn" type="button" style="height:40px;border:1px solid #E5DFDF;border-radius:10px;background:#fff;padding:0 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em">Отмена</button>
+        <button id="metaEntitySave" class="meta-btn meta-btn--primary" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="metaHourModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(18,12,12,.45);align-items:center;justify-content:center;padding:24px">
+    <div role="dialog" aria-modal="true" aria-labelledby="metaHourTitle" style="background:#fff;border-radius:18px;max-width:760px;width:100%;max-height:calc(100vh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(18,12,12,.3)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px 16px;border-bottom:1px solid #EBE6E6">
+        <div style="min-width:0">
+          <h2 id="metaHourTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700;letter-spacing:-.3px">Расход по часам</h2>
+          <div id="metaHourSubtitle" style="font-size:12px;color:#9B9292;font-weight:600;margin-top:4px">—</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+          <button id="metaHourRefresh" class="meta-action" type="button">Обновить</button>
+          <button id="metaHourClose" type="button" aria-label="Закрыть" style="width:34px;height:34px;border:0;border-radius:10px;background:#F7F4F4;color:#6A6161;font-size:17px">×</button>
+        </div>
+      </div>
+      <div style="padding:18px 24px;overflow-y:auto">
+        <div id="metaHourTotals" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px"></div>
+        <div id="metaHourChart" style="display:flex;align-items:flex-end;gap:3px;height:150px;padding:0 2px;border-bottom:1px solid #EBE6E6"></div>
+        <div id="metaHourAxis" style="display:flex;gap:3px;padding:7px 2px 0"></div>
+        <div id="metaHourNote" class="meta-note" style="margin-top:16px"></div>
+        <div style="overflow-x:auto;margin-top:14px">
+          <table style="border-collapse:collapse;width:100%;min-width:460px">
+            <thead>
+              <tr style="border-top:1px solid #F0EBEB;border-bottom:1px solid #F0EBEB">
+                <th class="meta-th meta-th--left">Час</th>
+                <th class="meta-th">Расход</th>
+                <th class="meta-th">Показы</th>
+                <th class="meta-th">Клики по ссылке</th>
+              </tr>
+            </thead>
+            <tbody id="metaHourBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-<div class="mt-modal" id="metaTreeHeatModal" role="dialog" aria-modal="true" aria-labelledby="metaTreeHeatTitle">
-  <div class="mt-modal__card">
-    <div class="mt-modal__head">
-      <div>
-        <h2 id="metaTreeHeatTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700">Подсветка</h2>
-      </div>
-      <button class="mt-btn" type="button" id="metaTreeHeatClose" aria-label="Закрыть">×</button>
+<!-- CONNECTION WIZARD -->
+<div id="metaWizard" role="dialog" aria-modal="true" aria-labelledby="metaWizardTitle" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:760px;background:#fff;border-radius:20px;padding:26px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:92vh;overflow:auto">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px">
+      <h2 id="metaWizardTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">Подключение Meta Ads</h2>
+      <button id="metaWizardClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
     </div>
-    <div class="mt-modal__body" id="metaTreeHeatBody"></div>
-    <div class="mt-modal__foot">
-      <select class="mt-sort" id="metaTreeHeatGeo" aria-label="Добавить GEO"></select>
-      <button class="mt-btn" type="button" id="metaTreeHeatAdd">+ GEO</button>
-      <button class="mt-btn" type="button" id="metaTreeHeatCancel">Отмена</button>
-      <button class="meta-btn meta-btn--primary" type="button" id="metaTreeHeatSave" style="height:38px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer">Сохранить</button>
+
+    <div id="metaWizardSteps" style="display:flex;align-items:center;gap:10px;margin-bottom:22px;overflow-x:auto;padding-bottom:4px"></div>
+
+    <!-- 1. Инструкции. Способ выбирается здесь: от него зависит и текст
+         инструкции, и то, что подключение запомнит про свой токен. -->
+    <div class="meta-wizard-panel" data-step="1">
+      <div style="font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:8px">Способ получения токена</div>
+      <div id="metaWizMethods" style="display:grid;gap:2px;margin-bottom:16px"></div>
+      <div id="metaWizGuide"></div>
+    </div>
+
+    <!-- 2. Токен -->
+    <div class="meta-wizard-panel" data-step="2" style="display:none">
+      <div style="display:grid;gap:12px">
+        <label class="meta-field">
+          <span>Название подключения</span>
+          <input id="metaWizName" class="meta-control" type="text" placeholder="Celestial BM">
+        </label>
+        <label class="meta-field">
+          <span>User-Agent</span>
+          <input id="metaWizUserAgent" class="meta-control" type="text">
+        </label>
+        <label class="meta-field" id="metaWizTokenField">
+          <span>EAA Token</span>
+          <input id="metaWizToken" class="meta-control" type="password" autocomplete="off" placeholder="EAAB...">
+          <span style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Хранится в зашифрованном виде и обратно через API не возвращается</span>
+        </label>
+        <!-- Cookies и кнопки браузера — только для способа «Токен сессии (EAAB)». -->
+        <label class="meta-field" id="metaWizSessionBlock" style="display:none">
+          <span>Cookies из браузера (facebook.com)</span>
+          <textarea id="metaWizCookies" class="meta-control" style="height:74px;font-family:monospace;font-size:11px;line-height:1.5" placeholder="c_user=…; xs=…; fr=…&#10;или JSON-массив из экспорта"></textarea>
+        </label>
+        <label class="meta-field">
+          <span>Прокси</span>
+          <input id="metaWizProxy" class="meta-control" type="text" placeholder="http://логин:пароль@хост:порт">
+        </label>
+        <!-- Браузер поднимает сама кнопка «Далее», поэтому отдельного запуска
+             здесь нет: остаются проверка прокси и аварийное закрытие. -->
+        <div id="metaWizSessionActions" style="display:none">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button id="metaWizProxyCheck" type="button" class="meta-action" style="height:38px">Проверить прокси</button>
+            <button id="metaWizSessionClose" type="button" style="display:none;height:38px;padding:0 14px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:12.5px;font-weight:700">Закрыть браузер</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Проверка -->
+    <div class="meta-wizard-panel" data-step="3" style="display:none">
+      <div id="metaWizCheck"></div>
+    </div>
+
+    <!-- 4. Готово -->
+    <div class="meta-wizard-panel" data-step="4" style="display:none">
+      <div id="metaWizDone"></div>
+    </div>
+
+    <div id="metaWizardError" style="display:none;margin-top:16px;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-top:22px;padding-top:18px;border-top:1px solid #F0EBEB">
+      <button id="metaWizBack" type="button" style="height:44px;padding:0 18px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Назад</button>
+      <span id="metaWizStatus" style="flex:1;text-align:right;font-size:12px;color:#6A6161;font-weight:600;line-height:1.5"></span>
+      <button id="metaWizNext" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Далее →</button>
     </div>
   </div>
 </div>
+
+<!-- ENTITY FORM MODAL -->
+<!-- МАСТЕР СВЯЗКИ: кампания → адсет → объявление.
+     Во весь экран, а не окном: полей три десятка, и в окне их пришлось бы
+     листать в двух скроллах сразу. -->
+<div id="metaBundleModal" role="dialog" aria-modal="true" aria-labelledby="metaBundleTitle" style="display:none;position:fixed;inset:0;z-index:62;background:#F2F2F2;flex-direction:column">
+  <div style="flex-shrink:0;background:#B91414;color:#fff;font-family:'Alumni Sans','Inter',sans-serif;text-transform:uppercase;letter-spacing:.02em;display:flex;align-items:center;gap:14px;padding:0 22px;height:56px">
+    <button id="metaBundleClose" type="button" aria-label="Закрыть" style="width:30px;height:30px;border:0;background:transparent;color:#fff;font-size:17px;font-weight:600;line-height:1">×</button>
+    <h2 id="metaBundleTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:20px;font-weight:700;letter-spacing:.2px;flex:1">Создание связки</h2>
+    <button id="metaBundleCancel" type="button" style="height:34px;padding:0 14px;border:0;border-radius:9px;background:rgba(255,255,255,.16);color:#fff;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">Отмена</button>
+  </div>
+  <div style="flex-shrink:0;background:#fff;border-bottom:1px solid #EBE6E6">
+    <div id="metaBundleSteps" style="max-width:1180px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px"></div>
+  </div>
+  <div style="flex:1;overflow:auto;padding:22px">
+    <div id="metaBundleBody" style="max-width:760px;margin:0 auto;display:grid;gap:16px"></div>
+    <div id="metaBundleError" style="display:none;max-width:760px;margin:14px auto 0;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+  </div>
+  <div style="flex-shrink:0;background:#fff;border-top:1px solid #EBE6E6;padding:14px 22px">
+    <div style="max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:10px">
+      <button id="metaBundleCancel2" class="meta-action" type="button">Отмена</button>
+      <div style="flex:1"></div>
+      <button id="metaBundleBack" class="meta-action" type="button">Назад</button>
+      <button id="metaBundleNext" class="meta-action meta-action--primary" type="button" style="height:40px;padding:0 22px">Продолжить</button>
+    </div>
+  </div>
+</div>
+
+<!-- МАКРОСЫ В НАЗВАНИИ. Отдельным окном, потому что список длинный, а
+     расшифровка нужна рядом: «{{cab.time}}» ни о чём не говорит. -->
+<!-- Список типов совпадает с тем, что принимает сервер: с `video/mp4`
+     диалог не давал выбрать .mov, .avi и .webm — файл просто нельзя было
+     добавить, хотя загрузка их принимает. -->
+<!-- Файл выбирается один: креатив у объявления один, и диалог не должен
+     обещать больше, чем примет форма. -->
+<input id="metaUploadFiles" type="file" accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime,video/x-msvideo,video/webm" style="display:none">
+
+<div id="metaMacroModal" role="dialog" aria-modal="true" aria-labelledby="metaMacroTitle" style="display:none;position:fixed;inset:0;z-index:63;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:760px;background:#fff;border-radius:20px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:92vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 26px 0">
+      <h2 id="metaMacroTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">Выберите макросы</h2>
+      <button id="metaMacroClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
+    </div>
+    <div style="flex:1;overflow:auto;padding:16px 26px 20px">
+      <div style="border-left:3px solid #B91414;background:#FBF7F7;border-radius:0 10px 10px 0;padding:11px 14px;font-size:12.5px;color:#6A6161;font-weight:500;line-height:1.6">Макрос — это макрокоманда, с помощью которой можно автоматизировать нейминг создаваемых объектов. Помимо макросов, вы можете вписать любые символы.</div>
+      <label style="display:block;margin-top:18px">
+        <span id="metaMacroLabel" style="display:block;font-size:12.5px;font-weight:600;color:#3A3030;margin-bottom:6px">Название</span>
+        <input id="metaMacroInput" class="meta-control" style="width:100%;padding:0 13px">
+      </label>
+      <div id="metaMacroList" style="margin-top:16px"></div>
+    </div>
+    <div style="flex-shrink:0;display:flex;align-items:center;gap:10px;padding:16px 26px;border-top:1px solid #F0EBEB">
+      <button id="metaMacroSave" class="meta-action meta-action--primary" type="button" style="height:40px;padding:0 20px">Сохранить</button>
+      <button id="metaMacroCancel" class="meta-action" type="button" style="height:40px;padding:0 16px">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<div id="metaFormModal" role="dialog" aria-modal="true" aria-labelledby="metaFormTitle" style="display:none;position:fixed;inset:0;z-index:61;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:640px;background:#fff;border-radius:20px;padding:26px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:92vh;overflow:auto">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+      <div>
+        <h2 id="metaFormTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">—</h2>
+        <p id="metaFormSubtitle" style="font-size:12px;color:#6A6161;font-weight:500;margin-top:6px;line-height:1.55"></p>
+      </div>
+      <button id="metaFormClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
+    </div>
+    <div id="metaFormBody" style="display:grid;gap:12px;margin-top:20px"></div>
+    <div id="metaFormError" style="display:none;margin-top:14px;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:20px">
+      <button id="metaFormSave" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Сохранить</button>
+      <button id="metaFormDelete" type="button" style="display:none;height:44px;padding:0 16px;border:1px solid #F1D9D9;border-radius:12px;background:#fff;color:#B91414;font-size:13px;font-weight:700">Удалить</button>
+      <span id="metaFormStatus" style="font-size:12px;color:#857D7D;font-weight:600"></span>
+    </div>
+  </div>
+</div>
+
+<!-- CONNECTION MODAL -->
+<div id="metaModal" role="dialog" aria-modal="true" aria-labelledby="metaModalTitle" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(7,5,5,.42);align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:540px;background:#fff;border-radius:20px;padding:26px;box-shadow:0 26px 60px rgba(30,20,20,.28);max-height:90vh;overflow:auto">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+      <div>
+        <h2 id="metaModalTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.3px">Подключение Meta Ads</h2>
+        <p style="font-size:12px;color:#6A6161;font-weight:500;margin-top:6px;line-height:1.55">Токен хранится в зашифрованном виде и обратно не выдаётся. Способ его получения на работу CRM не влияет — от него зависит только то, как долго токен проживёт.</p>
+      </div>
+      <button id="metaModalClose" type="button" aria-label="Закрыть" style="flex-shrink:0;width:34px;height:34px;border:1px solid #EBE6E6;background:#fff;border-radius:10px;color:#857D7D;font-size:16px;font-weight:700">×</button>
+    </div>
+    <div id="metaConnectionOwner" style="margin:14px 0 0;font-size:11.5px;color:#857D7D;font-weight:600"></div>
+    <div id="metaConnectionReadonly" style="display:none;margin:0 0 14px;background:#F7F4F4;border-radius:12px;padding:10px 13px;font-size:12px;color:#6A6161;font-weight:600;line-height:1.5">Подключение доступно для просмотра. Изменить его может владелец или администратор.</div>
+
+    <div style="display:grid;gap:12px;margin-top:20px">
+      <label style="display:block">
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Название</span>
+        <input id="metaFieldName" class="meta-control" type="text" placeholder="Celestial BM" style="width:100%;padding:0 13px">
+      </label>
+      <label style="display:block">
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">User-Agent</span>
+        <input id="metaFieldUserAgent" class="meta-control" type="text" style="width:100%;padding:0 13px">
+      </label>
+      <div>
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Способ получения токена</span>
+        <div id="metaAuthMethods" style="display:grid;gap:2px"></div>
+      </div>
+      <label style="display:block" id="metaModalTokenField">
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Access token</span>
+        <input id="metaFieldToken" class="meta-control" type="password" autocomplete="off" placeholder="EAAB..." style="width:100%;padding:0 13px">
+        <span id="metaTokenHint" style="display:block;font-size:11px;color:#9B9292;font-weight:600;margin-top:5px">Оставьте пустым, чтобы не менять сохранённый токен</span>
+      </label>
+      <!-- Браузерная сессия для токена EAAB. Показывается при выборе способа
+           «Токен сессии (EAAB)». -->
+      <div id="metaModalSessionBlock" style="display:none;border:1px solid #EBE6E6;border-radius:14px;padding:14px;background:#FAF8F8">
+        <label style="display:block;margin-bottom:10px">
+          <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Cookies из браузера (facebook.com)</span>
+          <textarea id="metaModalCookies" class="meta-control" style="width:100%;height:66px;font-family:monospace;font-size:11px;line-height:1.5;padding:9px 13px" placeholder="c_user=…; xs=…; fr=…&#10;или JSON-массив из экспорта"></textarea>
+        </label>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <button id="metaModalSessionClose" type="button" style="display:none;height:38px;padding:0 14px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:12.5px;font-weight:700">Закрыть браузер</button>
+        </div>
+        <div id="metaModalSessionStatus" style="margin-top:10px;font-size:12px;color:#6A6161;font-weight:600;line-height:1.6"></div>
+        <input id="metaModalSessionToken" type="hidden" value="">
+      </div>
+      <label style="display:block">
+        <span style="display:block;font-size:11.5px;font-weight:700;color:#6A6161;margin-bottom:6px">Прокси</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input id="metaFieldProxy" class="meta-control" type="text" placeholder="http://логин:пароль@хост:порт" style="flex:1;min-width:0;padding:0 13px">
+          <button id="metaModalProxyCheck" type="button" class="meta-action" style="flex-shrink:0;height:38px">Проверить</button>
+        </div>
+        <div id="metaModalProxyStatus" style="margin-top:8px;font-size:12px;font-weight:600;color:#6A6161;line-height:1.5"></div>
+      </label>
+    </div>
+
+    <div id="metaModalChecks" style="display:none;margin-top:14px;background:#F7F4F4;border-radius:12px;padding:12px 14px;font-size:12px;color:#3A3030;font-weight:600;line-height:1.6"></div>
+    <div id="metaModalError" style="display:none;margin-top:14px;background:#FCF1F1;border-radius:12px;padding:11px 14px;font-size:12px;color:#B91414;font-weight:600;line-height:1.5"></div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-top:20px">
+      <button id="metaModalSave" type="button" style="height:40px;padding:0 16px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Сохранить</button>
+      <button id="metaModalCheck" type="button" style="display:none;height:44px;padding:0 16px;border:1px solid #E8E2E2;border-radius:12px;background:#fff;color:#3A3030;font-size:13px;font-weight:700">Проверить доступы</button>
+      <button id="metaModalDelete" type="button" style="display:none;height:44px;padding:0 16px;border:1px solid #F1D9D9;border-radius:12px;background:#fff;color:#B91414;font-size:13px;font-weight:700">Удалить</button>
+      <span id="metaModalStatus" style="font-size:12px;color:#857D7D;font-weight:600"></span>
+    </div>
+  </div>
+</div>
+<div class="mt-modal" id="metaTreeHeatModal" role="dialog" aria-modal="true" aria-labelledby="metaTreeHeatTitle">
+  <div class="mt-modal__card">
+    <div class="mt-modal__head">
+      <h2 id="metaTreeHeatTitle" style="font-family:'Alumni Sans','Inter',sans-serif;font-size:22px;font-weight:700;letter-spacing:-.3px">Подсветка</h2>
+      <button class="mt-modal__x" type="button" id="metaTreeHeatClose" aria-label="Закрыть"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div class="mt-modal__body">
+      <div id="metaTreeHeatBody" style="display:grid;gap:14px"></div>
+      <button class="mt-heat-add" type="button" id="metaTreeHeatAdd"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>Добавить GEO</button>
+    </div>
+    <div class="mt-modal__foot">
+      <button class="mt-btn" type="button" id="metaTreeHeatCancel">Отмена</button>
+      <button type="button" id="metaTreeHeatSave" style="height:38px;padding:0 18px;border:0;border-radius:10px;background:#B91414;color:#fff;font-family:'Inter',-apple-system,'Helvetica Neue',sans-serif;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.02em;cursor:pointer;box-shadow:0 8px 18px rgba(185,20,20,.24)">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

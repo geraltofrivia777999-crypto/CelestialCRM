@@ -130,11 +130,6 @@ def _media_filters(
     return filters
 
 
-# A board never shows more distinct buyer×offer combinations than this. The cap keeps a
-# careless filter from turning the grouped response back into a full table dump.
-GROUP_LIMIT = 5000
-
-
 def _service_cost_column(value_model, service_model=Service):
     """SQL twin of `service_cost()` — same two-step rounding, so sums match the API."""
     return func.round(
@@ -313,11 +308,8 @@ async def media_record_groups(
             # вперемешку внутри баера.
             .order_by(*([filtered.c.record_date] if by_date else []),
                       filtered.c.buyer, filtered.c.offer)
-            .limit(GROUP_LIMIT + 1)
         )
     ).all()
-    truncated = len(base_rows) > GROUP_LIMIT
-    base_rows = base_rows[:GROUP_LIMIT]
 
     tiers = await tier_map(db, current.workspace_id)
     groups: dict[tuple, dict] = {}
@@ -380,7 +372,6 @@ async def media_record_groups(
     return {
         "groups": list(groups.values()),
         "record_count": record_count,
-        "truncated": truncated,
     }
 
 
@@ -1327,11 +1318,8 @@ async def finance_record_groups(
             .select_from(filtered)
             .group_by(*dimensions)
             .order_by(filtered.c.buyer, filtered.c.offer)
-            .limit(GROUP_LIMIT + 1)
         )
     ).all()
-    truncated = len(base_rows) > GROUP_LIMIT
-    base_rows = base_rows[:GROUP_LIMIT]
 
     tiers = await tier_map(db, current.workspace_id)
     groups: dict[tuple, dict] = {}
@@ -1405,7 +1393,6 @@ async def finance_record_groups(
     return {
         "groups": list(groups.values()),
         "record_count": record_count,
-        "truncated": truncated,
     }
 
 
