@@ -1538,6 +1538,10 @@ class OfferIn(BaseModel):
     # Через какую интеграцию с ПП приходят депозиты по этому офферу.
     partner_integration_id: uuid.UUID | None = None
     lead_ids: list[uuid.UUID] = Field(default_factory=list)
+    # Капа каждого тимлида: общий лимит оффера они делят между собой, поэтому
+    # цифра спрашивается там же, где отмечают самих тимлидов. Ключа нет —
+    # капа этого тимлида остаётся прежней, пустая строка её снимает.
+    caps: dict[uuid.UUID, str] = Field(default_factory=dict)
     buyer_ids: list[uuid.UUID] = Field(default_factory=list)
 
 

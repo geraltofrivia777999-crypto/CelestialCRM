@@ -1019,3 +1019,49 @@ async def test_the_board_offers_are_listed_for_a_buyer(database) -> None:
         await db.delete(await db.get(User, buyer_id))
         await db.delete(await db.get(IntegrationConnection, connection_id))
         await db.commit()
+
+
+async def test_the_offer_form_sets_and_clears_a_lead_cap(database) -> None:
+    """Капу тимлида ставят прямо в карточке оффера, как в «Назначить тимлидов»."""
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        lead_role = await db.scalar(select(Role).where(Role.name == "Team Lead"))
+        lead = User(
+            workspace_id=admin.workspace_id,
+            role_id=lead_role.id,
+            name="Тимлид капы",
+            login="capylead",
+            password_hash=hash_password("lead-password"),
+        )
+        db.add(lead)
+        await db.commit()
+        lead_id = str(lead.id)
+
+    with _admin_client() as client:
+        created = client.post(
+            "/api/v1/offers",
+            json={
+                "name": "Оффер с капой тимлида",
+                "lead_ids": [lead_id],
+                "caps": {lead_id: "120/день"},
+            },
+        )
+        offer_id = created.json()["id"]
+        listed = client.get("/api/v1/offers?manual=true&limit=200").json()["items"]
+        with_cap = [row for row in listed if row["id"] == offer_id][0]
+        # Пустая строка снимает капу, а не оставляет прежнюю.
+        client.put(
+            f"/api/v1/offers/{offer_id}",
+            json={
+                "name": "Оффер с капой тимлида",
+                "lead_ids": [lead_id],
+                "caps": {lead_id: ""},
+            },
+        )
+        cleared = client.get("/api/v1/offers?manual=true&limit=200").json()["items"]
+        without_cap = [row for row in cleared if row["id"] == offer_id][0]
+        client.delete(f"/api/v1/offers/{offer_id}")
+
+    assert created.status_code == 201, created.text
+    assert [person["cap"] for person in with_cap["leads"]] == ["120/день"]
+    assert [person["cap"] for person in without_cap["leads"]] == [None]
