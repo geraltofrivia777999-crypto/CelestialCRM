@@ -591,7 +591,7 @@
     }), "Все GEO");
     fillSelect("filterPartner", Object.keys(partners).sort().map(function (p) {
       return { value: p, label: p };
-    }), "Все партнёрки");
+    }), "Партнёрки");
     var people = offersState.people.map(function (person) {
       return { value: String(person.id), label: person.name };
     });
@@ -599,7 +599,7 @@
     fillSelect("filterBuyer", people, "Все баеры");
     fillSelect("filterStatus", OFFER_STATUSES.map(function (status) {
       return { value: status.value, label: status.label };
-    }), "Все статусы");
+    }), "Статусы");
   }
 
   function applyOfferFilters() {
