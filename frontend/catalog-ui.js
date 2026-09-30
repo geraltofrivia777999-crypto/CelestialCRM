@@ -366,10 +366,22 @@
     return (list || []).some(function (person) { return String(person.id) === id; });
   }
 
+  // Дата заведения — единственное, чем «новее» отличается от «старее»: в
+  // таблице этой колонки нет, поэтому сравниваем по ней напрямую.
+  function offerAge(offer) {
+    var stamp = Date.parse(offer.created_at || "");
+    return isFinite(stamp) ? stamp : 0;
+  }
+
   function sortOffers(offers) {
     return offers.slice().sort(function (left, right) {
       if (offersState.starredFirst && !!left.is_starred !== !!right.is_starred) {
         return left.is_starred ? -1 : 1;
+      }
+      var sort = byId("filterSort") ? byId("filterSort").value : "name";
+      if (sort === "new") {
+        var difference = offerAge(right) - offerAge(left);
+        if (difference) return difference;
       }
       return String(left.name).localeCompare(String(right.name), "ru");
     });
@@ -605,7 +617,10 @@
     });
     var search = byId("offerSearch");
     if (search) search.addEventListener("input", applyOfferFilters);
-    ["filterGeo", "filterPartner", "filterLead", "filterBuyer", "filterStatus"].forEach(function (id) {
+    // Сортировка меняет тот же список, что и фильтры, поэтому слушатель общий.
+    [
+      "filterGeo", "filterPartner", "filterLead", "filterBuyer", "filterStatus", "filterSort"
+    ].forEach(function (id) {
       var element = byId(id);
       if (element) element.addEventListener("change", applyOfferFilters);
     });

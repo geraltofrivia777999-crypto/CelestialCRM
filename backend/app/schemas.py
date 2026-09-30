@@ -1508,6 +1508,9 @@ class OfferOut(ORMModel):
     status: OfferStatus
     keitaro_state: Status
     is_starred: bool
+    # Когда строка появилась в CRM. Нужна разделу «Оффера»: там сортируют от
+    # нового к старому, а в таблице этой колонки нет.
+    created_at: datetime
 
 
 class OfferIn(BaseModel):
