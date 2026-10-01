@@ -330,7 +330,10 @@ async def _schedule_connections(kind: str, task) -> int:
             if running:
                 continue
             if connection.last_sync_at:
-                due_at = connection.last_sync_at + timedelta(
+                last_sync_at = connection.last_sync_at
+                if last_sync_at.tzinfo is None:
+                    last_sync_at = last_sync_at.replace(tzinfo=UTC)
+                due_at = last_sync_at + timedelta(
                     minutes=max(connection.sync_interval_minutes, 5)
                 )
                 if due_at > now:

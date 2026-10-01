@@ -2,6 +2,7 @@
 
 import sqlite3
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -27,6 +28,8 @@ async def test_the_worker_finds_the_run_row_the_scheduler_queued(database) -> No
             name="Scheduler check",
             base_url="https://tracker.example",
             api_key_encrypted=encrypt_secret("test-key"),
+            # SQLite returns naive timestamps even for timezone-aware columns.
+            last_sync_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1),
         )
         db.add(connection)
         await db.commit()
