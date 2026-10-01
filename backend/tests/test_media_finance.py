@@ -837,3 +837,61 @@ async def test_a_blocked_buyer_stays_in_the_boards(database) -> None:
     assert buyer_id in [row["id"] for row in book_scopes["buyers"]]
     # Вход при этом закрыт — ради этого блокировку и включают.
     assert login.status_code == 403
+
+
+async def test_day_spend_can_be_limited_to_one_geo(database) -> None:
+    """Бюджет в кабинете стоит на страну — расход делится только внутри неё."""
+    buyer_id, _first = await _fixture_ids()
+    german = await _own_offer("geo-spend-de", "Geo spend DE", "DE")
+    italian = await _own_offer("geo-spend-it", "Geo spend IT", "IT")
+    day = "2026-05-06"
+
+    with _admin_client() as client:
+        for offer_id in (german, italian):
+            client.post(
+                "/api/v1/media-records",
+                json={"record_date": day, "buyer_id": buyer_id, "offer_id": offer_id},
+            )
+        spread = client.post(
+            "/api/v1/media-records/day-spend",
+            json={
+                "record_date": day,
+                "buyer_id": buyer_id,
+                "geo": "DE",
+                "spend": "80",
+            },
+        )
+        # Страна, в которую баер в этот день не лил, расход принять не может.
+        empty = client.post(
+            "/api/v1/media-records/day-spend",
+            json={
+                "record_date": day,
+                "buyer_id": buyer_id,
+                "geo": "BR",
+                "spend": "80",
+            },
+        )
+
+    assert spread.status_code == 200, spread.text
+    assert spread.json()["records"] == 1
+    assert empty.status_code == 422
+    assert "BR" in empty.text
+
+    async with SessionLocal() as db:
+        admin = await db.scalar(select(User).where(User.login == "admin"))
+        rows = list(
+            (
+                await db.execute(
+                    select(MediaRecord, Offer.geo)
+                    .join(Offer, Offer.id == MediaRecord.offer_id)
+                    .where(
+                        MediaRecord.workspace_id == admin.workspace_id,
+                        MediaRecord.record_date == date(2026, 5, 6),
+                        MediaRecord.buyer_id == uuid.UUID(buyer_id),
+                    )
+                )
+            ).all()
+        )
+        by_geo = {geo: record.spend_override for record, geo in rows}
+        assert by_geo["DE"] == Decimal("80.0000")
+        assert by_geo["IT"] is None

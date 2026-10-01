@@ -930,12 +930,17 @@ async def _day_spend_records(
     buyer_id: uuid.UUID,
     day: date,
     tier: str | None,
+    geo: str | None = None,
 ) -> list[MediaRecord]:
     """Записи баера за день — то, между чем делится расход дня.
 
     `tier` сужает их до офферов одного тира. В финансах у баера две книги —
     Tier1 и Tier2/3, — и расход, размазанный по офферам обоих, приезжал в них
     не тем, чем был на самом деле.
+
+    `geo` сужает ещё на шаг — до офферов одной страны: бюджет в кабинете
+    баер ставит на страну, и делить его на весь день значило бы разносить
+    деньги по офферам, которых он не касался.
     """
     rows = list(
         (
@@ -954,6 +959,9 @@ async def _day_spend_records(
     if tier:
         tiers = await tier_map(db, workspace_id)
         rows = [row for row in rows if tier_for(row[1], tiers) == tier]
+    if geo:
+        wanted = normalize_geo(geo)
+        rows = [row for row in rows if normalize_geo(row[1]) == wanted]
     return [row[0] for row in rows]
 
 
@@ -1044,12 +1052,19 @@ async def spread_day_spend(
     if payload.buyer_id not in visible_buyers:
         raise HTTPException(status_code=403, detail="Buyer is outside your access hierarchy")
     records = await _day_spend_records(
-        db, current.workspace_id, payload.buyer_id, payload.record_date, payload.tier
+        db,
+        current.workspace_id,
+        payload.buyer_id,
+        payload.record_date,
+        payload.tier,
+        payload.geo,
     )
     if not records:
         # Текст уходит прямо в окно Медиаборда: баер выбирает день календарём
         # и должен понять, почему сумму некуда положить.
         where = f" {TIER_LABELS[payload.tier]}" if payload.tier else ""
+        if payload.geo:
+            where += f" {normalize_geo(payload.geo)}"
         raise HTTPException(
             status_code=422,
             detail=f"За этот день у баера нет офферов{where} — делить расход не по чему",
@@ -1076,7 +1091,8 @@ async def spread_day_spend(
         current,
         "media.day_spend",
         f"Spread {total} across {len(records)} offers"
-        + (f" of {payload.tier}" if payload.tier else ""),
+        + (f" of {payload.tier}" if payload.tier else "")
+        + (f" in {normalize_geo(payload.geo)}" if payload.geo else ""),
         request=request,
         entity_type="media_record",
         entity_id=str(payload.buyer_id),

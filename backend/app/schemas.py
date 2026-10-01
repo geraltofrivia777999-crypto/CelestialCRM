@@ -1647,6 +1647,10 @@ class MediaDaySpendIn(BaseModel):
     # Книга в финансах своя на каждый тир, и расход дня, размазанный по обоим,
     # приезжал бы туда неправильно: баер знает, где потратил.
     tier: Literal["T1", "T23"] | None = None
+    # Гео, к которому относится расход. Баер ведёт день по странам, а не по
+    # офферам: в кабинете бюджет стоит на страну, и сумма делится между
+    # офферами этого гео, а не всего дня.
+    geo: str | None = Field(default=None, max_length=64)
     spend: Decimal | None = None
     providers: list[MediaSpendValueIn] | None = None
 

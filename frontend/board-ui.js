@@ -1983,17 +1983,14 @@
           cells += td(formatted.text, {
             bold: opts.bold || column.bold,
             title: editable
-              ? opts.daySpend.span
-                ? "Расход тира за день — откроется окно, сумма разделится по офферам " +
-                  TIER_NAMES[opts.daySpend.tier]
-                : "Расход за день — откроется окно, сумма разделится по офферам" +
-                  (opts.daySpend.tier ? " " + TIER_NAMES[opts.daySpend.tier] : "")
+              ? daySpendTitle(opts.daySpend)
               : formatted.title,
             color: column.tone && numeric != null ? column.tone(numeric) : undefined,
             attrs: editable
               ? ' data-day-spend="' + escapeHtml(opts.daySpend.buyer) +
                 '" data-day-date="' + escapeHtml(opts.daySpend.date) +
-                '" data-day-tier="' + escapeHtml(opts.daySpend.tier || "") + '"' +
+                '" data-day-tier="' + escapeHtml(opts.daySpend.tier || "") +
+                '" data-day-geo="' + escapeHtml(opts.daySpend.geo || "") + '"' +
                 (opts.daySpend.span ? ' data-day-span="1"' : "")
               : "",
             // Ячейка дня остаётся обычной ячейкой: рамка появляется только под
@@ -2016,6 +2013,15 @@
         '<td colspan="' + columnCount() + '" style="padding:10px 16px 10px ' +
         (16 + depth * 22) + 'px;border-bottom:1px solid #F2EEEE;font-size:11.5px;' +
         'font-weight:700;color:#857D7D">' + content + "</td></tr>";
+    }
+
+    function daySpendTitle(scope) {
+      var where = scope.geo
+        ? " " + scope.geo
+        : scope.tier ? " " + TIER_NAMES[scope.tier] : "";
+      return (scope.span ? "Расход за день" : "Расход за день") +
+        " — откроется окно, сумма разделится по офферам" + where +
+        (scope.span ? "; день выбирают в окне" : "");
     }
 
     /* День одного баера — единственная строка, в которую можно вписать расход:
@@ -2042,8 +2048,30 @@
           span: true
         };
       }
+      /* Строка гео — расход одной страны за день: в кабинете бюджет стоит на
+         страну, и делить его на весь день неправильно. День берём из ветки,
+         а если его там нет — выбирают календарём в самом окне. */
+      if (node.level === "geo") {
+        if (!scope.buyer || scope.offer || !scope.geo) return null;
+        return {
+          buyer: String(scope.buyer),
+          date: scope.date ? String(scope.date) : "",
+          tier: scope.tier ? String(scope.tier) : "",
+          geo: String(scope.geo),
+          span: !scope.date
+        };
+      }
       if (node.level !== "date") return null;
       if (!scope.buyer || scope.offer || !scope.date) return null;
+      // Дата внутри ветки гео правит расход этой страны за этот день.
+      if (scope.geo) {
+        return {
+          buyer: String(scope.buyer),
+          date: String(scope.date),
+          tier: scope.tier ? String(scope.tier) : "",
+          geo: String(scope.geo)
+        };
+      }
       /* Тир из ветки едет вместе с днём: в финансах у баера книга на каждый
          тир, и расход дня, размазанный по офферам обоих, приезжал бы туда не
          тем, чем был. День внутри ветки «Tier1» правит только её офферы. */
@@ -2062,28 +2090,35 @@
        Суммы агентов за день собираем из записей этого дня: раскладка ровная,
        поэтому сумма долей и есть то, что человек вводил. */
     async function openDaySpend(cell) {
-      if (cell.getAttribute("data-day-span")) return openTierSpend(cell);
+      if (cell.getAttribute("data-day-span")) return openSpanSpend(cell);
       var buyerId = cell.getAttribute("data-day-spend");
       var day = cell.getAttribute("data-day-date");
       var tier = cell.getAttribute("data-day-tier") || "";
+      var geo = cell.getAttribute("data-day-geo") || "";
       var buyer = state.buyers.filter(function (row) { return row.id === buyerId; })[0];
-      var loaded = await dayAgents(buyerId, day, tier);
+      var loaded = await dayAgents(buyerId, day, tier, geo);
       openEditModal(null, {
         record_date: day,
         buyer_id: buyerId,
         buyer: buyer ? buyer.name : "",
         offer_id: "",
         tier: tier,
-        // Строка дня внутри ветки тира правит расход только этого тира.
-        offer: tier ? "Весь день · " + TIER_NAMES[tier] : "",
+        geo: geo,
+        // Строка дня внутри ветки тира или гео правит расход только её.
+        offer: dayScopeLabel(tier, geo),
         providers: loaded.providers
       });
+    }
+
+    function dayScopeLabel(tier, geo) {
+      if (geo) return "Весь день · " + geo;
+      return tier ? "Весь день · " + TIER_NAMES[tier] : "";
     }
 
     /* Суммы агентов за день — из записей этого дня: раскладка ровная, поэтому
        сумма долей и есть то, что человек вводил. `offers` — сколько записей
        нашлось: ноль значит, что делить расход в этот день не по чему. */
-    async function dayAgents(buyerId, day, tier) {
+    async function dayAgents(buyerId, day, tier, geo) {
       var providers = {};
       var offers = 0;
       try {
@@ -2098,6 +2133,7 @@
           // Записи чужого тира к этому окну не относятся: их суммы правят из
           // строки своей ветки.
           if (tier && item.tier !== tier) return;
+          if (geo && (item.geo || "") !== geo) return;
           offers += 1;
           Object.keys(item.providers || {}).forEach(function (providerId) {
             var base = Number((item.providers[providerId] || {}).base_amount || 0);
@@ -2122,12 +2158,13 @@
        выбирают календарём в самом окне. Строка тира объединяет весь период
        фильтра, а расход вносят ровно за один день — сервер делит его поровну
        между офферами этого тира в выбранный день. */
-    async function openTierSpend(cell) {
+    async function openSpanSpend(cell) {
       var buyerId = cell.getAttribute("data-day-spend");
-      var tier = cell.getAttribute("data-day-tier");
+      var tier = cell.getAttribute("data-day-tier") || "";
+      var geo = cell.getAttribute("data-day-geo") || "";
       var day = cell.getAttribute("data-day-date") || tierDefaultDay();
       var buyer = state.buyers.filter(function (row) { return row.id === buyerId; })[0];
-      var loaded = await dayAgents(buyerId, day, tier);
+      var loaded = await dayAgents(buyerId, day, tier, geo);
       openEditModal(null, {
         record_date: day,
         pickDate: true,
@@ -2136,7 +2173,8 @@
         buyer: buyer ? buyer.name : "",
         offer_id: "",
         tier: tier,
-        offer: "Все офферы · " + TIER_NAMES[tier],
+        geo: geo,
+        offer: geo ? "Все офферы · " + geo : "Все офферы · " + TIER_NAMES[tier],
         providers: loaded.providers
       });
     }
@@ -2151,16 +2189,16 @@
       return today;
     }
 
-    function dayHintText(offers, tier) {
-      return offers === 0
-        ? "В этот день у " + (TIER_NAMES[tier] || "баера") + " нет офферов — делить расход не по чему"
-        : "";
+    function dayHintText(offers, tier, geo) {
+      if (offers !== 0) return "";
+      var where = geo || TIER_NAMES[tier] || "баера";
+      return "В этот день у " + where + " нет офферов — делить расход не по чему";
     }
 
-    function paintDayHint(block, offers, tier) {
+    function paintDayHint(block, offers, tier, geo) {
       var hint = block.querySelector("[data-day-hint]");
       if (!hint) return;
-      hint.textContent = dayHintText(offers, tier);
+      hint.textContent = dayHintText(offers, tier, geo);
       hint.hidden = !hint.textContent;
     }
 
@@ -2171,14 +2209,15 @@
       var token = String(Math.random());
       block.setAttribute("data-day-loading", token);
       var tier = block.getAttribute("data-locked-tier") || "";
+      var geo = block.getAttribute("data-locked-geo") || "";
       var loaded = day
-        ? await dayAgents(block.getAttribute("data-locked-buyer"), day, tier)
+        ? await dayAgents(block.getAttribute("data-locked-buyer"), day, tier, geo)
         : { providers: {}, offers: null };
       if (block.getAttribute("data-day-loading") !== token || !block.isConnected) return;
       block.removeAttribute("data-day-loading");
       agentRows(block).forEach(function (row) { row.remove(); });
       fillAgentRows(block, { providers: loaded.providers });
-      paintDayHint(block, loaded.offers, tier);
+      paintDayHint(block, loaded.offers, tier, geo);
     }
 
     function renderNodeRows(node, depth, path, output) {
@@ -2858,15 +2897,32 @@
 
        Пустой оффер — это «весь день»: сумма ложится на день целиком и
        раскладывается сервером поровну по офферам этого дня. */
+    /* Гео баера — только те, что есть у его офферов: страна, в которую он не
+       льёт, в списке была бы обещанием, которое сервер не выполнит. */
+    function buyerGeos(buyerId) {
+      var geos = [];
+      offersForBuyers(buyerId ? [buyerId] : []).forEach(function (offer) {
+        if (offer.geo && geos.indexOf(offer.geo) < 0) geos.push(offer.geo);
+      });
+      return geos.sort();
+    }
+
     function modalOfferOptions(buyerId, selectedOfferId) {
       var selected = selectedOfferId || "";
+      var geoOptions = config.dayLevelSpend
+        ? buyerGeos(buyerId).map(function (geo) {
+            return '<option value="geo:' + escapeHtml(geo) + '"' +
+              (selected === "geo:" + geo ? " selected" : "") +
+              ">Весь день · " + escapeHtml(geo) + "</option>";
+          }).join("")
+        : "";
       var dayOptions = config.dayLevelSpend
         ? '<option value=""' + (!selected ? " selected" : "") +
           ">Весь день · все офферы</option>" +
           '<option value="tier:T1"' + (selected === "tier:T1" ? " selected" : "") +
           ">Весь день · Tier1</option>" +
           '<option value="tier:T23"' + (selected === "tier:T23" ? " selected" : "") +
-          ">Весь день · Tier2/3</option>"
+          ">Весь день · Tier2/3</option>" + geoOptions
         : "";
       return dayOptions + offersForBuyers(buyerId ? [buyerId] : []).map(function (offer) {
         return '<option value="' + escapeHtml(offer.id) + '"' +
@@ -2906,7 +2962,8 @@
           (locked.pickDate ? "data-pick-date " : "") +
           'data-locked-buyer="' + escapeHtml(locked.buyer_id) + '" ' +
           'data-locked-offer="' + escapeHtml(locked.offer_id || "") + '" ' +
-          'data-locked-tier="' + escapeHtml(locked.tier || "") + '">' +
+          'data-locked-tier="' + escapeHtml(locked.tier || "") + '" ' +
+          'data-locked-geo="' + escapeHtml(locked.geo || "") + '">' +
           '<div class="board-edit-context"><div class="board-edit-locked">' +
           // Окно тира: день выбирают календарём, баер и офферы — из строки.
           (locked.pickDate
@@ -2917,8 +2974,8 @@
           "</div>" +
           (locked.pickDate
             ? '<div class="board-edit-day-hint" data-day-hint' +
-              (dayHintText(locked.dayOffers, locked.tier) ? "" : " hidden") + ">" +
-              escapeHtml(dayHintText(locked.dayOffers, locked.tier)) + "</div>"
+              (dayHintText(locked.dayOffers, locked.tier, locked.geo) ? "" : " hidden") + ">" +
+              escapeHtml(dayHintText(locked.dayOffers, locked.tier, locked.geo)) + "</div>"
             : "") +
           "</div>" +
           (state.providers.length
@@ -3158,10 +3215,15 @@
       var offerId = pinned
         ? block.getAttribute("data-locked-offer")
         : block.querySelector("[data-block-offer]").value;
-      // «tier:T1» — это не оффер, а день одного тира.
+      // «tier:T1» и «geo:BR» — это не офферы, а день одного тира или страны.
       var tier = pinned ? block.getAttribute("data-locked-tier") || "" : "";
+      var geo = pinned ? block.getAttribute("data-locked-geo") || "" : "";
       if (offerId.indexOf("tier:") === 0) {
         tier = offerId.slice(5);
+        offerId = "";
+      }
+      if (offerId.indexOf("geo:") === 0) {
+        geo = offerId.slice(4);
         offerId = "";
       }
       if (block.hasAttribute("data-day-loading")) {
@@ -3214,6 +3276,7 @@
         buyer_id: buyerId,
         offer_id: offerId || null,
         tier: tier || null,
+        geo: geo || null,
         services: services,
         providers: providers,
         numberValue: function (name) { return numberValue(name + "_" + index); }
@@ -3543,6 +3606,7 @@
           record_date: form.record_date,
           buyer_id: form.buyer_id,
           tier: form.tier || null,
+          geo: form.geo || null,
           providers: form.providers
         });
         return;
