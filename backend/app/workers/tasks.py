@@ -283,7 +283,14 @@ async def _expire_stuck_runs(db, now: datetime) -> int:
 
 
 async def _schedule_connections(kind: str, task) -> int:
-    queued = 0
+    """Поставить синхронизацию тем подключениям, чей срок подошёл.
+
+    Задание уходит воркеру только после коммита: он читает строку прогона из
+    базы, и отправленное до фиксации он успевает не найти — задание завершалось
+    впустую, строка навсегда оставалась «queued», а подключение с незавершённым
+    прогоном планировщик больше не трогал.
+    """
+    pending: list[tuple[str, str]] = []
     now = datetime.now(UTC)
     async with WorkerSessionLocal() as db:
         await _expire_stuck_runs(db, now)
@@ -320,10 +327,11 @@ async def _schedule_connections(kind: str, task) -> int:
             )
             db.add(run)
             await db.flush()
-            task.delay(str(connection.id), str(run.id), "incremental")
-            queued += 1
+            pending.append((str(connection.id), str(run.id)))
         await db.commit()
-    return queued
+    for connection_id, run_id in pending:
+        task.delay(connection_id, run_id, "incremental")
+    return len(pending)
 
 
 @celery_app.task
