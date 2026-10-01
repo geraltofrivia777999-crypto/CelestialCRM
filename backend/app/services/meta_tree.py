@@ -2,8 +2,7 @@
 
 Every level is aggregated from daily facts directly, never from its children: a
 missing entity or a partially synchronized hierarchy must not lose spend.
-Keitaro deposits are attributable to campaigns only; they are intentionally
-unknown for adsets and ads rather than divided between them.
+Keitaro metrics are joined by FB name macros when supplied by the caller.
 """
 
 from collections import defaultdict
@@ -27,6 +26,7 @@ def build_tree(
     stats: list[MetaStatDaily],
     keitaro: dict[str, dict],
     agents: dict,
+    keitaro_nodes: dict[tuple, dict] | None = None,
 ) -> list[dict]:
     """`agents` — название подключения по его id: это и есть «агент» кабинета."""
     roots: dict = {}
@@ -109,7 +109,7 @@ def build_tree(
             node["insts"] += action_count(fact.actions, INSTALL_ACTION_TYPES)
             node["regs"] += action_count(fact.actions, REGISTRATION_ACTION_TYPES)
             node["spend"] += fact.spend or Decimal(0)
-            if geo:
+            if geo and keitaro_nodes is None:
                 geo_sets[node["id"]].add(geo)
 
     # Attach every synchronized object, even when all its metrics are zero.
@@ -126,18 +126,27 @@ def build_tree(
                 parent = roots[account_id]
         parent["children"].append(node)
 
-    for (_account_id, level, external_id), node in nodes.items():
-        if level != "campaign":
-            node["deps"] = None
-            continue
-        matched = keitaro.get(external_id)
-        node["deps"] = matched["sales"] if matched else None
-    for account_id, account in roots.items():
-        matched = [
-            node["deps"] for (owner_id, level, _), node in nodes.items()
-            if owner_id == account_id and level == "campaign" and node["deps"] is not None
-        ]
-        account["deps"] = sum(matched) if matched else None
+    if keitaro_nodes is not None:
+        for account_id, account in roots.items():
+            matched = keitaro_nodes.get((account_id, "account", ""))
+            for metric in ("clicks", "insts", "regs", "deps"):
+                account[metric] = matched[metric] if matched else None
+            if matched:
+                geo_sets[account["id"]].update(matched["geos"])
+        for key, node in nodes.items():
+            matched = keitaro_nodes.get(key)
+            for metric in ("clicks", "insts", "regs", "deps"):
+                node[metric] = matched[metric] if matched else None
+            if matched:
+                geo_sets[node["id"]].update(matched["geos"])
+    else:
+        # Legacy callers still use a configured sub-id containing campaign ID.
+        for (_account_id, level, external_id), node in nodes.items():
+            node["deps"] = keitaro[external_id]["sales"] if level == "campaign" and external_id in keitaro else None
+        for account_id, account in roots.items():
+            matched = [node["deps"] for (owner_id, level, _), node in nodes.items()
+                       if owner_id == account_id and level == "campaign" and node["deps"] is not None]
+            account["deps"] = sum(matched) if matched else None
 
     def finish(node):
         geos = sorted(geo_sets[node["id"]])

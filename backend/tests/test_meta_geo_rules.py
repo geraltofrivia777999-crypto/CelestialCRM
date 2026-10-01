@@ -74,6 +74,7 @@ class FakeClient:
 @pytest.fixture
 async def geo_setup(database, monkeypatch):
     from app.api.routers import meta as meta_router
+    from app.services import meta_keitaro
 
     fake = FakeClient()
 
@@ -81,6 +82,18 @@ async def geo_setup(database, monkeypatch):
         return fake
 
     monkeypatch.setattr(meta_router, "client_for", fake_client_for)
+    async def fake_kt_reports(db, workspace_id, accounts, start, end, **kwargs):
+        rows = [
+            {"sub_id_2": f"Campaign {external_id}", "country_code": geo,
+             "clicks": clicks, "campaign_unique_clicks": installs, "leads": 0, "sales": 0}
+            for external_id, (_status, geo, _spend, clicks, installs) in campaigns.items()
+        ]
+        rows.append({"sub_id_2": "Campaign c-idle", "sub_id_3": "Idle set",
+                     "country_code": "IN", "clicks": 0, "campaign_unique_clicks": 0,
+                     "leads": 0, "sales": 0})
+        return {"UTC": rows}, []
+
+    monkeypatch.setattr(meta_keitaro, "reports_for_accounts", fake_kt_reports)
     suffix = uuid.uuid4().hex[:6]
     today = datetime.now(UTC).date()
     async with SessionLocal() as db:
@@ -239,8 +252,8 @@ async def test_adset_level_uses_adset_objects(geo_setup) -> None:
         run = client.post(one + "/run").json()
         assert run["triggered"] == 1 and fake.paused == ["c-idle-s"]
         event = client.get(BASE + "/events").json()["items"][0]
-        # На уровне адсетов депозитов нет — сработали только клики.
-        assert event["level"] == "adset" and event["checks"] == ["no_clicks"]
+        # sub3 привязывает к адсету также продажи — ноль известен точно.
+        assert event["level"] == "adset" and event["checks"] == ["no_clicks", "no_deps"]
     finally:
         client.__exit__(None, None, None)
 

@@ -2087,14 +2087,17 @@
     var host = byId("metaSyncState");
     var run = null;
     state.connections.forEach(function (connection) {
-      if (connection.last_run && (!run || (connection.last_run.started_at || "") >
-        (run.started_at || ""))) {
+      if (connection.last_run && (!run || (connection.last_run.created_at || "") >
+        (run.created_at || ""))) {
         run = connection.last_run;
       }
     });
     var tone = "#C9BFBF";
     var text = state.connections.length ? "Не синхронизировалось" : "Нет подключения";
-    if (run && (run.status === "queued" || run.status === "running")) {
+    if (run && run.status === "queued") {
+      tone = "#C9821F";
+      text = "Синхронизация в очереди";
+    } else if (run && run.status === "running") {
       tone = "#C9821F";
       text = "Синхронизация " + (run.progress_pct || 0) + " %";
     } else if (run && run.status === "failed") {
@@ -2990,7 +2993,7 @@
         geo: "", daily_budget: "", spend_limit: "", start_date: "", end_date: "",
         link_url: "", primary_text: "", headline: "", description: "",
         call_to_action: "LEARN_MORE", page_id: "", pixel_id: "",
-        url_tags: "", display_link: "",
+        url_tags: "sub2={{campaign.name}}&sub3={{adset.name}}&sub4={{ad.name}}", display_link: "",
         // Расширенный режим: кампании, цель (4 селекта), бюджет и ставка,
         // автоправила, теги.
         campaign_count: 1,
@@ -3255,8 +3258,8 @@
       uploadField("link_url", "Ссылка", 'placeholder="https://..."',
         "Пусто — берётся у кабинета на шаге «Кабинеты»") + "</div>" +
       '<div class="meta-up-grid" style="margin-top:14px">' +
-      uploadField("url_tags", "Параметры URL", 'placeholder="utm_source=fb&utm_campaign={{campaign.id}}"',
-        "Уходят в url_tags объявления — Meta допишет их к ссылке сама") +
+      uploadField("url_tags", "Параметры URL", 'placeholder="sub2={{campaign.name}}&sub3={{adset.name}}&sub4={{ad.name}}"',
+        "sub2/sub3/sub4 для Keitaro добавляются к каждому объявлению автоматически") +
       uploadField("display_link", "Отображаемый URL", 'maxlength="240" placeholder="example.com"',
         "Что видно в объявлении вместо ссылки на трекер") + "</div>" +
       '<div class="meta-up-grid" style="margin-top:14px">' +
@@ -3644,7 +3647,7 @@
     if (!state.upload.perAccount[account.id]) {
       state.upload.perAccount[account.id] = {
         page_id: "", pixel_id: "", link_url: "", daily_budget: "",
-        campaign_name: "", url_tags: "", display_link: "", beneficiary: ""
+        campaign_name: "", url_tags: "sub2={{campaign.name}}&sub3={{adset.name}}&sub4={{ad.name}}", display_link: "", beneficiary: ""
       };
     }
     return state.upload.perAccount[account.id];

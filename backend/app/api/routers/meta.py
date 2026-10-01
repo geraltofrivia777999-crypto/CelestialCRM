@@ -103,6 +103,7 @@ from app.services import (
     meta_comments,
     meta_geo_rules,
     meta_hourly,
+    meta_keitaro,
     meta_levels,
     meta_spend,
     meta_tree,
@@ -750,7 +751,16 @@ async def start_sync(
         entity_id=str(connection.id),
     )
     await db.commit()
-    sync_meta_connection.delay(str(connection.id), str(run.id), mode)
+    try:
+        sync_meta_connection.delay(str(connection.id), str(run.id), mode)
+    except Exception as exc:
+        run.status = SyncStatus.failed
+        run.finished_at = datetime.now(UTC)
+        run.error = "Не удалось поставить синхронизацию в очередь"
+        run.details = {"phase": "enqueue_failed"}
+        await db.commit()
+        logger.exception("Could not enqueue manual Meta sync")
+        raise HTTPException(status_code=503, detail=run.error) from exc
     return response
 
 
@@ -852,36 +862,20 @@ async def overview_tree(
                 MetaStatDaily.record_date <= end,
             )
         )).scalars())
-    available_geos = sorted({
-        row.country_code.strip().upper() for row in stats
-        if row.country_code and len(row.country_code.strip()) == 2
-    })
+    kt_unavailable = False
+    try:
+        kt_reports, missing_timezones = await meta_keitaro.reports_for_accounts(
+            db, current.workspace_id, accounts, start, end
+        )
+    except Exception:
+        logger.exception("MetaAds v2 Keitaro report failed")
+        kt_reports, missing_timezones, kt_unavailable = {}, [], True
+    kt_nodes, kt_geos, attribution = meta_keitaro.attribute(
+        accounts, entities, kt_reports, geos=selected_geos or None
+    )
+    available_geos = sorted(kt_geos)
     if selected_geos:
         stats = [row for row in stats if (row.country_code or "").upper() in selected_geos]
-    connections = await _connections(db, current)
-    sub_by_connection = {
-        item.id: item.attribution_sub_id for item in connections if item.attribution_sub_id
-    }
-    campaigns_by_sub: dict[int, set[str]] = {}
-    connection_by_account = {account.id: account.connection_id for account in accounts}
-    for entity in entities:
-        if entity.level != "campaign":
-            continue
-        sub_id = sub_by_connection.get(connection_by_account.get(entity.account_id))
-        if sub_id:
-            campaigns_by_sub.setdefault(sub_id, set()).add(entity.external_id)
-    for fact in stats:
-        sub_id = sub_by_connection.get(connection_by_account.get(fact.account_id))
-        if sub_id and fact.campaign_external_id:
-            campaigns_by_sub.setdefault(sub_id, set()).add(fact.campaign_external_id)
-    # Each connection can use a different Keitaro sub-id. Never join one
-    # connection's tracker figures onto another connection's campaigns.
-    keitaro = {}
-    for sub_id, campaign_ids in campaigns_by_sub.items():
-        matched = await keitaro_by_campaign(
-            db, current.workspace_id, start, end, sub_id, selected_geos or None
-        )
-        keitaro.update({key: value for key, value in matched.items() if key in campaign_ids})
     # Агент — название подключения, которое задают в мастере («RAMP2»,
     # «Celestial BM»), а не пользователь-владелец кабинета.
     connection_ids = {account.connection_id for account in accounts if account.connection_id}
@@ -891,12 +885,14 @@ async def overview_tree(
             .where(IntegrationConnection.id.in_(connection_ids))
         )).all()
     } if connection_ids else {}
-    rows = meta_tree.build_tree(accounts, entities, stats, keitaro, agents)
+    rows = meta_tree.build_tree(accounts, entities, stats, {}, agents, kt_nodes)
     return {
         "period": {"from": start.isoformat(), "to": end.isoformat()},
         "rows": rows,
         "available_geos": available_geos,
-        "attribution_configured": bool(sub_by_connection),
+        "attribution_configured": bool(kt_reports),
+        "attribution": {**attribution, "missing_timezones": missing_timezones},
+        "keitaro_unavailable": kt_unavailable,
     }
 
 
@@ -5278,6 +5274,7 @@ def _run_payload(run: SyncRun | None) -> dict | None:
         "rows_processed": run.rows_processed,
         "error": run.error,
         "details": run.details,
+        "created_at": run.created_at,
         "started_at": run.started_at,
         "finished_at": run.finished_at,
     }

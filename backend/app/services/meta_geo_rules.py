@@ -5,9 +5,8 @@
 стране, где он крутился: сработало правило хотя бы одного GEO — объект встаёт
 на паузу целиком, потому что остановить кампанию в одной стране Meta не умеет.
 
-Пороги в долларах; расход кабинета в другой валюте пересчитывается. Депозиты
-приходят из Keitaro и привязаны к кампании, поэтому проверки депозитов работают
-только на уровне кампаний и только при настроенном sub_id подключения.
+Пороги в долларах; расход кабинета в другой валюте пересчитывается. Метрики
+Keitaro привязываются по sub2/sub3/sub4 в часовом поясе кабинета.
 """
 
 import uuid
@@ -30,12 +29,7 @@ from app.models import (
     MetaStatDaily,
     Status,
 )
-from app.services.meta_metrics import (
-    INSTALL_ACTION_TYPES,
-    REGISTRATION_ACTION_TYPES,
-    action_count,
-    keitaro_by_campaign,
-)
+from app.services import meta_keitaro
 from app.services.meta_rules import _convert_money
 
 LEVELS = ("campaign", "adset", "ad")
@@ -141,9 +135,6 @@ async def collect(
             "clicks": 0, "insts": 0, "regs": 0,
         })
         row["spend"] += fact.spend or Decimal(0)
-        row["clicks"] += fact.clicks or 0
-        row["insts"] += action_count(fact.actions, INSTALL_ACTION_TYPES)
-        row["regs"] += action_count(fact.actions, REGISTRATION_ACTION_TYPES)
     if not slices:
         return []
 
@@ -156,52 +147,31 @@ async def collect(
             )
         )).scalars()
     }
-    deps = await _deposits(db, workspace_id, level, accounts, today, slices)
+    all_entities = list((await db.execute(select(MetaEntity).where(
+        MetaEntity.workspace_id == workspace_id,
+        MetaEntity.account_id.in_(list(accounts)),
+    ))).scalars())
+    kt_reports, _ = await meta_keitaro.reports_for_accounts(
+        db, workspace_id, list(accounts.values()), min(today.values()), max(today.values()),
+        days_by_account=today,
+    )
+    kt_metrics, _, _ = meta_keitaro.attribute(list(accounts.values()), all_entities, kt_reports)
     rows = []
-    for key, row in slices.items():
+    for row in slices.values():
         entity = entities.get((row["account_id"], row["external_id"]))
         # Паузим только то, что сейчас крутится: остальное уже стоит.
         if not entity or entity.effective_status != "ACTIVE":
             continue
         account = accounts[row["account_id"]]
-        row["deps"] = deps.get(key) if level == "campaign" else None
+        matched = kt_metrics.get((row["account_id"], level, row["external_id"], row["geo"]))
+        for metric in ("clicks", "insts", "regs", "deps"):
+            row[metric] = matched[metric] if matched else None
         row["currency"] = account.currency or "USD"
         row["spend_usd"] = _convert_money(row["spend"], row["currency"], "USD")
         row["entity"] = entity
         row["account"] = account
         rows.append(row)
     return rows
-
-
-async def _deposits(
-    db: AsyncSession, workspace_id: uuid.UUID, level: str,
-    accounts: dict, today: dict, slices: dict,
-) -> dict[tuple, int]:
-    """Депозиты Keitaro по «кампания × GEO». У адсетов и объявлений их нет."""
-    if level != "campaign":
-        return {}
-    connections = {
-        item.id: item.attribution_sub_id for item in (await db.execute(
-            select(IntegrationConnection).where(
-                IntegrationConnection.workspace_id == workspace_id,
-                IntegrationConnection.kind == "meta",
-            )
-        )).scalars()
-    }
-    cache: dict[tuple, dict] = {}
-    result = {}
-    for key in slices:
-        account_id, campaign_id, geo = key
-        sub_id = connections.get(accounts[account_id].connection_id)
-        if not sub_id:
-            continue
-        day = today[account_id]
-        lookup = (sub_id, day, geo)
-        if lookup not in cache:
-            cache[lookup] = await keitaro_by_campaign(db, workspace_id, day, day, sub_id, {geo})
-        matched = cache[lookup].get(campaign_id)
-        result[key] = int(matched["sales"]) if matched else 0
-    return result
 
 
 async def run_rule_set(

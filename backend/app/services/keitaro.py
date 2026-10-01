@@ -210,6 +210,14 @@ class KeitaroClient:
             await self._request("POST", "/admin_api/v1/report/build", json=payload)
         )
 
+    async def meta_name_report(self, start: date, end: date, *, timezone: str) -> list[dict]:
+        """FB name macros, grouped in the ad account's own timezone."""
+        return _rows(await self._request("POST", "/admin_api/v1/report/build", json={
+            "range": {"from": start.isoformat(), "to": end.isoformat(), "timezone": timezone},
+            "dimensions": ["country_code", "sub_id_2", "sub_id_3", "sub_id_4"],
+            "measures": ["clicks", "campaign_unique_clicks", "leads", "sales"],
+        }))
+
 
     async def conversions(
         self,

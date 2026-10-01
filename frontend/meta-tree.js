@@ -1,8 +1,8 @@
 /*
  * MetaAds v2 · «Обзор» деревом: аккаунт → кампании → адсеты → объявления.
  *
- * Числа Meta считаются из дневной статистики на каждом уровне отдельно.
- * Депозиты Keitaro привязаны к кампании: у адсетов и объявлений они неизвестны.
+ * Расход и показы — Meta; клики, уникальные клики, лиды и продажи — Keitaro.
+ * Сопоставление по sub2/sub3/sub4 и часовому поясу рекламного кабинета.
  */
 (function () {
   "use strict";
@@ -46,6 +46,8 @@
     heat: {},
     filters: { agents: null, geo: null },
     availableGeos: [],
+    attribution: {},
+    keitaroUnavailable: false,
     loading: false,
     requestId: 0,
     bound: false
@@ -465,6 +467,7 @@
     var oneCurrency = currencyNames.length === 1 ? currencyNames[0] : null;
     var sum = accounts.reduce(function (acc, row) {
       var part = totals(row);
+      if (part.clicks != null) acc.hasKt = true;
       ["impressions", "clicks", "insts", "regs", "spend"].forEach(function (key) {
         acc[key] = (acc[key] || 0) + (part[key] || 0);
       });
@@ -478,12 +481,12 @@
     var cards = [
       { label: "Total spend", value: oneCurrency ? money(sum.spend || 0, oneCurrency) : "—", tone: "spend" },
       { label: "Impressions", value: num(sum.impressions || 0) },
-      { label: "Clicks", value: num(sum.clicks || 0) },
+      { label: "Clicks", value: sum.hasKt ? num(sum.clicks || 0) : "—" },
       { label: "CTR", value: percent(ctr) },
       { label: "CPM", value: oneCurrency ? money(sum.impressions ? sum.spend / sum.impressions * 1000 : null, oneCurrency) : "—" },
       { label: "CPC", value: oneCurrency ? money(sum.clicks ? sum.spend / sum.clicks : null, oneCurrency) : "—" },
-      { label: "Installs", value: num(sum.insts || 0), tone: "blue" },
-      { label: "Registrations", value: num(sum.regs || 0), tone: "blue" },
+      { label: "Insts (KT unique)", value: sum.hasKt ? num(sum.insts || 0) : "—", tone: "blue" },
+      { label: "Regs (KT leads)", value: sum.hasKt ? num(sum.regs || 0) : "—", tone: "blue" },
       { label: "Deposits", value: sum.hasDeps ? num(sum.deps) : "—", tone: "blue" },
       { label: "Avg install", value: oneCurrency ? money(ratio(sum.spend, sum.insts), oneCurrency) : "—", tone: "avg" },
       { label: "Avg reg", value: oneCurrency ? money(ratio(sum.spend, sum.regs), oneCurrency) : "—", tone: "avg" },
@@ -493,9 +496,13 @@
       return '<div class="mt-card' + (card.tone ? " mt-card--" + card.tone : "") + '">' +
         "<span>" + escapeHtml(card.label) + "</span><b>" + card.value + "</b></div>";
     }).join("");
-    byId("metaTreeNote").textContent = currencyNames.length > 1
-      ? "В кабинетах разные валюты: денежный итог не суммируется. Депозиты ниже кампании не атрибутируются."
-      : "Insts и Regs — события Meta; Deps — продажи Keitaro на уровне кампании.";
+    var note = "Clicks, Insts (уникальные клики), Regs (лиды), Deps (продажи) — Keitaro по sub2/sub3/sub4 и TZ кабинета.";
+    if (currencyNames.length > 1) note += " Денежный итог по разным валютам не суммируется.";
+    if (state.attribution.ambiguous) note += " Неоднозначных строк: " + state.attribution.ambiguous + ". Добавьте уникальный ID кабинета в ссылку.";
+    if (state.attribution.unmatched) note += " Без совпадения: " + state.attribution.unmatched + ".";
+    if ((state.attribution.missing_timezones || []).length) note += " У части кабинетов не задан корректный TZ.";
+    if (state.keitaroUnavailable) note += " Keitaro временно недоступен: его метрики не показаны.";
+    byId("metaTreeNote").textContent = note;
   }
 
   function render() {
@@ -1198,6 +1205,8 @@
       if (requestId !== state.requestId) return;
       state.rows = payload.rows || [];
       state.availableGeos = payload.available_geos || [];
+      state.attribution = payload.attribution || {};
+      state.keitaroUnavailable = !!payload.keitaro_unavailable;
       Object.keys(state.picked).forEach(function (id) {
         if (!findRow(state.rows, id)) delete state.picked[id];
       });

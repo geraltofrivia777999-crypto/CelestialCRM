@@ -51,6 +51,19 @@ from app.services.meta_bundle import (
 )
 from app.services.meta_session import get_session_manager, open_session_access
 
+KT_NAME_TAGS = (
+    "sub2={{campaign.name}}",
+    "sub3={{adset.name}}",
+    "sub4={{ad.name}}",
+)
+
+
+def keitaro_name_tags(value: str | None) -> str:
+    """Keep other URL tags, but make the three attribution macros canonical."""
+    parts = [part for part in (value or "").lstrip("?").split("&") if part]
+    parts = [part for part in parts if part.split("=", 1)[0].lower() not in {"sub2", "sub3", "sub4"}]
+    return "&".join([*parts, *KT_NAME_TAGS])
+
 logger = logging.getLogger(__name__)
 
 ClientFactory = Callable[..., MetaClient]
@@ -712,7 +725,7 @@ class MetaLaunchPublisher:
                 name=name,
                 asset_feed_spec=spec,
                 page_id=page_id,
-                url_tags=launch.url_tags,
+                url_tags=keitaro_name_tags(launch.url_tags),
                 advantage_creative=bool(ad_block.get("advantage_creative")),
                 multi_advertiser=bool(ad_block.get("multi_advertiser")),
             )
@@ -726,7 +739,7 @@ class MetaLaunchPublisher:
                 account.external_id,
                 name=name,
                 object_story_spec=spec,
-                url_tags=launch.url_tags,
+                url_tags=keitaro_name_tags(launch.url_tags),
                 advantage_creative=bool(ad_block.get("advantage_creative")),
                 multi_advertiser=bool(ad_block.get("multi_advertiser")),
             )

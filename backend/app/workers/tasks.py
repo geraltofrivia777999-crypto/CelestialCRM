@@ -86,6 +86,7 @@ def sync_keitaro_connection(
     retry_jitter=True,
     max_retries=5,
     acks_late=True,
+    time_limit=5400,
 )
 def sync_meta_connection(
     self,
@@ -251,28 +252,43 @@ def run_alerts(self) -> dict:
     return asyncio.run(AlertEngine(WorkerSessionLocal).run())
 
 
-STUCK_RUN_TIMEOUT_MINUTES = 120
+QUEUED_RUN_TIMEOUT_MINUTES = 10
+RUNNING_RUN_TIMEOUT_MINUTES = 30
 
 
 async def _expire_stuck_runs(db, now: datetime) -> int:
     """Fail runs abandoned by a dead worker, otherwise they block scheduling forever."""
-    deadline = now - timedelta(minutes=STUCK_RUN_TIMEOUT_MINUTES)
+    meta_connections = select(IntegrationConnection.id).where(IntegrationConnection.kind == "meta")
     stuck = list(
         (
             await db.execute(
                 select(SyncRun).where(
+                    SyncRun.connection_id.in_(meta_connections),
                     SyncRun.status.in_([SyncStatus.queued, SyncStatus.running]),
-                    func.coalesce(SyncRun.started_at, SyncRun.created_at) < deadline,
+                    ((SyncRun.status == SyncStatus.queued) &
+                     (SyncRun.created_at < now - timedelta(minutes=QUEUED_RUN_TIMEOUT_MINUTES))) |
+                    ((SyncRun.status == SyncStatus.running) &
+                     (func.coalesce(SyncRun.heartbeat_at, SyncRun.started_at) <
+                      now - timedelta(minutes=RUNNING_RUN_TIMEOUT_MINUTES))),
                 )
             )
         ).scalars()
     )
+    meta_stuck_ids = {run.id for run in stuck}
+    legacy_deadline = now - timedelta(minutes=120)
+    stuck.extend((await db.execute(select(SyncRun).where(
+        SyncRun.connection_id.not_in(meta_connections),
+        SyncRun.status.in_([SyncStatus.queued, SyncStatus.running]),
+        func.coalesce(SyncRun.started_at, SyncRun.created_at) < legacy_deadline,
+    ))).scalars())
     for run in stuck:
+        was_queued = run.status == SyncStatus.queued
         run.status = SyncStatus.failed
         run.finished_at = now
         run.error = (
-            f"TimeoutError: sync did not finish within "
-            f"{STUCK_RUN_TIMEOUT_MINUTES} minutes and was released"
+            "Задача Meta не дошла до воркера за 10 минут" if run.id in meta_stuck_ids and was_queued
+            else "Синхронизация Meta не отвечала 30 минут" if run.id in meta_stuck_ids
+            else "Синхронизация не завершилась за 120 минут"
         )
         details = dict(run.details or {})
         details["phase"] = "expired"
@@ -329,9 +345,23 @@ async def _schedule_connections(kind: str, task) -> int:
             await db.flush()
             pending.append((str(connection.id), str(run.id)))
         await db.commit()
+    # Never enqueue before commit: an idle worker can pick the task before the
+    # run row exists and leave a permanent "queued 0%" ghost.
+    queued = 0
     for connection_id, run_id in pending:
-        task.delay(connection_id, run_id, "incremental")
-    return len(pending)
+        try:
+            task.delay(connection_id, run_id, "incremental")
+            queued += 1
+        except Exception as exc:
+            logger.exception("Could not enqueue %s sync %s", kind, run_id)
+            async with WorkerSessionLocal() as db:
+                run = await db.get(SyncRun, uuid.UUID(run_id))
+                if run and run.status == SyncStatus.queued:
+                    run.status = SyncStatus.failed
+                    run.finished_at = datetime.now(UTC)
+                    run.error = f"Не удалось поставить задачу в очередь: {type(exc).__name__}"
+                    await db.commit()
+    return queued
 
 
 @celery_app.task
@@ -372,3 +402,14 @@ def schedule_meta_syncs() -> int:
         logger.info("Scheduled Meta sync is disabled")
         return 0
     return asyncio.run(_schedule_connections("meta", sync_meta_connection))
+
+
+@celery_app.task
+def expire_stuck_syncs() -> int:
+    """Independent watchdog: Meta's only worker may itself be blocked."""
+    async def _run() -> int:
+        async with WorkerSessionLocal() as db:
+            count = await _expire_stuck_runs(db, datetime.now(UTC))
+            await db.commit()
+            return count
+    return asyncio.run(_run())

@@ -41,6 +41,7 @@ from app.services.meta import (
 from app.services.meta_launch import (
     LaunchValidationError,
     MetaLaunchPublisher,
+    keitaro_name_tags,
     load_launch_context,
     validate_launch,
 )
@@ -48,6 +49,13 @@ from app.services.meta_rules import MetaRuleEngine, matches
 from tests.test_media_finance import _admin_client
 
 ACCOUNT_ID = "act_777000222"
+
+
+def test_keitaro_url_tags_are_present_once_with_other_tags_preserved() -> None:
+    assert keitaro_name_tags("utm_source=fb&sub2=old&sub4=old") == (
+        "utm_source=fb&sub2={{campaign.name}}&sub3={{adset.name}}&sub4={{ad.name}}"
+    )
+
 CAMPAIGN_ID = "23855000001"
 ADSET_ID = "23855000002"
 AD_ID = "23855000003"

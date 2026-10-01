@@ -35,7 +35,8 @@ celery_app.conf.update(
         "app.workers.tasks.schedule_keitaro_syncs": {"queue": "keitaro"},
         "app.workers.tasks.poll_keitaro_conversions": {"queue": "keitaro"},
         "app.workers.tasks.sync_meta_connection": {"queue": "meta"},
-        "app.workers.tasks.schedule_meta_syncs": {"queue": "meta"},
+        "app.workers.tasks.schedule_meta_syncs": {"queue": "celery"},
+        "app.workers.tasks.expire_stuck_syncs": {"queue": "celery"},
     },
     beat_schedule={
         "schedule-keitaro-syncs": {
@@ -56,7 +57,12 @@ celery_app.conf.update(
         "schedule-meta-syncs": {
             "task": "app.workers.tasks.schedule_meta_syncs",
             "schedule": max(settings.meta_sync_interval_minutes, 15) * 60,
-            "options": {"queue": "meta"},
+            "options": {"queue": "celery"},
+        },
+        "expire-stuck-syncs": {
+            "task": "app.workers.tasks.expire_stuck_syncs",
+            "schedule": 120,
+            "options": {"queue": "celery"},
         },
         # Правила считаются по уже загруженной статистике, поэтому чаще
         # синхронизации их гонять бессмысленно — цифры не изменятся.

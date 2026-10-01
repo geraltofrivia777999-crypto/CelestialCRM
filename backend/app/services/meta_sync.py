@@ -53,6 +53,7 @@ logger = logging.getLogger("meta_sync")
 
 ClientFactory = Callable[..., MetaClient]
 LEVELS = ("campaign", "adset", "ad")
+ACCOUNT_SYNC_TIMEOUT_SECONDS = 20 * 60
 BACKFILL_DAYS = 89
 # Стартовое окно для несистемных токенов и пауза между кабинетами. Это не
 # осторожность ради осторожности: шквал запросов сразу после выпуска токена —
@@ -99,6 +100,8 @@ class MetaSyncEngine:
             run = await db.get(SyncRun, run_uuid)
             if not connection or not run:
                 return {"status": "missing"}
+            if run.status == SyncStatus.failed and (run.details or {}).get("phase") == "expired":
+                return {"status": "expired"}
             run.status = SyncStatus.running
             run.started_at = datetime.now(UTC)
             run.heartbeat_at = run.started_at
@@ -153,7 +156,9 @@ class MetaSyncEngine:
             while True:
                 try:
                     social = await self._sync_social_graph(config, client)
+                    await self._heartbeat(run_uuid, "accounts", 2)
                     accounts = await self._sync_accounts(config, client, social)
+                    await self._heartbeat(run_uuid, "entities", 5)
                     start, end = self._date_window(mode, config)
                     totals = {"accounts": len(accounts), "entities": 0, "stat_rows": 0}
                     per_account: dict[str, dict] = {}
@@ -165,8 +170,9 @@ class MetaSyncEngine:
                             # передышки — это не поведение человека, открывшего кабинет
                             # посмотреть статистику.
                             await asyncio.sleep(GENTLE_PAUSE_SECONDS)
-                        entity_counts = await self._sync_entities(config, client, account)
-                        stat_rows = await self._sync_insights(config, client, account, start, end)
+                        async with asyncio.timeout(ACCOUNT_SYNC_TIMEOUT_SECONDS):
+                            entity_counts = await self._sync_entities(config, client, account)
+                            stat_rows = await self._sync_insights(config, client, account, start, end)
                         totals["entities"] += sum(entity_counts.values())
                         totals["stat_rows"] += stat_rows
                         per_account[account["external_id"]] = {
@@ -197,6 +203,8 @@ class MetaSyncEngine:
                         connection = await db.get(IntegrationConnection, connection_uuid)
                         if not run or not connection:
                             return {"status": "missing"}
+                        if run.status == SyncStatus.failed and (run.details or {}).get("phase") == "expired":
+                            return {"status": "expired"}
                         run.status = SyncStatus.success
                         run.progress_pct = 100
                         run.rows_processed = totals["entities"] + totals["stat_rows"]
@@ -252,13 +260,22 @@ class MetaSyncEngine:
     async def _fail_run(self, run_uuid: uuid.UUID, exc: Exception) -> None:
         async with self.session_factory() as db:
             run = await db.get(SyncRun, run_uuid)
-            if run:
+            if run and not (run.status == SyncStatus.failed and (run.details or {}).get("phase") == "expired"):
                 run.status = SyncStatus.failed
                 run.finished_at = datetime.now(UTC)
                 run.error = _safe_sync_error(exc)
                 details = dict(run.details or {})
                 details["phase"] = "failed"
                 run.details = details
+                await db.commit()
+
+    async def _heartbeat(self, run_uuid: uuid.UUID, phase: str, progress: int) -> None:
+        async with self.session_factory() as db:
+            run = await db.get(SyncRun, run_uuid)
+            if run and run.status == SyncStatus.running:
+                run.progress_pct = max(run.progress_pct or 0, progress)
+                run.heartbeat_at = datetime.now(UTC)
+                run.details = {"phase": phase}
                 await db.commit()
 
     async def _renew_session_token(self, config: dict) -> str | None:
