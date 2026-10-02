@@ -990,11 +990,6 @@
     return tr;
   }
 
-  function previousMonthLabel() {
-    var previous = new Date(state.year, state.month - 2, 1);
-    return MONTHS_GENITIVE[previous.getMonth()] + " " + previous.getFullYear();
-  }
-
   function renderBody() {
     var body = byId("finGridBody");
     body.innerHTML = "";
@@ -1093,31 +1088,30 @@
 
     // Дневные ячейки — чистый день; у переноса нет своей даты, поэтому он
     // входит только в месячный итог.
-    var monthProfit = writeRow("profit", money, profit, true);
+    // Профит — чистый месяц. Долг прошлого месяца в него не входит: он
+    // вычитается только там, где считается зарплата.
+    var profitSum = writeRow("profit", money, profit, true);
     var carried = Math.max(num(state.prevMinus), 0);
-    var profitSum = q4(monthProfit - carried);
     var profitCell = calcCells.profit.sum;
     profitCell.textContent = money(profitSum);
     profitCell.classList.toggle("fin-neg", profitSum < 0);
     profitCell.classList.toggle("fin-pos", profitSum > 0);
     if (calcCells.profit.hint) {
-      calcCells.profit.hint.textContent = carried
-        ? "доход − спенд − costs − перенос " + money(carried) + " из " + previousMonthLabel()
-        : "доход − спенд − costs";
+      calcCells.profit.hint.textContent = "доход − спенд − costs";
     }
 
     writeRow("roi", percent, roi, true);
     var base = spendSum + costsSum;
-    var roiSum = base > 0 ? monthProfit / base * 100 : null;
+    var roiSum = base > 0 ? profitSum / base * 100 : null;
     var roiCell = calcCells.roi.sum;
     roiCell.textContent = percent(roiSum);
     roiCell.classList.toggle("fin-neg", roiSum !== null && roiSum < 0);
     roiCell.classList.toggle("fin-pos", roiSum !== null && roiSum > 0);
 
-    renderSummary(incomeSum, spendSum, costsSum, profitSum, roiSum);
+    renderSummary(incomeSum, spendSum, costsSum, profitSum, roiSum, q4(profitSum - carried));
   }
 
-  function renderSummary(incomeSum, spendSum, costsSum, profitSum, roiSum) {
+  function renderSummary(incomeSum, spendSum, costsSum, profitSum, roiSum, payoutProfit) {
     byId("finCardIncome").textContent = withSign(whole(incomeSum));
     byId("finCardSpend").textContent = withSign(whole(spendSum));
     byId("finCardCosts").textContent = withSign(money(costsSum));
@@ -1132,15 +1126,19 @@
     roiCard.className = "fin-card-value " +
       (roiSum !== null && roiSum < 0 ? "is-loss" : roiSum > 0 ? "is-gain" : "");
 
-    // Профит уже с переносом, поэтому долг из зарплаты второй раз не вычитается.
+    // Единственное место, где долг участвует: ступень и начисление считаются
+    // от профита за вычетом переноса, а сам профит выше остаётся месячным.
     var computed = state.plan
-      ? planSalary(state.plan, profitSum)
+      ? planSalary(state.plan, payoutProfit)
       : (function () {
-          var step = salaryStep(profitSum);
+          var step = salaryStep(payoutProfit);
           var pct = LADDER[step].pct;
-          return { salary: profitSum < 0 ? 0 : q4(profitSum * pct / 100), percent: pct };
+          return {
+            salary: payoutProfit < 0 ? 0 : q4(payoutProfit * pct / 100),
+            percent: pct
+          };
         })();
-    renderSettlement(profitSum, computed.salary, computed.salary);
+    renderSettlement(payoutProfit, computed.salary, computed.salary);
 
     spark(byId("finSparkIncome"), seriesOf(income), "#7E7070");
     spark(byId("finSparkSpend"), seriesOf(spend), "#7E7070");
@@ -1161,7 +1159,7 @@
   function renderAuthoritativeSettlement(total) {
     if (!total) return;
     renderSettlement(
-      num(total.profit),
+      num(total.profit_after_debt != null ? total.profit_after_debt : total.profit),
       num(total.salary),
       Math.max(num(total.payout), 0)
     );

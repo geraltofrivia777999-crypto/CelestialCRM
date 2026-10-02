@@ -201,18 +201,21 @@ def totals(payload: dict, days_in_month: int, plan: dict | None = None) -> dict:
         daily.append({"day": day, **metrics})
 
     month_metrics = metrics_for(income_total, spend_total, costs_total)
-    profit_month = month_metrics["profit"]
-    # Долг прошлого месяца входит в профит строкой ниже нуля, а не отдельным
-    # вычетом из зарплаты: иначе он вычитался бы дважды — сначала из профита,
-    # потом из начисленного. Поэтому ступень и зарплата берутся уже от профита
-    # с переносом, а к выплате идёт вся начисленная зарплата.
+    profit = month_metrics["profit"]
+    # Профит месяца — это доход минус спенд и costs, и больше ничего: долг
+    # прошлого месяца к работе этого месяца отношения не имеет. Считается он
+    # только в зарплате — ступень и начисление берутся от профита за вычетом
+    # долга, и он же решает, что перейдёт в следующий месяц.
     prev_minus = max(q(payload["prev_minus"] or ZERO), ZERO)
-    profit = q(profit_month - prev_minus)
+    profit_after_debt = q(profit - prev_minus)
     if plan:
-        salary, percent = plan_salary(plan, profit)
+        salary, percent = plan_salary(plan, profit_after_debt)
     else:
-        salary, percent = salary_for_profit(profit), ladder_percent(profit)
-    next_minus = max(-profit, ZERO)
+        salary, percent = (
+            salary_for_profit(profit_after_debt),
+            ladder_percent(profit_after_debt),
+        )
+    next_minus = max(-profit_after_debt, ZERO)
     return {
         "daily": daily,
         "total": {
@@ -221,7 +224,8 @@ def totals(payload: dict, days_in_month: int, plan: dict | None = None) -> dict:
             "spend_agent": q(agent_total),
             "costs": month_metrics["costs"],
             "profit": profit,
-            "profit_month": profit_month,
+            # Профит с погашенным долгом: от него считается зарплата и перенос.
+            "profit_after_debt": profit_after_debt,
             "roi": month_metrics["roi"],
             "salary_percent": percent,
             "salary": salary,
@@ -289,7 +293,11 @@ async def profits(
         result.setdefault(book.buyer_id, []).append(
             {
                 "tier": book.tier,
-                "profit": totals(loaded[book.id], days_in_month)["total"]["profit"],
+                # Для зарплаты профит берётся с погашенным долгом — и у самого
+                # баера, и у тимлида с CMO, которые считают от тех же частей.
+                "profit": totals(loaded[book.id], days_in_month)["total"][
+                    "profit_after_debt"
+                ],
             }
         )
     return result
@@ -332,7 +340,9 @@ async def workspace_profits(
     return [
         {
             "tier": book.tier,
-            "profit": totals(loaded[book.id], days_in_month)["total"]["profit"],
+            "profit": totals(loaded[book.id], days_in_month)["total"][
+                "profit_after_debt"
+            ],
         }
         for book in books
     ]
