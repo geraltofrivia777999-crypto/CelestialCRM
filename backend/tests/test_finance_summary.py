@@ -1,3 +1,4 @@
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -421,3 +422,36 @@ async def test_the_cmo_card_finds_its_role_in_any_spelling(database, role_name) 
     assert chief_row["category"] == "cmo"
     groups = {(row["category"], row["tier"]): Decimal(row["amount"]) for row in salary["groups"]}
     assert groups[("cmo", "all")] >= Decimal("2500")
+
+
+async def test_the_common_summary_keeps_the_debt_out_of_its_profit(team_summary) -> None:
+    """Четыре карточки про один месяц: профит сходится с доходом и затратами.
+
+    Минус прошлых месяцев раньше входил в профит сводки, и она показывала
+    доход за октябрь рядом с профитом за всю историю — числа не сходились
+    между собой, а объяснения на экране не было.
+    """
+    async with SessionLocal() as db:
+        books = list(
+            (
+                await db.execute(
+                    select(FinanceBook).where(
+                        FinanceBook.buyer_id == uuid.UUID(team_summary["book_owner"]),
+                        FinanceBook.year == 2026,
+                        FinanceBook.month == 8,
+                    )
+                )
+            ).scalars()
+        )
+        for book in books:
+            book.prev_minus = Decimal("500")
+        await db.commit()
+
+    with _admin_client() as client:
+        summary = client.get("/api/v1/finance/summary?year=2026&month=8").json()
+
+    cards = summary["cards"]
+    income = Decimal(cards["income"])
+    spend = Decimal(cards["spend"])
+    costs = Decimal(cards["costs"])
+    assert Decimal(cards["profit"]) == income - spend - costs

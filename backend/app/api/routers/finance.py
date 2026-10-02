@@ -353,15 +353,20 @@ def _public_metrics(values: dict) -> dict:
     }
 
 
-def _combined(rows: list[dict], *, keep_debt: bool = False) -> dict:
-    calculated = metrics_for(
-        sum((row["income"] for row in rows), ZERO),
-        sum((row["spend_buyer"] for row in rows), ZERO),
-        sum((row["costs"] for row in rows), ZERO),
+def _combined(rows: list[dict]) -> dict:
+    """Сложить части в один набор карточек.
+
+    Профит пересчитывается из сумм, а не складывается по строкам: он и в
+    строке, и здесь — доход минус спенд и costs за показанный период. Долг
+    прошлых месяцев в него не входит нигде, он живёт в расчёте зарплаты.
+    """
+    return _public_metrics(
+        metrics_for(
+            sum((row["income"] for row in rows), ZERO),
+            sum((row["spend_buyer"] for row in rows), ZERO),
+            sum((row["costs"] for row in rows), ZERO),
+        )
     )
-    if keep_debt:
-        calculated["profit"] = q(sum((row["profit"] for row in rows), ZERO))
-    return _public_metrics(calculated)
 
 
 def _tier_rows(calculated: list[dict]) -> list[dict]:
@@ -412,7 +417,7 @@ def _buyer_rows(
                 "buyer_id": str(user.id),
                 "buyer": user.name or user.login,
                 "role": user.role.name,
-                **_combined([book["total"] for book in books], keep_debt=True),
+                **_combined([book["total"] for book in books]),
             }
         )
     return rows
@@ -624,9 +629,11 @@ async def summary(
         by_buyer.setdefault(book.buyer_id, []).append(result)
         tiers_by_user.setdefault(book.buyer_id, set()).add(book.tier)
 
-    cards = _combined(
-        [item["total"] for item in calculated], keep_debt=tier is None
-    )
+    # Профит сводки — это доход минус спенд и costs за сам месяц. Раньше в него
+    # входил ещё и минус прошлых месяцев, и карточки не сходились между собой:
+    # три числа про октябрь, а четвёртое — про всю историю. Перенос живёт у
+    # баера, в его таблице офферов, и в сводку не поднимается.
+    cards = _combined([item["total"] for item in calculated])
     # В тир-сводке разбивка по тирам повторила бы карточки одной строкой.
     tier_rows = [] if tier is not None else _tier_rows(calculated)
     buyer_rows = []
@@ -1253,7 +1260,7 @@ async def buyer_overview(
         "year": year,
         "month": month,
         "days_in_month": days_in_month,
-        "cards": _combined(monthly, keep_debt=True),
+        "cards": _combined(monthly),
         "salary": {
             "total": total_salary,
             "label": "ЗП баера",

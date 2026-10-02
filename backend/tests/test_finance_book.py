@@ -329,12 +329,13 @@ async def test_negative_month_is_automatically_carried_forward(buyer_id) -> None
     assert Decimal(august["totals"]["total"]["next_minus"]) == Decimal("500")
 
 
-async def test_debt_is_taken_from_profit_and_not_a_second_time_from_salary(
+async def test_the_debt_only_touches_the_salary_not_the_profit(
     buyer_id,
 ) -> None:
-    """Перенос сидит в профите — зарплата считается уже от него.
+    """Долг прошлого месяца виден только в зарплате.
 
-    Второй раз тот же долг вычитать нельзя: он уже уменьшил профит.
+    Профит месяца — это его собственная работа: доход минус спенд и costs.
+    Перенос вычитается один раз и только там, где считают начисление.
     """
     with _admin_client() as client:
         client.put(
@@ -351,9 +352,10 @@ async def test_debt_is_taken_from_profit_and_not_a_second_time_from_salary(
 
     total = august["totals"]["total"]
     assert Decimal(total["prev_minus"]) == Decimal("500")
-    # Профит месяца — 3000, а профит с переносом — 2500; ROI остаётся месячным.
-    assert Decimal(total["profit_month"]) == Decimal("3000")
-    assert Decimal(total["profit"]) == Decimal("2500")
+    # Профит августа — его собственные 3000; долг виден только в зарплате,
+    # которая считается от 2500.
+    assert Decimal(total["profit"]) == Decimal("3000")
+    assert Decimal(total["profit_after_debt"]) == Decimal("2500")
     assert Decimal(total["salary"]) == Decimal("250")
     assert Decimal(total["payout"]) == Decimal("250")
     assert Decimal(total["next_minus"]) == 0
@@ -386,7 +388,8 @@ async def test_historical_edit_recalculates_following_months(buyer_id) -> None:
 
     total = august["totals"]["total"]
     assert Decimal(august["prev_minus"]) == Decimal("100")
-    assert Decimal(total["profit"]) == Decimal("2900")
+    assert Decimal(total["profit"]) == Decimal("3000")
+    assert Decimal(total["profit_after_debt"]) == Decimal("2900")
     assert Decimal(total["payout"]) == Decimal("290")
     assert Decimal(total["next_minus"]) == 0
     assert Decimal(september["prev_minus"]) == 0
