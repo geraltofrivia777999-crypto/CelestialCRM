@@ -69,6 +69,7 @@
     eventsTotal: 0,
     historySet: "",
     running: {},
+    geoAdding: false,
     bound: false
   };
 
@@ -402,11 +403,33 @@
       used[rule.country_code] = true;
     });
     var free = state.countries.filter(function (row) { return !used[row.code]; });
-    byId("grGeo").innerHTML = '<option value="">Выберите GEO</option>' + free.map(function (row) {
-      return '<option value="' + escapeHtml(row.code) + '">' + escapeHtml(row.code) + " · " +
-        escapeHtml(row.ru || row.name) + "</option>";
-    }).join("");
     byId("grAdd").disabled = !free.length;
+    var query = byId("grGeoSearch").value.trim().toLocaleLowerCase();
+    var matches = free.filter(function (row) {
+      return [row.code, row.ru, row.name].join(" ").toLocaleLowerCase().indexOf(query) >= 0;
+    });
+    byId("grGeoList").innerHTML = matches.map(function (row) {
+      return '<button type="button" class="gr-geo-choice" data-gr-geo-add="' + escapeHtml(row.code) +
+        '"' + (state.geoAdding ? " disabled" : "") + '><b>' + escapeHtml(row.code) +
+        '</b><span>' + escapeHtml(row.ru || row.name) + '</span><span aria-hidden="true">+</span></button>';
+    }).join("") || '<div class="gr-geo-empty">' +
+      (free.length ? "Ничего не найдено. Попробуйте другое название или код." : "Все GEO уже добавлены") + "</div>";
+    byId("grGeoList").setAttribute("aria-busy", String(state.geoAdding));
+    byId("grGeoStatus").textContent = state.geoAdding ? "Добавляем GEO…" :
+      "Уже добавленные страны не показываются в списке.";
+  }
+
+  function openGeoPicker() {
+    if (!state.current) return;
+    byId("grGeoSearch").value = "";
+    renderGeoPicker();
+    byId("grGeoModal").classList.add("is-open");
+    byId("grGeoSearch").focus();
+  }
+
+  function closeGeoPicker() {
+    byId("grGeoModal").classList.remove("is-open");
+    (byId("grAdd").disabled ? byId("grName") : byId("grAdd")).focus();
   }
 
   function payloadOf(rule, draft) {
@@ -441,6 +464,7 @@
       set.rules.sort(function (a, b) { return a.country_code.localeCompare(b.country_code); });
       delete state.drafts[code];
       if (index < 0) loadSets();
+      return true;
     } catch (error) {
       failed("GEO не сохранилось", error);
     } finally {
@@ -573,10 +597,22 @@
     byId("grRun").addEventListener("click", function () {
       if (state.current) runSet(state.current.id);
     });
-    byId("grAdd").addEventListener("click", function () {
-      var code = byId("grGeo").value;
-      if (!code) return byId("grGeo").focus();
-      saveRule(code, { is_enabled: true });
+    byId("grAdd").addEventListener("click", openGeoPicker);
+    byId("grGeoSearch").addEventListener("input", renderGeoPicker);
+    byId("grGeoModal").addEventListener("click", function (event) {
+      if (event.target === byId("grGeoModal") || event.target.closest("[data-gr-geo-close]")) closeGeoPicker();
+    });
+    byId("grGeoList").addEventListener("click", async function (event) {
+      var choice = event.target.closest("[data-gr-geo-add]");
+      if (!choice || state.geoAdding || !state.current) return;
+      state.geoAdding = true;
+      renderGeoPicker();
+      try {
+        if (await saveRule(choice.getAttribute("data-gr-geo-add"), { is_enabled: true })) closeGeoPicker();
+      } finally {
+        state.geoAdding = false;
+        renderGeoPicker();
+      }
     });
     var body = byId("grBody");
     body.addEventListener("input", function (event) {
@@ -615,7 +651,15 @@
     });
     byId("grMore").addEventListener("click", function () { loadEvents(false); });
     document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape") closeCreate();
+      if (byId("grGeoModal").classList.contains("is-open")) {
+        if (event.key === "Escape") { event.preventDefault(); closeGeoPicker(); return; }
+        if (event.key === "Tab") {
+          var fields = byId("grGeoModal").querySelectorAll("button:not(:disabled), input:not(:disabled)");
+          var first = fields[0], last = fields[fields.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        }
+      } else if (event.key === "Escape") closeCreate();
     });
   }
 

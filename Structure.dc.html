@@ -483,7 +483,16 @@
   .gr-last{margin-left:auto;font-size:12px;font-weight:600;color:#857D7D;align-self:center}
   .gr-run{display:inline-flex;align-items:center;gap:8px}
   .gr-add{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #F0EBEB}
-  .gr-add .mt-sort{min-width:240px}
+  .gr-add #grAdd{border-style:dashed;border-color:#D8CACA;background:#FBF9F9;color:#B91414}
+  .gr-geo-search{width:100%;height:42px;padding:0 13px;border:1px solid #E8E2E2;border-radius:11px;font:inherit;font-size:13px}
+  .gr-geo-search:focus{outline:2px solid rgba(185,20,20,.18);border-color:#B91414}
+  .gr-geo-list{display:grid;gap:6px;max-height:320px;overflow:auto}
+  .gr-geo-choice{display:flex;align-items:center;gap:12px;width:100%;padding:11px 12px;border:1px solid #EBE6E6;border-radius:11px;background:#fff;text-align:left;color:#3A3030;cursor:pointer;font:inherit;font-size:13px}
+  .gr-geo-choice:hover,.gr-geo-choice:focus-visible{background:#FFF5F5;border-color:#B91414}
+  .gr-geo-choice:disabled{opacity:.5;cursor:wait}
+  .gr-geo-choice b{padding:5px 8px;border-radius:8px;background:#F2EDED;font-size:11px;min-width:34px;text-align:center}
+  .gr-geo-choice span:last-child{margin-left:auto;color:#B91414;font-size:20px}
+  .gr-geo-empty{padding:24px 12px;text-align:center;color:#9B9292;font-size:13px}
   .gr-table{min-width:1100px}
   .gr-table th,.gr-table td{text-align:center}
   .gr-table th:first-child,.gr-table td:first-child{min-width:220px}
@@ -966,7 +975,6 @@
           </div>
           <div class="mt-wrap">
             <div class="gr-add">
-              <select class="mt-sort" id="grGeo" aria-label="GEO"></select>
               <button class="mt-btn" type="button" id="grAdd"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>Добавить GEO</button>
             </div>
             <div class="mt-scroll">
@@ -1429,6 +1437,21 @@
     </div>
   </div>
 </div>
+<div class="mt-modal" id="grGeoModal" role="dialog" aria-modal="true" aria-labelledby="grGeoTitle">
+  <div class="mt-modal__card mt-modal__card--narrow">
+    <div class="mt-modal__head">
+      <div><div class="mt-modal__title" id="grGeoTitle">Добавить GEO</div><div class="mt-modal__sub">Выберите страну — она появится в таблице порогов</div></div>
+      <button class="mt-modal__x" type="button" data-gr-geo-close aria-label="Закрыть">×</button>
+    </div>
+    <div class="mt-modal__body">
+      <input class="gr-geo-search" id="grGeoSearch" type="search" placeholder="Поиск по стране или коду GEO" aria-label="Поиск GEO" autocomplete="off">
+      <div class="gr-geo-list" id="grGeoList" aria-busy="false"></div>
+      <div class="mt-note" id="grGeoStatus" role="status"></div>
+    </div>
+    <div class="mt-modal__foot"><button class="mt-btn" type="button" data-gr-geo-close>Отмена</button></div>
+  </div>
+</div>
+
 <div class="mt-modal" id="metaTreeHeatModal" role="dialog" aria-modal="true" aria-labelledby="metaTreeHeatTitle">
   <div class="mt-modal__card">
     <div class="mt-modal__head">
