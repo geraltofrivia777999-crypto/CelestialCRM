@@ -55,6 +55,12 @@ def test_is_due_respects_interval_and_toggle() -> None:
     assert is_due(config, now)
     config.last_run_at = now - timedelta(minutes=10)
     assert not is_due(config, now)
+    for interval in (5, 10):
+        config.interval_minutes = interval
+        config.last_run_at = now - timedelta(minutes=interval, seconds=5)
+        assert is_due(config, now)
+        config.last_run_at = now - timedelta(minutes=interval - 2)
+        assert not is_due(config, now)
     config.auto_enabled = False
     config.last_run_at = None
     assert not is_due(config, now)
@@ -185,12 +191,17 @@ async def test_run_now_pauses_matching_objects_and_logs_history(geo_setup) -> No
         assert client.put(one + "/geo/IND", json={}).status_code == 422
         assert client.put(one + "/geo/MX", json={"no_clicks": "-1"}).status_code == 422
 
+        for interval in (5, 10):
+            updated = client.patch(one, json={"interval_minutes": interval})
+            assert updated.status_code == 200 and updated.json()["interval_minutes"] == interval
+        for interval in (120, 240):
+            assert client.patch(one, json={"interval_minutes": interval}).status_code == 422
         updated = client.patch(one, json={"interval_minutes": 60, "auto_enabled": True})
         assert updated.json()["interval_minutes"] == 60 and updated.json()["auto_enabled"]
         assert client.patch(one, json={"interval_minutes": 7}).status_code == 422
         listed = client.get(BASE).json()
         assert [row["geos"] for row in listed["items"]] == [["IN"]]
-        assert listed["countries"] and 60 in listed["intervals"]
+        assert listed["countries"] and listed["intervals"] == [5, 10, 15, 30, 60]
 
         run = client.post(one + "/run")
         assert run.status_code == 200, run.text

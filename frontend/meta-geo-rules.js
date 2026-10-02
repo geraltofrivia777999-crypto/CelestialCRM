@@ -49,7 +49,7 @@
   var DEPS_ONLY_CAMPAIGN = "Депозиты Keitaro известны только у кампаний";
   var LEVEL_WORDS = { campaign: "Кампания", adset: "Адсет", ad: "Объявление" };
   var LEVEL_PLURAL = { campaign: "Кампании", adset: "Адсеты", ad: "Объявления" };
-  var INTERVAL_WORDS = { 15: "15 мин", 30: "30 мин", 60: "1 час", 120: "2 часа", 240: "4 часа" };
+  var INTERVAL_WORDS = { 5: "5 мин", 10: "10 мин", 15: "15 мин", 30: "30 мин", 60: "1 час" };
   var ICON_PLAY = '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
     '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>';
   var ICON_TRASH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
@@ -59,7 +59,7 @@
   var state = {
     sets: [],
     countries: [],
-    intervals: [15, 30, 60, 120, 240],
+    intervals: [5, 10, 15, 30, 60],
     serverEnabled: true,
     current: null,      // открытое автоправило вместе с его строками GEO
     drafts: {},

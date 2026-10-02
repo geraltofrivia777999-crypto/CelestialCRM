@@ -332,7 +332,7 @@ class MetaGeoRuleSetIn(BaseModel):
 class MetaGeoRuleSetUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
     level: Literal["campaign", "adset", "ad"] | None = None
-    interval_minutes: Literal[15, 30, 60, 120, 240] | None = None
+    interval_minutes: Literal[5, 10, 15, 30, 60] | None = None
     auto_enabled: bool | None = None
 
 

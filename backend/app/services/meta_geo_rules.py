@@ -39,7 +39,7 @@ LEVEL_COLUMNS = {
     "ad": "ad_external_id",
 }
 # Интервалы делят сутки без остатка — прогон всегда попадает в начало часа.
-INTERVALS = (15, 30, 60, 120, 240)
+INTERVALS = (5, 10, 15, 30, 60)
 THRESHOLDS = (
     "no_clicks", "no_insts", "no_regs", "no_deps", "max_avg_inst", "max_avg_reg", "max_avg_dep",
 )
