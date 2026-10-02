@@ -81,6 +81,34 @@
     return count ? spend / count : null;
   }
 
+  var accountClockFormats = Object.create(null);
+
+  function accountClock(timezone, now) {
+    if (!timezone) return "—";
+    try {
+      var format = accountClockFormats[timezone];
+      if (!format) {
+        format = accountClockFormats[timezone] = new Intl.DateTimeFormat("en-GB", {
+          timeZone: timezone, timeZoneName: "shortOffset",
+          hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+        });
+      }
+      var parts = {};
+      format.formatToParts(now).forEach(function (part) { parts[part.type] = part.value; });
+      return (parts.timeZoneName === "GMT" ? "GMT+0" : parts.timeZoneName) +
+        " · " + parts.hour + ":" + parts.minute;
+    } catch (error) { return "—"; }
+  }
+
+  function refreshAccountClocks() {
+    var body = byId("metaTreeBody");
+    if (!body || document.hidden) return;
+    var now = new Date();
+    body.querySelectorAll("[data-tree-timezone]").forEach(function (cell) {
+      cell.textContent = accountClock(cell.getAttribute("data-tree-timezone"), now);
+    });
+  }
+
   /* Цвет ячейки AvgInst/AvgReg/AvgDep по порогам своего GEO: меньше зелёного —
      зелёная, больше красного — красная, между ними жёлтая. */
   function heatClass(geo, metric, value) {
@@ -381,7 +409,9 @@
       "<td>" + agent + "</td>" +
       "<td>" + statusCell(row.status) + "</td>" +
       "<td>" + escapeHtml(row.currency || "—") + "</td>" +
-      "<td>" + escapeHtml(row.gmt || "—") + "</td>" +
+      '<td data-tree-timezone="' + escapeHtml(row.gmt || "") + '" title="' +
+      escapeHtml(row.gmt ? "Текущее время кабинета · " + row.gmt : "Часовой пояс не задан") +
+      '" style="white-space:nowrap">' + escapeHtml(accountClock(row.gmt, new Date())) + "</td>" +
       metricCells(row, values, null) +
       '<td>—</td><td><span class="mt-act"><button type="button" data-tree-account-menu="' +
       escapeHtml(row.id) + '" title="Действия с кабинетом" aria-label="Действия с кабинетом" ' +
@@ -1230,6 +1260,8 @@
       state.bound = true;
       bind();
       bindFilters();
+      window.setInterval(refreshAccountClocks, 30000);
+      document.addEventListener("visibilitychange", refreshAccountClocks);
       try {
         var saved = await api.get("/me/preferences/meta.tree.heat");
         if (saved && saved.value && typeof saved.value === "object" && !Array.isArray(saved.value)) {
