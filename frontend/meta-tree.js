@@ -252,6 +252,10 @@
     return row;
   }
 
+  function connectionKey(row) {
+    return row.connection_id || row.agent || "";
+  }
+
   function visibleChildren(row) {
     var agents = state.filters.agents ? state.filters.agents.values() : [];
     return (row.children || []).filter(function (child) {
@@ -259,7 +263,7 @@
       if (state.hideZero && child.spend != null && Number(child.spend) === 0) return false;
       if (state.filters.geo && state.filters.geo.values().length &&
           !(child.geos || []).length && !visibleChildren(child).length) return false;
-      if (agents.length && row.level === "account" && agents.indexOf(row.agent) < 0) return false;
+      if (agents.length && row.level === "account" && agents.indexOf(connectionKey(row)) < 0) return false;
       return true;
     }).sort(function (left, right) {
       if (state.sort === "spend") return (right.spend || 0) - (left.spend || 0);
@@ -277,7 +281,7 @@
   function visibleAccounts() {
     var agents = state.filters.agents ? state.filters.agents.values() : [];
     return state.rows.filter(function (row) {
-      if (agents.length && agents.indexOf(row.agent) < 0) return false;
+      if (agents.length && agents.indexOf(connectionKey(row)) < 0) return false;
       if (state.hideOff && row.status !== "ACTIVE") return false;
       if (state.hideZero && row.spend != null && Number(row.spend) === 0) return false;
       if (state.filters.geo && state.filters.geo.values().length &&
@@ -289,7 +293,7 @@
   /* ---------- отрисовка ---------- */
 
   var COLUMNS = [
-    "Структура", "Агент / GEO", "Статус", "Валюта / Элементы", "GMT", "Показы",
+    "Структура", "GEO", "Статус", "Валюта / Элементы", "GMT", "Показы",
     "Клики", "CPC", "CPM", "CTR", "Insts", "Regs", "Deps", "AvgInst", "AvgReg",
     "AvgDep", "Спенд", "Бюджет", "Действия"
   ];
@@ -394,20 +398,39 @@
       "<td>" + money(values.spend, row.currency) + "</td>";
   }
 
+  function connectionGroups(accounts) {
+    var groups = [];
+    var byConnection = Object.create(null);
+    accounts.forEach(function (row) {
+      var key = connectionKey(row);
+      if (!byConnection[key]) {
+        byConnection[key] = { row: row, accounts: [] };
+        groups.push(byConnection[key]);
+      }
+      byConnection[key].accounts.push(row);
+    });
+    return groups;
+  }
+
+  function connectionRow(row) {
+    var name = row.connection_id
+      ? '<button class="mt-chip mt-chip--agent mt-chip--link" type="button" data-tree-agent="' +
+        escapeHtml(row.connection_id) + '" title="Открыть подключение">' +
+        escapeHtml(row.agent || "Подключение") + "</button>"
+      : '<span class="mt-chip mt-chip--agent">' + escapeHtml(row.agent || "Без подключения") + "</span>";
+    return '<tr class="mt-row mt-row--connection"><td><div class="mt-name">' +
+      name + '</div></td><td colspan="18"></td></tr>';
+  }
+
   function accountRow(row) {
     var open = !!state.open[row.id];
     var values = totals(row);
-    var agent = row.connection_id
-      ? '<button class="mt-chip mt-chip--agent mt-chip--link" type="button" data-tree-agent="' +
-        escapeHtml(row.connection_id) + '" title="Открыть подключение">' +
-        escapeHtml(row.agent || "—") + "</button>"
-      : '<span class="mt-chip mt-chip--agent">' + escapeHtml(row.agent || "—") + "</span>";
     return '<tr class="mt-row mt-row--account" data-tree-row="' + escapeHtml(row.id) + '">' +
-      '<td><div class="mt-name"><span class="mt-check-gap"></span>' + toggleButton(row, open) +
+      '<td><div class="mt-name" style="padding-left:30px"><span class="mt-check-gap"></span>' + toggleButton(row, open) +
       '<span class="mt-title">' + escapeHtml(row.name) + "</span>" +
       '<span class="mt-chip mt-chip--geo">' + escapeHtml(row.account_name || "") +
       "</span></div></td>" +
-      "<td>" + agent + "</td>" +
+      "<td></td>" +
       "<td>" + statusCell(row.status) + "</td>" +
       "<td>" + escapeHtml(row.currency || "—") + "</td>" +
       '<td data-tree-timezone="' + escapeHtml(row.gmt || "") + '" title="' +
@@ -542,12 +565,15 @@
     renderCards();
     var accounts = visibleAccounts();
     var html = [];
-    accounts.forEach(function (row) {
-      html.push(accountRow(row));
-      if (state.open[row.id]) {
-        html.push(childHeadRow(row, "campaign", 1));
-        renderRows(visibleChildren(row), 1, html);
-      }
+    connectionGroups(accounts).forEach(function (group) {
+      html.push(connectionRow(group.row));
+      group.accounts.forEach(function (row) {
+        html.push(accountRow(row));
+        if (state.open[row.id]) {
+          html.push(childHeadRow(row, "campaign", 2));
+          renderRows(visibleChildren(row), 2, html);
+        }
+      });
     });
     byId("metaTreeBody").innerHTML = html.join("") ||
       '<tr><td colspan="19" style="padding:40px;text-align:center;color:#9B9292">' +
@@ -1045,18 +1071,6 @@
     return null;
   }
 
-  function collectValues(key) {
-    var found = {};
-    function walk(rows) {
-      rows.forEach(function (row) {
-        if (row[key]) found[row[key]] = true;
-        walk(row.children || []);
-      });
-    }
-    walk(state.rows);
-    return Object.keys(found).sort();
-  }
-
   function bindFilters() {
     var factory = window.CelestialBoard && window.CelestialBoard.multiFilter;
     if (!factory) return;
@@ -1067,8 +1081,8 @@
 
   function refreshFilters() {
     if (!state.filters.agents || !state.filters.geo) return;
-    state.filters.agents.setItems(collectValues("agent").map(function (name) {
-      return { value: name, label: name };
+    state.filters.agents.setItems(connectionGroups(state.rows).map(function (group) {
+      return { value: connectionKey(group.row), label: group.row.agent || "Без подключения" };
     }));
     state.filters.geo.setItems(state.availableGeos.map(function (name) {
       return { value: name, label: name };
