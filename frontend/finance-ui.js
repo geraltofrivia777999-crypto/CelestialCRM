@@ -1138,18 +1138,24 @@
             percent: pct
           };
         })();
-    renderSettlement(payoutProfit, computed.salary, computed.salary);
+    renderSettlement(payoutProfit, computed.salary, computed.salary, state.prevMinus);
 
     spark(byId("finSparkIncome"), seriesOf(income), "#7E7070");
     spark(byId("finSparkSpend"), seriesOf(spend), "#7E7070");
     spark(byId("finSparkProfit"), seriesOf(profit), profitSum < 0 ? "#BE2317" : "#0E7350");
   }
 
-  function renderSettlement(profitValue, salary, payout) {
+  function renderSettlement(profitValue, salary, payout, carry) {
     var step = salaryStep(profitValue);
     byId("finCardSalary").textContent = withSign(money(salary));
     byId("finPaySalary").textContent = money(salary);
     byId("finPayTotal").textContent = money(payout);
+    // Перенос прошлого месяца стоит здесь, потому что он действует только
+    // здесь: от профита за его вычетом берутся ступень и начисление.
+    var carried = Math.max(num(carry), 0);
+    var carryCell = byId("finPayCarry");
+    carryCell.textContent = carried ? money(-carried) : money(0);
+    carryCell.classList.toggle("is-zero", !carried);
 
     [].forEach.call(byId("finLadderSteps").children, function (item, index) {
       item.classList.toggle("is-on", index === step);
@@ -1161,7 +1167,8 @@
     renderSettlement(
       num(total.profit_after_debt != null ? total.profit_after_debt : total.profit),
       num(total.salary),
-      Math.max(num(total.payout), 0)
+      Math.max(num(total.payout), 0),
+      total.prev_minus
     );
   }
 
