@@ -1674,6 +1674,15 @@
     profitNode.textContent = summaryMoney(cards.profit);
     profitNode.className = "fin-card-value " +
       (num(cards.profit) < 0 ? "is-loss" : num(cards.profit) > 0 ? "is-gain" : "");
+    // Перенос с прошлых месяцев стоит отдельно: он не относится к этому
+    // месяцу, но объясняет, почему к выплате выходит меньше профита.
+    var debt = num(cards.debt);
+    byId("finCardDebtBox").hidden = !debt;
+    if (debt) {
+      var debtNode = byId("finCardDebt");
+      debtNode.textContent = summaryMoney(-debt);
+      debtNode.className = "fin-card-value is-loss";
+    }
     var roiNode = byId("finCardRoi");
     roiNode.textContent = summaryPercent(cards.roi);
     roiNode.className = "fin-card-value " +

@@ -624,8 +624,13 @@ async def summary(
         by_buyer.setdefault(book.buyer_id, []).append(result)
         tiers_by_user.setdefault(book.buyer_id, set()).add(book.tier)
 
-    cards = _combined(
-        [item["total"] for item in calculated], keep_debt=tier is None
+    # Профит сводки — это доход минус спенд и costs за сам месяц. Раньше в него
+    # входил ещё и минус прошлых месяцев, и карточки не сходились между собой:
+    # три числа про октябрь, а четвёртое — про всю историю. Перенос никуда не
+    # делся, он показывается своей карточкой.
+    cards = _combined([item["total"] for item in calculated])
+    cards["debt"] = q(
+        sum((item["total"]["prev_minus"] for item in calculated), ZERO)
     )
     # В тир-сводке разбивка по тирам повторила бы карточки одной строкой.
     tier_rows = [] if tier is not None else _tier_rows(calculated)
