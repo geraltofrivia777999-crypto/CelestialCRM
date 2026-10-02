@@ -256,7 +256,7 @@
     var agents = state.filters.agents ? state.filters.agents.values() : [];
     return (row.children || []).filter(function (child) {
       if (state.hideOff && child.status !== "ACTIVE") return false;
-      if (state.hideZero && child.level !== "ad" && !child.budget) return false;
+      if (state.hideZero && child.spend != null && Number(child.spend) === 0) return false;
       if (state.filters.geo && state.filters.geo.values().length &&
           !(child.geos || []).length && !visibleChildren(child).length) return false;
       if (agents.length && row.level === "account" && agents.indexOf(row.agent) < 0) return false;
@@ -279,6 +279,7 @@
     return state.rows.filter(function (row) {
       if (agents.length && agents.indexOf(row.agent) < 0) return false;
       if (state.hideOff && row.status !== "ACTIVE") return false;
+      if (state.hideZero && row.spend != null && Number(row.spend) === 0) return false;
       if (state.filters.geo && state.filters.geo.values().length &&
           !(row.geos || []).length && !visibleChildren(row).length) return false;
       return true;
@@ -321,7 +322,7 @@
 
   /* Кнопки в шапке заменили отдельные кнопки панели: стрелка у «Структуры»
      сворачивает и разворачивает всё дерево, глазики прячут неактивные строки
-     и строки без бюджета. */
+     и строки с нулевым расходом за выбранный период. */
   function headButton(kind, on, title, icon, extra) {
     return '<button class="mt-th-btn' + (on ? " is-on" : "") + (extra || "") + '" type="button" ' +
       'data-tree-head="' + kind + '" title="' + escapeHtml(title) + '" aria-label="' +
@@ -342,10 +343,10 @@
             state.hideOff ? "Показать неактивные" : "Скрыть неактивные",
             state.hideOff ? ICON_EYE_OFF : ICON_EYE) + "</span></th>";
       }
-      if (title === "Бюджет") {
+      if (title === "Спенд") {
         return '<th><span class="mt-th">' + escapeHtml(title) +
           headButton("hideZero", state.hideZero,
-            state.hideZero ? "Показать с бюджетом 0" : "Скрыть с бюджетом 0",
+            state.hideZero ? "Показать со спендом 0" : "Скрыть со спендом 0",
             state.hideZero ? ICON_EYE_OFF : ICON_EYE) + "</span></th>";
       }
       if (HEAT_COLUMNS[title]) {
