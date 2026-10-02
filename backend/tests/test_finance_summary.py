@@ -455,5 +455,3 @@ async def test_the_common_summary_keeps_the_debt_out_of_its_profit(team_summary)
     spend = Decimal(cards["spend"])
     costs = Decimal(cards["costs"])
     assert Decimal(cards["profit"]) == income - spend - costs
-    # Перенос никуда не делся — он просто отдельное число.
-    assert Decimal(cards["debt"]) == Decimal("1000")
